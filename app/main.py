@@ -11,10 +11,7 @@ from app.db.init_db import init_database
 from app.db.seed import seed_initial_admin, seed_reference_data
 from app.db.session import session_scope
 from app.resources import load_stylesheet
-from app.services.auth.auth_service import AuthService
-from app.services.auth.permission_service import PermissionService
-from app.services.categories.category_service import CategoryService
-from app.services.users.user_service import UserService
+from app.services.registry import ServiceRegistry, build_service_registry
 from app.utils.error_handler import install_global_exception_handler
 from app.utils.logging_config import get_logger, setup_logging
 from app.views.change_password_dialog import ChangePasswordDialog
@@ -46,29 +43,24 @@ def bootstrap() -> None:
         )
 
 
-def run_session(
-    auth_service: AuthService,
-    permission_service: PermissionService,
-    user_service: UserService,
-    category_service: CategoryService,
-) -> bool:
+def run_session(services: ServiceRegistry) -> bool:
     """Exécute un cycle connexion -> fenêtre principale -> déconnexion.
 
     Retourne True si l'utilisateur s'est déconnecté (relancer un nouveau
     cycle), False s'il a fermé la fenêtre de connexion (quitter l'application).
     """
-    login_window = LoginWindow(auth_service)
+    login_window = LoginWindow(services.auth)
     if login_window.exec() != QDialog.DialogCode.Accepted:
         return False
 
-    current_user = auth_service.current_user
+    current_user = services.auth.current_user
     if current_user is not None and current_user.must_change_password:
-        change_dialog = ChangePasswordDialog(auth_service, forced=True)
+        change_dialog = ChangePasswordDialog(services.auth, forced=True)
         if change_dialog.exec() != QDialog.DialogCode.Accepted:
-            auth_service.logout()
+            services.auth.logout()
             return True
 
-    window = MainWindow(auth_service, permission_service, user_service, category_service)
+    window = MainWindow(services)
 
     loop = QEventLoop()
     window.logout_requested.connect(loop.quit)
@@ -89,13 +81,9 @@ def main() -> int:
     except OSError:
         get_logger("bootstrap").warning("Feuille de style introuvable, style par défaut utilisé.")
 
-    settings = get_settings()
-    auth_service = AuthService(settings)
-    permission_service = PermissionService(auth_service)
-    user_service = UserService(permission_service, settings)
-    category_service = CategoryService(permission_service, settings)
+    services = build_service_registry(get_settings())
 
-    while run_session(auth_service, permission_service, user_service, category_service):
+    while run_session(services):
         pass
 
     return 0

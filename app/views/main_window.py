@@ -25,13 +25,11 @@ from PySide6.QtWidgets import (
 )
 
 from app.resources import APP_ICON_PATH
-from app.services.auth.auth_service import AuthService
-from app.services.auth.permission_service import PermissionService
-from app.services.categories.category_service import CategoryService
-from app.services.users.user_service import UserService
+from app.services.registry import ServiceRegistry
 from app.views.change_password_dialog import ChangePasswordDialog
 from app.views.pages.categories_page import CategoriesPage
 from app.views.pages.placeholder_page import PlaceholderPage
+from app.views.pages.suppliers_page import SuppliersPage
 from app.views.pages.users_page import UsersPage
 
 # Ordre de navigation conforme au cahier des charges (§22), et permission
@@ -70,19 +68,10 @@ NAVIGATION_PERMISSIONS: dict[str, str] = {
 class MainWindow(QMainWindow):
     logout_requested = Signal()
 
-    def __init__(
-        self,
-        auth_service: AuthService,
-        permission_service: PermissionService,
-        user_service: UserService,
-        category_service: CategoryService,
-        parent: QWidget | None = None,
-    ) -> None:
+    def __init__(self, services: ServiceRegistry, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._auth_service = auth_service
-        self._permissions = permission_service
-        self._user_service = user_service
-        self._category_service = category_service
+        self._services = services
+        self._permissions = services.permissions
 
         self.visible_modules: list[str] = [
             module
@@ -143,9 +132,11 @@ class MainWindow(QMainWindow):
 
     def _build_page(self, module_name: str) -> QWidget:
         if module_name == "Utilisateurs":
-            return UsersPage(self._user_service, self._permissions)
+            return UsersPage(self._services.users, self._permissions)
         if module_name == "Catégories":
-            return CategoriesPage(self._category_service, self._permissions)
+            return CategoriesPage(self._services.categories, self._permissions)
+        if module_name == "Fournisseurs":
+            return SuppliersPage(self._services.suppliers, self._permissions)
         return PlaceholderPage(module_name)
 
     def _build_top_bar(self, parent: QWidget) -> QWidget:
@@ -184,10 +175,10 @@ class MainWindow(QMainWindow):
         self.page_title_label.setText(self.visible_modules[index])
 
     def _on_change_password_clicked(self) -> None:
-        dialog = ChangePasswordDialog(self._auth_service, parent=self)
+        dialog = ChangePasswordDialog(self._services.auth, parent=self)
         dialog.exec()
 
     def _on_logout_clicked(self) -> None:
-        self._auth_service.logout()
+        self._services.auth.logout()
         self.logout_requested.emit()
         self.close()

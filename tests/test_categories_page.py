@@ -163,7 +163,7 @@ def test_confirmation_dialog_no_cancels_toggle(qtbot, login_as, monkeypatch) -> 
     qtbot.addWidget(page)
 
     monkeypatch.setattr(
-        "app.views.pages.categories_page.QMessageBox.question",
+        "app.views.common.QMessageBox.question",
         lambda *a, **k: QMessageBox.StandardButton.No,
     )
 
@@ -181,7 +181,7 @@ def test_confirmation_dialog_yes_proceeds_with_toggle(qtbot, login_as, monkeypat
     qtbot.addWidget(page)
 
     monkeypatch.setattr(
-        "app.views.pages.categories_page.QMessageBox.question",
+        "app.views.common.QMessageBox.question",
         lambda *a, **k: QMessageBox.StandardButton.Yes,
     )
 

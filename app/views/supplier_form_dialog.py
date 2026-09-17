@@ -1,0 +1,101 @@
+"""Formulaire de création/modification d'un fournisseur.
+
+Ne connaît rien du service métier : collecte uniquement une saisie. C'est
+:class:`SuppliersPage` qui appelle ``SupplierService`` et gère la validation
+(même principe que :class:`CategoryFormDialog`).
+"""
+from __future__ import annotations
+
+from typing import Optional
+
+from PySide6.QtWidgets import (
+    QDialog,
+    QFormLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
+
+
+class SupplierFormDialog(QDialog):
+    def __init__(self, initial: Optional[dict] = None, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        initial = initial or {}
+
+        self.setWindowTitle("Fournisseur")
+        self.setModal(True)
+        self.setMinimumWidth(420)
+
+        layout = QVBoxLayout(self)
+
+        form = QFormLayout()
+        self.name_edit = QLineEdit(self)
+        self.name_edit.setText(initial.get("nom", ""))
+        form.addRow("Nom / raison sociale", self.name_edit)
+
+        self.contact_edit = QLineEdit(self)
+        self.contact_edit.setText(initial.get("contact", "") or "")
+        form.addRow("Contact", self.contact_edit)
+
+        self.telephone_edit = QLineEdit(self)
+        self.telephone_edit.setText(initial.get("telephone", "") or "")
+        form.addRow("Téléphone", self.telephone_edit)
+
+        self.email_edit = QLineEdit(self)
+        self.email_edit.setText(initial.get("email", "") or "")
+        form.addRow("Email", self.email_edit)
+
+        self.adresse_edit = QLineEdit(self)
+        self.adresse_edit.setText(initial.get("adresse", "") or "")
+        form.addRow("Adresse", self.adresse_edit)
+
+        self.ville_edit = QLineEdit(self)
+        self.ville_edit.setText(initial.get("ville", "") or "")
+        form.addRow("Ville", self.ville_edit)
+
+        self.pays_edit = QLineEdit(self)
+        self.pays_edit.setText(initial.get("pays", "") or "")
+        form.addRow("Pays", self.pays_edit)
+
+        self.observations_edit = QTextEdit(self)
+        self.observations_edit.setPlainText(initial.get("observations", "") or "")
+        self.observations_edit.setFixedHeight(60)
+        form.addRow("Observations", self.observations_edit)
+
+        layout.addLayout(form)
+
+        self.error_label = QLabel("", self)
+        self.error_label.setStyleSheet("color: #DC2626;")
+        self.error_label.setWordWrap(True)
+        layout.addWidget(self.error_label)
+
+        button_row = QHBoxLayout()
+        button_row.addStretch(1)
+        self.cancel_button = QPushButton("Annuler", self)
+        self.save_button = QPushButton("Enregistrer", self)
+        self.save_button.setDefault(True)
+        button_row.addWidget(self.cancel_button)
+        button_row.addWidget(self.save_button)
+        layout.addLayout(button_row)
+
+        self.cancel_button.clicked.connect(self.reject)
+        self.save_button.clicked.connect(self.accept)
+
+    def values(self) -> dict:
+        return {
+            "nom": self.name_edit.text(),
+            "contact": self.contact_edit.text(),
+            "telephone": self.telephone_edit.text(),
+            "email": self.email_edit.text(),
+            "adresse": self.adresse_edit.text(),
+            "ville": self.ville_edit.text(),
+            "pays": self.pays_edit.text(),
+            "observations": self.observations_edit.toPlainText(),
+        }
+
+    def set_error(self, message: str) -> None:
+        self.error_label.setText(message)

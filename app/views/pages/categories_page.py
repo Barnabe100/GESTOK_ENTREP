@@ -25,6 +25,7 @@ from app.services.auth.permission_service import PermissionService
 from app.services.categories.category_service import CategoryService
 from app.utils.exceptions import AppError
 from app.views.category_form_dialog import CategoryFormDialog
+from app.views.common import confirm_action, run_modal_form
 
 _COLUMNS = ["Nom", "Statut", "Créée le", "Modifiée le"]
 
@@ -102,16 +103,10 @@ class CategoriesPage(QWidget):
         selected = self.table.selectionModel().selectedRows()
         return selected[0].row() if selected else None
 
-    def _selected_category_id(self) -> Optional[int]:
-        row = self._selected_row()
-        if row is None:
-            return None
-        return self.table.item(row, 0).data(Qt.ItemDataRole.UserRole)
-
     # -- création / modification --------------------------------------------
 
     def _on_add_clicked(self) -> None:
-        self._open_form_dialog(category_id=None, initial_name="")
+        self._open_form(category_id=None, initial_name="")
 
     def _on_edit_clicked(self) -> None:
         row = self._selected_row()
@@ -119,18 +114,20 @@ class CategoriesPage(QWidget):
             return
         category_id = self.table.item(row, 0).data(Qt.ItemDataRole.UserRole)
         current_name = self.table.item(row, 0).text()
-        self._open_form_dialog(category_id=category_id, initial_name=current_name)
+        self._open_form(category_id=category_id, initial_name=current_name)
 
-    def _open_form_dialog(self, category_id: Optional[int], initial_name: str) -> None:
-        name = initial_name
-        while True:
-            dialog = CategoryFormDialog(name, parent=self)
-            if dialog.exec() != CategoryFormDialog.DialogCode.Accepted:
-                return
-            name = dialog.name()
-            if self._submit_form(category_id, name):
-                self.refresh()
-                return
+    def _open_form(self, category_id: Optional[int], initial_name: str) -> None:
+        state = {"name": initial_name}
+
+        def factory() -> CategoryFormDialog:
+            return CategoryFormDialog(state["name"], parent=self)
+
+        def submit(dialog: CategoryFormDialog) -> bool:
+            state["name"] = dialog.name()
+            return self._submit_form(category_id, state["name"])
+
+        run_modal_form(factory, submit)
+        self.refresh()
 
     def _submit_form(self, category_id: Optional[int], name: str) -> bool:
         """Effectue l'appel service et affiche le résultat. Isolé de
@@ -161,16 +158,9 @@ class CategoriesPage(QWidget):
         currently_active = self.table.item(row, 1).text() == "Actif"
         action_label = "désactiver" if currently_active else "activer"
 
-        confirmed = (
-            QMessageBox.question(
-                self,
-                "Confirmation",
-                f"Voulez-vous vraiment {action_label} la catégorie « {name} » ?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            )
-            == QMessageBox.StandardButton.Yes
-        )
-        if not confirmed:
+        if not confirm_action(
+            self, "Confirmation", f"Voulez-vous vraiment {action_label} la catégorie « {name} » ?"
+        ):
             return
 
         if self._toggle_status(category_id, currently_active):

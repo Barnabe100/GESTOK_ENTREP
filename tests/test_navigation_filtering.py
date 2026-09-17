@@ -17,7 +17,7 @@ EXPECTED_MODULES_BY_ROLE = {
 
 
 def _build_window(stack) -> MainWindow:
-    return MainWindow(stack.auth, stack.permissions, stack.users, stack.categories)
+    return MainWindow(stack)
 
 
 def test_administrateur_navigation_matches_full_access_matrix(qtbot, login_as) -> None:

@@ -2,7 +2,7 @@ from app.views.main_window import MainWindow
 
 
 def _build_window(stack) -> MainWindow:
-    return MainWindow(stack.auth, stack.permissions, stack.users, stack.categories)
+    return MainWindow(stack)
 
 
 def test_main_window_administrateur_sees_all_modules(qtbot, login_as) -> None:
