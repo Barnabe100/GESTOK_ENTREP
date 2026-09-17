@@ -13,6 +13,7 @@ from app.db.session import session_scope
 from app.resources import load_stylesheet
 from app.services.auth.auth_service import AuthService
 from app.services.auth.permission_service import PermissionService
+from app.services.categories.category_service import CategoryService
 from app.services.users.user_service import UserService
 from app.utils.error_handler import install_global_exception_handler
 from app.utils.logging_config import get_logger, setup_logging
@@ -49,6 +50,7 @@ def run_session(
     auth_service: AuthService,
     permission_service: PermissionService,
     user_service: UserService,
+    category_service: CategoryService,
 ) -> bool:
     """Exécute un cycle connexion -> fenêtre principale -> déconnexion.
 
@@ -66,7 +68,7 @@ def run_session(
             auth_service.logout()
             return True
 
-    window = MainWindow(auth_service, permission_service, user_service)
+    window = MainWindow(auth_service, permission_service, user_service, category_service)
 
     loop = QEventLoop()
     window.logout_requested.connect(loop.quit)
@@ -91,8 +93,9 @@ def main() -> int:
     auth_service = AuthService(settings)
     permission_service = PermissionService(auth_service)
     user_service = UserService(permission_service, settings)
+    category_service = CategoryService(permission_service, settings)
 
-    while run_session(auth_service, permission_service, user_service):
+    while run_session(auth_service, permission_service, user_service, category_service):
         pass
 
     return 0

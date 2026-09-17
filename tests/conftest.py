@@ -3,6 +3,7 @@ import os
 # Doit être défini avant tout import de PySide6 (y compris via le plugin pytest-qt).
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator
 
@@ -18,9 +19,22 @@ from app.security.password_hashing import hash_password
 from app.services.auth.auth_service import AuthService
 from app.services.auth.current_user import CurrentUser
 from app.services.auth.permission_service import PermissionService
+from app.services.categories.category_service import CategoryService
 from app.services.users.user_service import UserService
 
 DEFAULT_TEST_PASSWORD = "MotDePasse!23"
+
+
+@dataclass
+class ServiceStack:
+    """Regroupe les services applicatifs construits pour un test, par attribut
+    nommé plutôt que par position — ajouter un service dans une phase future
+    n'oblige pas à modifier tous les appels existants de ``login_as``/``make_stack``."""
+
+    auth: AuthService
+    permissions: PermissionService
+    users: UserService
+    categories: CategoryService
 
 
 @pytest.fixture()
@@ -71,16 +85,20 @@ def make_user(initialized_db: Settings) -> Callable[..., None]:
 
 
 @pytest.fixture()
-def make_stack(
-    initialized_db: Settings,
-) -> Callable[[], tuple[AuthService, PermissionService, UserService]]:
-    """Construit une pile AuthService/PermissionService/UserService neuve, non connectée."""
+def make_stack(initialized_db: Settings) -> Callable[[], ServiceStack]:
+    """Construit une pile de services neuve, non connectée."""
 
-    def _make_stack() -> tuple[AuthService, PermissionService, UserService]:
+    def _make_stack() -> ServiceStack:
         auth_service = AuthService(initialized_db)
         permission_service = PermissionService(auth_service)
         user_service = UserService(permission_service, initialized_db)
-        return auth_service, permission_service, user_service
+        category_service = CategoryService(permission_service, initialized_db)
+        return ServiceStack(
+            auth=auth_service,
+            permissions=permission_service,
+            users=user_service,
+            categories=category_service,
+        )
 
     return _make_stack
 
@@ -88,19 +106,18 @@ def make_stack(
 @pytest.fixture()
 def login_as(
     make_user: Callable[..., None],
-    make_stack: Callable[[], tuple[AuthService, PermissionService, UserService]],
-) -> Callable[..., tuple[AuthService, PermissionService, UserService, CurrentUser]]:
-    """Crée un utilisateur avec le rôle donné, le connecte, et retourne
-    (auth_service, permission_service, user_service, current_user)."""
+    make_stack: Callable[[], ServiceStack],
+) -> Callable[..., tuple[ServiceStack, CurrentUser]]:
+    """Crée un utilisateur avec le rôle donné, le connecte, et retourne (stack, current_user)."""
 
     counter = {"n": 0}
 
-    def _login_as(role_name: str, password: str = DEFAULT_TEST_PASSWORD):
+    def _login_as(role_name: str, password: str = DEFAULT_TEST_PASSWORD) -> tuple[ServiceStack, CurrentUser]:
         counter["n"] += 1
         username = f"test_{role_name.lower().replace(' ', '_')}_{counter['n']}"
         make_user(role_name, username, password)
-        auth_service, permission_service, user_service = make_stack()
-        current_user = auth_service.login(username, password)
-        return auth_service, permission_service, user_service, current_user
+        stack = make_stack()
+        current_user = stack.auth.login(username, password)
+        return stack, current_user
 
     return _login_as

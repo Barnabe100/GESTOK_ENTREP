@@ -1,9 +1,13 @@
 from app.views.main_window import MainWindow
 
 
+def _build_window(stack) -> MainWindow:
+    return MainWindow(stack.auth, stack.permissions, stack.users, stack.categories)
+
+
 def test_main_window_administrateur_sees_all_modules(qtbot, login_as) -> None:
-    auth_service, permission_service, user_service, _ = login_as("Administrateur")
-    window = MainWindow(auth_service, permission_service, user_service)
+    stack, _ = login_as("Administrateur")
+    window = _build_window(stack)
     qtbot.addWidget(window)
 
     assert window.navigation_list.count() == 12
@@ -11,8 +15,8 @@ def test_main_window_administrateur_sees_all_modules(qtbot, login_as) -> None:
 
 
 def test_main_window_starts_on_first_visible_module(qtbot, login_as) -> None:
-    auth_service, permission_service, user_service, _ = login_as("Administrateur")
-    window = MainWindow(auth_service, permission_service, user_service)
+    stack, _ = login_as("Administrateur")
+    window = _build_window(stack)
     qtbot.addWidget(window)
 
     assert window.navigation_list.currentRow() == 0
@@ -21,8 +25,8 @@ def test_main_window_starts_on_first_visible_module(qtbot, login_as) -> None:
 
 
 def test_navigation_switches_page_and_title(qtbot, login_as) -> None:
-    auth_service, permission_service, user_service, _ = login_as("Administrateur")
-    window = MainWindow(auth_service, permission_service, user_service)
+    stack, _ = login_as("Administrateur")
+    window = _build_window(stack)
     qtbot.addWidget(window)
 
     target_index = window.visible_modules.index("Ventes")
@@ -33,16 +37,16 @@ def test_navigation_switches_page_and_title(qtbot, login_as) -> None:
 
 
 def test_window_has_expected_title(qtbot, login_as) -> None:
-    auth_service, permission_service, user_service, _ = login_as("Administrateur")
-    window = MainWindow(auth_service, permission_service, user_service)
+    stack, _ = login_as("Administrateur")
+    window = _build_window(stack)
     qtbot.addWidget(window)
 
     assert window.windowTitle() == "StockManager Desktop"
 
 
 def test_top_bar_shows_current_user(qtbot, login_as) -> None:
-    auth_service, permission_service, user_service, current_user = login_as("Administrateur")
-    window = MainWindow(auth_service, permission_service, user_service)
+    stack, current_user = login_as("Administrateur")
+    window = _build_window(stack)
     qtbot.addWidget(window)
 
     assert current_user.username in window.user_label.text()
@@ -50,8 +54,8 @@ def test_top_bar_shows_current_user(qtbot, login_as) -> None:
 
 
 def test_logout_button_logs_out_and_emits_signal(qtbot, login_as) -> None:
-    auth_service, permission_service, user_service, _ = login_as("Administrateur")
-    window = MainWindow(auth_service, permission_service, user_service)
+    stack, _ = login_as("Administrateur")
+    window = _build_window(stack)
     qtbot.addWidget(window)
 
     signal_received = []
@@ -60,4 +64,4 @@ def test_logout_button_logs_out_and_emits_signal(qtbot, login_as) -> None:
     window.logout_button.click()
 
     assert signal_received == [True]
-    assert auth_service.is_authenticated is False
+    assert stack.auth.is_authenticated is False

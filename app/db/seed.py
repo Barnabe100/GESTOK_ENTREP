@@ -30,6 +30,8 @@ PERMISSIONS: list[tuple[str, str, str]] = [
     ("CATEGORY_VIEW", "Consulter les catégories", "categories"),
     ("CATEGORY_CREATE", "Créer une catégorie", "categories"),
     ("CATEGORY_UPDATE", "Modifier une catégorie", "categories"),
+    ("CATEGORY_ACTIVATE", "Activer une catégorie", "categories"),
+    ("CATEGORY_DEACTIVATE", "Désactiver une catégorie", "categories"),
     ("SUPPLIER_VIEW", "Consulter les fournisseurs", "fournisseurs"),
     ("SUPPLIER_CREATE", "Créer un fournisseur", "fournisseurs"),
     ("SUPPLIER_UPDATE", "Modifier un fournisseur", "fournisseurs"),
@@ -79,7 +81,7 @@ _ALL_CODES = [code for code, _, _ in PERMISSIONS]
 _GESTIONNAIRE_STOCK_CODES = [
     "DASHBOARD_VIEW",
     "ARTICLE_VIEW", "ARTICLE_CREATE", "ARTICLE_UPDATE",
-    "CATEGORY_VIEW", "CATEGORY_CREATE", "CATEGORY_UPDATE",
+    "CATEGORY_VIEW", "CATEGORY_CREATE", "CATEGORY_UPDATE", "CATEGORY_ACTIVATE", "CATEGORY_DEACTIVATE",
     "SUPPLIER_VIEW", "SUPPLIER_CREATE", "SUPPLIER_UPDATE",
     "EXIT_REASON_VIEW",
     "STOCK_ENTRY_VIEW", "STOCK_ENTRY_CREATE", "STOCK_ENTRY_UPDATE", "STOCK_ENTRY_VALIDATE",

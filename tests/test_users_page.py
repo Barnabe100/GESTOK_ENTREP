@@ -6,9 +6,9 @@ from app.views.pages.users_page import UsersPage
 
 def test_users_page_lists_users_for_administrateur(qtbot, login_as, make_user) -> None:
     make_user("Vendeur", "listed_user")
-    _, permission_service, user_service, _ = login_as("Administrateur")
+    stack, _ = login_as("Administrateur")
 
-    page = UsersPage(user_service, permission_service)
+    page = UsersPage(stack.users, stack.permissions)
     qtbot.addWidget(page)
 
     usernames = {page.table.item(row, 0).text() for row in range(page.table.rowCount())}
@@ -16,8 +16,8 @@ def test_users_page_lists_users_for_administrateur(qtbot, login_as, make_user) -
 
 
 def test_users_page_toggle_button_enabled_for_administrateur(qtbot, login_as) -> None:
-    _, permission_service, user_service, _ = login_as("Administrateur")
-    page = UsersPage(user_service, permission_service)
+    stack, _ = login_as("Administrateur")
+    page = UsersPage(stack.users, stack.permissions)
     qtbot.addWidget(page)
 
     assert page.toggle_button.isEnabled() is True
@@ -26,8 +26,8 @@ def test_users_page_toggle_button_enabled_for_administrateur(qtbot, login_as) ->
 def test_users_page_toggle_button_disabled_and_table_empty_for_vendeur(qtbot, login_as) -> None:
     """Un Vendeur n'a ni USER_VIEW ni USER_ACTIVATE : la page, si elle était atteinte,
     n'affiche rien et son bouton d'action est désactivé."""
-    _, permission_service, user_service, _ = login_as("Vendeur")
-    page = UsersPage(user_service, permission_service)
+    stack, _ = login_as("Vendeur")
+    page = UsersPage(stack.users, stack.permissions)
     qtbot.addWidget(page)
 
     assert page.toggle_button.isEnabled() is False
@@ -49,12 +49,12 @@ def test_users_page_action_is_blocked_even_if_button_force_enabled(
 
     make_user("Vendeur", "victime_ui")
 
-    admin_auth, admin_perms, admin_user_service, _ = login_as("Administrateur")
-    target_id = next(u.id for u in admin_user_service.list_users() if u.username == "victime_ui")
+    admin_stack, _ = login_as("Administrateur")
+    target_id = next(u.id for u in admin_stack.users.list_users() if u.username == "victime_ui")
 
-    _, vendeur_perms, vendeur_user_service, _ = login_as("Vendeur")
+    vendeur_stack, _ = login_as("Vendeur")
 
-    page = UsersPage(vendeur_user_service, vendeur_perms)
+    page = UsersPage(vendeur_stack.users, vendeur_stack.permissions)
     qtbot.addWidget(page)
 
     # Manipulation simulée de l'interface : on force l'activation du bouton et on
@@ -72,5 +72,5 @@ def test_users_page_action_is_blocked_even_if_button_force_enabled(
     qtbot.mouseClick(page.toggle_button, Qt.MouseButton.LeftButton)
 
     # Le service doit avoir refusé l'action : le compte cible reste actif en base.
-    target_summary = next(u for u in admin_user_service.list_users() if u.username == "victime_ui")
+    target_summary = next(u for u in admin_stack.users.list_users() if u.username == "victime_ui")
     assert target_summary.actif is True

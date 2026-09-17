@@ -8,7 +8,7 @@ from app.utils.exceptions import AccountDisabledError, InvalidCredentialsError, 
 
 def test_login_success_returns_current_user_with_permissions(make_user, make_stack) -> None:
     make_user("Administrateur", "alice", "Password!23")
-    auth_service, _, _ = make_stack()
+    auth_service = make_stack().auth
 
     current_user = auth_service.login("alice", "Password!23")
 
@@ -21,7 +21,7 @@ def test_login_success_returns_current_user_with_permissions(make_user, make_sta
 
 def test_login_success_is_audited(make_user, make_stack, initialized_db: Settings) -> None:
     make_user("Administrateur", "alice", "Password!23")
-    auth_service, _, _ = make_stack()
+    auth_service = make_stack().auth
 
     auth_service.login("alice", "Password!23")
 
@@ -32,7 +32,7 @@ def test_login_success_is_audited(make_user, make_stack, initialized_db: Setting
 
 def test_login_wrong_password_is_rejected(make_user, make_stack) -> None:
     make_user("Vendeur", "bob", "Password!23")
-    auth_service, _, _ = make_stack()
+    auth_service = make_stack().auth
 
     try:
         auth_service.login("bob", "MauvaisMotDePasse")
@@ -45,7 +45,7 @@ def test_login_wrong_password_is_rejected(make_user, make_stack) -> None:
 
 def test_login_wrong_password_is_audited_as_failure(make_user, make_stack, initialized_db: Settings) -> None:
     make_user("Vendeur", "bob", "Password!23")
-    auth_service, _, _ = make_stack()
+    auth_service = make_stack().auth
 
     try:
         auth_service.login("bob", "MauvaisMotDePasse")
@@ -58,7 +58,7 @@ def test_login_wrong_password_is_audited_as_failure(make_user, make_stack, initi
 
 
 def test_login_unknown_username_is_rejected(make_stack) -> None:
-    auth_service, _, _ = make_stack()
+    auth_service = make_stack().auth
 
     try:
         auth_service.login("utilisateur_qui_n_existe_pas", "peu importe")
@@ -72,7 +72,7 @@ def test_login_unknown_username_is_rejected(make_stack) -> None:
 def test_login_unknown_username_is_audited_without_user_id(
     make_stack, initialized_db: Settings
 ) -> None:
-    auth_service, _, _ = make_stack()
+    auth_service = make_stack().auth
 
     try:
         auth_service.login("fantome", "peu importe")
@@ -92,7 +92,7 @@ def test_login_unknown_username_is_audited_without_user_id(
 
 def test_login_disabled_account_is_rejected(make_user, make_stack) -> None:
     make_user("Vendeur", "carla", "Password!23", actif=False)
-    auth_service, _, _ = make_stack()
+    auth_service = make_stack().auth
 
     try:
         auth_service.login("carla", "Password!23")
@@ -107,7 +107,7 @@ def test_login_disabled_account_with_wrong_password_reveals_nothing(make_user, m
     """Un mot de passe erroné sur un compte désactivé doit rester une simple erreur
     d'identifiants (ne jamais révéler le statut du compte sans mot de passe valide)."""
     make_user("Vendeur", "carla2", "Password!23", actif=False)
-    auth_service, _, _ = make_stack()
+    auth_service = make_stack().auth
 
     try:
         auth_service.login("carla2", "MauvaisMotDePasse")
@@ -118,7 +118,7 @@ def test_login_disabled_account_with_wrong_password_reveals_nothing(make_user, m
 
 def test_logout_clears_current_user(make_user, make_stack) -> None:
     make_user("Administrateur", "dave", "Password!23")
-    auth_service, _, _ = make_stack()
+    auth_service = make_stack().auth
     auth_service.login("dave", "Password!23")
 
     auth_service.logout()
@@ -129,7 +129,7 @@ def test_logout_clears_current_user(make_user, make_stack) -> None:
 
 def test_logout_is_audited(make_user, make_stack, initialized_db: Settings) -> None:
     make_user("Administrateur", "dave2", "Password!23")
-    auth_service, _, _ = make_stack()
+    auth_service = make_stack().auth
     auth_service.login("dave2", "Password!23")
 
     auth_service.logout()
@@ -141,14 +141,14 @@ def test_logout_is_audited(make_user, make_stack, initialized_db: Settings) -> N
 
 
 def test_logout_without_login_is_a_no_op(make_stack) -> None:
-    auth_service, _, _ = make_stack()
+    auth_service = make_stack().auth
     auth_service.logout()  # ne doit pas lever
     assert auth_service.is_authenticated is False
 
 
 def test_change_password_success(make_user, make_stack) -> None:
     make_user("Vendeur", "elise", "AncienMotDePasse1")
-    auth_service, _, _ = make_stack()
+    auth_service = make_stack().auth
     auth_service.login("elise", "AncienMotDePasse1")
 
     auth_service.change_password("AncienMotDePasse1", "NouveauMotDePasse1")
@@ -160,7 +160,7 @@ def test_change_password_success(make_user, make_stack) -> None:
 
 def test_change_password_wrong_old_password_is_rejected(make_user, make_stack) -> None:
     make_user("Vendeur", "felix", "AncienMotDePasse1")
-    auth_service, _, _ = make_stack()
+    auth_service = make_stack().auth
     auth_service.login("felix", "AncienMotDePasse1")
 
     try:
@@ -172,7 +172,7 @@ def test_change_password_wrong_old_password_is_rejected(make_user, make_stack) -
 
 def test_change_password_too_short_is_rejected(make_user, make_stack) -> None:
     make_user("Vendeur", "gina", "AncienMotDePasse1")
-    auth_service, _, _ = make_stack()
+    auth_service = make_stack().auth
     auth_service.login("gina", "AncienMotDePasse1")
 
     try:
@@ -189,7 +189,7 @@ def test_change_password_clears_must_change_password_flag(make_stack, initialize
         generated_password = seed_initial_admin(session)
     assert generated_password is not None
 
-    auth_service, _, _ = make_stack()
+    auth_service = make_stack().auth
     current_user = auth_service.login("admin", generated_password)
     assert current_user.must_change_password is True
 

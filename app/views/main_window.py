@@ -27,8 +27,10 @@ from PySide6.QtWidgets import (
 from app.resources import APP_ICON_PATH
 from app.services.auth.auth_service import AuthService
 from app.services.auth.permission_service import PermissionService
+from app.services.categories.category_service import CategoryService
 from app.services.users.user_service import UserService
 from app.views.change_password_dialog import ChangePasswordDialog
+from app.views.pages.categories_page import CategoriesPage
 from app.views.pages.placeholder_page import PlaceholderPage
 from app.views.pages.users_page import UsersPage
 
@@ -73,12 +75,14 @@ class MainWindow(QMainWindow):
         auth_service: AuthService,
         permission_service: PermissionService,
         user_service: UserService,
+        category_service: CategoryService,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._auth_service = auth_service
         self._permissions = permission_service
         self._user_service = user_service
+        self._category_service = category_service
 
         self.visible_modules: list[str] = [
             module
@@ -140,6 +144,8 @@ class MainWindow(QMainWindow):
     def _build_page(self, module_name: str) -> QWidget:
         if module_name == "Utilisateurs":
             return UsersPage(self._user_service, self._permissions)
+        if module_name == "Catégories":
+            return CategoriesPage(self._category_service, self._permissions)
         return PlaceholderPage(module_name)
 
     def _build_top_bar(self, parent: QWidget) -> QWidget:
