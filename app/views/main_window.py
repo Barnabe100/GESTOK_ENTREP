@@ -10,7 +10,7 @@ autorisé.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QSize, Signal
+from PySide6.QtCore import QSize, QTimer, Signal
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -26,8 +26,10 @@ from PySide6.QtWidgets import (
 
 from app.resources import APP_ICON_PATH
 from app.services.registry import ServiceRegistry
+from app.utils.logging_config import get_logger
 from app.views.change_password_dialog import ChangePasswordDialog
 from app.views.pages.articles_page import ArticlesPage
+from app.views.pages.backups_page import BackupsPage
 from app.views.pages.categories_page import CategoriesPage
 from app.views.pages.entries_page import EntriesPage
 from app.views.pages.exit_reasons_page import ExitReasonsPage
@@ -38,6 +40,13 @@ from app.views.pages.reports_page import ReportsPage
 from app.views.pages.sales_page import SalesPage
 from app.views.pages.suppliers_page import SuppliersPage
 from app.views.pages.users_page import UsersPage
+
+logger = get_logger("views.main_window")
+
+# Fréquence de vérification du minuteur de sauvegarde planifiée (§7-8 de la
+# phase Sauvegardes) : ce minuteur ne peut s'exécuter que si l'application
+# est ouverte — voir app/backup_cli.py pour le cas application fermée.
+_BACKUP_SCHEDULER_CHECK_INTERVAL_MS = 60_000
 
 # Ordre de navigation conforme au cahier des charges (§22), complété par
 # « Motifs de sortie » (administration réservée à l'Administrateur, cf.
@@ -57,6 +66,7 @@ NAVIGATION_MODULES: list[str] = [
     "Rapports",
     "Utilisateurs",
     "Paramètres",
+    "Sauvegardes",
 ]
 
 NAVIGATION_PERMISSIONS: dict[str, str] = {
@@ -73,6 +83,7 @@ NAVIGATION_PERMISSIONS: dict[str, str] = {
     "Rapports": "REPORT_VIEW",
     "Utilisateurs": "USER_VIEW",
     "Paramètres": "SETTINGS_VIEW",
+    "Sauvegardes": "BACKUP_VIEW",
 }
 
 
@@ -115,6 +126,15 @@ class MainWindow(QMainWindow):
             self.navigation_list.setCurrentRow(0)
 
         self.statusBar().showMessage("Prêt")
+
+        # Minuteur de sauvegarde planifiée (§7-8) : ne peut s'exécuter que
+        # tant que cette fenêtre (donc l'application) est ouverte. Le
+        # service lui-même décide si une sauvegarde est réellement due
+        # (activation/fréquence/heure) ; ce minuteur ne fait que le
+        # solliciter régulièrement.
+        self._backup_scheduler_timer = QTimer(self)
+        self._backup_scheduler_timer.timeout.connect(self._check_scheduled_backup)
+        self._backup_scheduler_timer.start(_BACKUP_SCHEDULER_CHECK_INTERVAL_MS)
 
     def _build_navigation_list(self) -> QListWidget:
         navigation_list = QListWidget(self)
@@ -171,6 +191,8 @@ class MainWindow(QMainWindow):
                 self._services.reports, self._services.categories, self._services.articles,
                 self._services.exit_reasons, self._permissions,
             )
+        if module_name == "Sauvegardes":
+            return BackupsPage(self._services.backups, self._permissions)
         return PlaceholderPage(module_name)
 
     def _build_top_bar(self, parent: QWidget) -> QWidget:
@@ -213,6 +235,26 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def _on_logout_clicked(self) -> None:
+        self._backup_scheduler_timer.stop()
         self._services.auth.logout()
         self.logout_requested.emit()
         self.close()
+
+    def _check_scheduled_backup(self) -> None:
+        """Sollicite le service de sauvegarde à intervalle régulier ; ne fait
+        réellement quelque chose que si une sauvegarde automatique est
+        activée et due (voir ``BackupService.run_scheduled_backup_if_due``).
+        Échoue silencieusement en journal (jamais d'interruption de
+        l'utilisateur pour une opération d'arrière-plan) : l'historique des
+        sauvegardes et le journal d'audit restent la source de vérité."""
+        try:
+            result = self._services.backups.run_scheduled_backup_if_due()
+        except Exception:  # défensif : ne doit jamais interrompre la session en cours
+            logger.exception("Échec inattendu lors de la vérification de la sauvegarde planifiée.")
+            return
+        if result is None:
+            return
+        if result.success:
+            logger.info("Sauvegarde automatique planifiée réussie : %s", result.file_path)
+        else:
+            logger.error("Sauvegarde automatique planifiée échouée : %s", result.message)

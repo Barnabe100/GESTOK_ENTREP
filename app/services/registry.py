@@ -15,6 +15,7 @@ from app.config.settings import Settings
 from app.services.articles.article_service import ArticleService
 from app.services.auth.auth_service import AuthService
 from app.services.auth.permission_service import PermissionService
+from app.services.backups.backup_service import BackupService
 from app.services.categories.category_service import CategoryService
 from app.services.entries.entry_service import EntryService
 from app.services.exit_reasons.exit_reason_service import ExitReasonService
@@ -40,6 +41,7 @@ class ServiceRegistry:
     sales: SaleService
     inventory: InventoryService
     reports: ReportService
+    backups: BackupService
 
 
 def build_service_registry(settings: Optional[Settings] = None) -> ServiceRegistry:
@@ -58,4 +60,5 @@ def build_service_registry(settings: Optional[Settings] = None) -> ServiceRegist
         sales=SaleService(permission_service, settings),
         inventory=InventoryService(permission_service, settings),
         reports=ReportService(permission_service, settings),
+        backups=BackupService(permission_service, settings),
     )
