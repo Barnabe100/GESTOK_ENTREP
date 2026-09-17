@@ -1,0 +1,77 @@
+/* StockManager Desktop - feuille de style principale
+   Palette sobre et professionnelle (cf. cahier des charges §22). */
+
+* {
+    font-family: "Segoe UI", "Inter", sans-serif;
+    font-size: 13px;
+}
+
+QMainWindow, QWidget#centralWidget {
+    background-color: #F4F6F8;
+}
+
+/* --- Navigation latérale --- */
+QListWidget#navigationList {
+    background-color: #1F2A37;
+    border: none;
+    padding: 8px 0;
+    outline: 0;
+}
+
+QListWidget#navigationList::item {
+    color: #D1D5DB;
+    padding: 10px 20px;
+    border: none;
+}
+
+QListWidget#navigationList::item:selected {
+    background-color: #2563EB;
+    color: #FFFFFF;
+}
+
+QListWidget#navigationList::item:hover:!selected {
+    background-color: #374151;
+}
+
+/* --- Barre supérieure --- */
+QWidget#topBar {
+    background-color: #FFFFFF;
+    border-bottom: 1px solid #E5E7EB;
+}
+
+QLabel#pageTitle {
+    font-size: 18px;
+    font-weight: 600;
+    color: #111827;
+}
+
+/* --- Contenu --- */
+QWidget#pageContainer {
+    background-color: #F4F6F8;
+}
+
+QLabel {
+    color: #1F2937;
+}
+
+QPushButton {
+    background-color: #2563EB;
+    color: #FFFFFF;
+    border: none;
+    border-radius: 4px;
+    padding: 6px 14px;
+}
+
+QPushButton:hover {
+    background-color: #1D4ED8;
+}
+
+QPushButton:disabled {
+    background-color: #9CA3AF;
+}
+
+QStatusBar {
+    background-color: #FFFFFF;
+    border-top: 1px solid #E5E7EB;
+    color: #6B7280;
+}

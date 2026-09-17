@@ -1,0 +1,149 @@
+"""Données de référence : rôles, permissions et matrice permissions -> rôles.
+
+Reflète telle quelle la matrice validée avec l'utilisateur. Ce ne sont pas
+des données métier saisies par un opérateur : c'est un jeu de données de
+référence nécessaire au fonctionnement du RBAC, réinjecté au premier
+démarrage de l'application.
+"""
+from __future__ import annotations
+
+from sqlalchemy.orm import Session
+
+from app.models.rbac import Permission, Role
+from app.utils.logging_config import get_logger
+
+logger = get_logger("db.seed")
+
+# (code, libellé, module)
+PERMISSIONS: list[tuple[str, str, str]] = [
+    ("DASHBOARD_VIEW", "Consulter le tableau de bord", "dashboard"),
+    ("ARTICLE_VIEW", "Consulter les articles", "articles"),
+    ("ARTICLE_CREATE", "Créer un article", "articles"),
+    ("ARTICLE_UPDATE", "Modifier un article", "articles"),
+    ("CATEGORY_VIEW", "Consulter les catégories", "categories"),
+    ("CATEGORY_CREATE", "Créer une catégorie", "categories"),
+    ("CATEGORY_UPDATE", "Modifier une catégorie", "categories"),
+    ("SUPPLIER_VIEW", "Consulter les fournisseurs", "fournisseurs"),
+    ("SUPPLIER_CREATE", "Créer un fournisseur", "fournisseurs"),
+    ("SUPPLIER_UPDATE", "Modifier un fournisseur", "fournisseurs"),
+    ("EXIT_REASON_VIEW", "Consulter les motifs de sortie", "motifs_sortie"),
+    ("EXIT_REASON_CREATE", "Créer un motif de sortie", "motifs_sortie"),
+    ("EXIT_REASON_UPDATE", "Modifier un motif de sortie", "motifs_sortie"),
+    ("STOCK_ENTRY_VIEW", "Consulter les entrées", "entrees"),
+    ("STOCK_ENTRY_CREATE", "Créer une entrée", "entrees"),
+    ("STOCK_ENTRY_UPDATE", "Modifier une entrée en brouillon", "entrees"),
+    ("STOCK_ENTRY_VALIDATE", "Valider une entrée", "entrees"),
+    ("STOCK_ENTRY_CANCEL", "Annuler une entrée validée", "entrees"),
+    ("STOCK_EXIT_VIEW", "Consulter les sorties", "sorties"),
+    ("STOCK_EXIT_CREATE", "Créer une sortie", "sorties"),
+    ("STOCK_EXIT_UPDATE", "Modifier une sortie en brouillon", "sorties"),
+    ("STOCK_EXIT_VALIDATE", "Valider une sortie", "sorties"),
+    ("STOCK_EXIT_CANCEL", "Annuler une sortie validée", "sorties"),
+    ("SALE_VIEW", "Consulter les ventes", "ventes"),
+    ("SALE_CREATE", "Créer une vente", "ventes"),
+    ("SALE_VALIDATE", "Valider une vente", "ventes"),
+    ("SALE_CANCEL", "Annuler une vente validée", "ventes"),
+    ("STOCK_MOVEMENT_VIEW", "Consulter les mouvements de stock", "mouvements"),
+    ("INVENTORY_VIEW", "Consulter les inventaires", "inventaires"),
+    ("INVENTORY_CREATE", "Créer un inventaire", "inventaires"),
+    ("INVENTORY_UPDATE", "Modifier un inventaire en brouillon", "inventaires"),
+    ("INVENTORY_VALIDATE", "Valider un inventaire", "inventaires"),
+    ("REPORT_VIEW", "Consulter les rapports", "rapports"),
+    ("REPORT_EXPORT", "Exporter un rapport", "rapports"),
+    ("USER_VIEW", "Consulter les utilisateurs", "utilisateurs"),
+    ("USER_CREATE", "Créer un utilisateur", "utilisateurs"),
+    ("USER_UPDATE", "Modifier un utilisateur", "utilisateurs"),
+    ("USER_ACTIVATE", "Activer/désactiver un compte utilisateur", "utilisateurs"),
+    ("USER_RESET_PASSWORD", "Réinitialiser le mot de passe d'un utilisateur", "utilisateurs"),
+    ("ROLE_VIEW", "Consulter les rôles et permissions", "roles"),
+    ("ROLE_UPDATE", "Modifier les permissions d'un rôle", "roles"),
+    ("SETTINGS_VIEW", "Consulter les paramètres", "parametres"),
+    ("SETTINGS_UPDATE", "Modifier les paramètres", "parametres"),
+    ("BACKUP_VIEW", "Consulter l'historique des sauvegardes", "sauvegardes"),
+    ("BACKUP_CREATE", "Lancer une sauvegarde", "sauvegardes"),
+    ("BACKUP_RESTORE", "Restaurer une sauvegarde", "restauration"),
+    ("AUDIT_VIEW", "Consulter le journal d'audit", "audit"),
+    ("LICENSE_VIEW", "Consulter la licence", "licences"),
+    ("LICENSE_ACTIVATE", "Activer une licence", "licences"),
+]
+
+_ALL_CODES = [code for code, _, _ in PERMISSIONS]
+
+_GESTIONNAIRE_STOCK_CODES = [
+    "DASHBOARD_VIEW",
+    "ARTICLE_VIEW", "ARTICLE_CREATE", "ARTICLE_UPDATE",
+    "CATEGORY_VIEW", "CATEGORY_CREATE", "CATEGORY_UPDATE",
+    "SUPPLIER_VIEW", "SUPPLIER_CREATE", "SUPPLIER_UPDATE",
+    "EXIT_REASON_VIEW",
+    "STOCK_ENTRY_VIEW", "STOCK_ENTRY_CREATE", "STOCK_ENTRY_UPDATE", "STOCK_ENTRY_VALIDATE",
+    "STOCK_EXIT_VIEW", "STOCK_EXIT_CREATE", "STOCK_EXIT_UPDATE", "STOCK_EXIT_VALIDATE",
+    "STOCK_MOVEMENT_VIEW",
+    "INVENTORY_VIEW", "INVENTORY_CREATE", "INVENTORY_UPDATE", "INVENTORY_VALIDATE",
+    "REPORT_VIEW", "REPORT_EXPORT",
+]
+
+_VENDEUR_CODES = [
+    "DASHBOARD_VIEW",
+    "ARTICLE_VIEW",
+    "SALE_VIEW", "SALE_CREATE", "SALE_VALIDATE",
+]
+
+_CONSULTATION_CODES = [
+    "DASHBOARD_VIEW",
+    "ARTICLE_VIEW", "CATEGORY_VIEW", "SUPPLIER_VIEW",
+    "STOCK_MOVEMENT_VIEW",
+    "REPORT_VIEW",
+]
+
+# nom du rôle -> codes de permission (Administrateur = toutes, calculé)
+ROLE_PERMISSIONS_MATRIX: dict[str, list[str]] = {
+    "Administrateur": _ALL_CODES,
+    "Gestionnaire de stock": _GESTIONNAIRE_STOCK_CODES,
+    "Vendeur": _VENDEUR_CODES,
+    "Consultation": _CONSULTATION_CODES,
+}
+
+ROLE_DESCRIPTIONS: dict[str, str] = {
+    "Administrateur": "Accès complet à l'application.",
+    "Gestionnaire de stock": "Gestion du catalogue et des mouvements de stock.",
+    "Vendeur": "Création et validation des ventes.",
+    "Consultation": "Accès en lecture seule aux données autorisées.",
+}
+
+
+def seed_reference_data(session: Session, force: bool = False) -> None:
+    """Insère rôles, permissions et associations rôle->permissions si absentes.
+
+    Ne touche à rien si des rôles existent déjà, sauf ``force=True`` (les
+    permissions éventuellement modifiées manuellement en base seraient alors
+    réalignées sur la matrice validée).
+    """
+    if not force and session.query(Role).count() > 0:
+        logger.info("Données de référence déjà présentes : seed ignoré.")
+        return
+
+    permissions_by_code: dict[str, Permission] = {
+        p.code: p for p in session.query(Permission).all()
+    }
+    for code, libelle, module in PERMISSIONS:
+        if code not in permissions_by_code:
+            permission = Permission(code=code, libelle=libelle, module=module)
+            session.add(permission)
+            permissions_by_code[code] = permission
+    session.flush()
+
+    roles_by_name: dict[str, Role] = {r.nom: r for r in session.query(Role).all()}
+    for role_name, permission_codes in ROLE_PERMISSIONS_MATRIX.items():
+        role = roles_by_name.get(role_name)
+        if role is None:
+            role = Role(nom=role_name, description=ROLE_DESCRIPTIONS[role_name])
+            session.add(role)
+            roles_by_name[role_name] = role
+        role.permissions = [permissions_by_code[code] for code in permission_codes]
+
+    session.flush()
+    logger.info(
+        "Données de référence initialisées : %d rôles, %d permissions.",
+        len(roles_by_name),
+        len(permissions_by_code),
+    )

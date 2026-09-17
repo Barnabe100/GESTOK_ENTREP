@@ -1,0 +1,7 @@
+# Dépendances de développement et de tests (en plus de requirements.txt)
+
+-r requirements.txt
+
+pytest==8.3.3
+pytest-qt==4.4.0
+pytest-cov==5.0.0

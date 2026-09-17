@@ -1,0 +1,24 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+build/
+dist/
+*.spec.bak
+
+# Données locales (jamais versionnées)
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+data/
+logs/
+.env
+
+# IDE
+.vscode/
+.idea/
