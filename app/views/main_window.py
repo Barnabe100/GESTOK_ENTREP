@@ -35,6 +35,7 @@ from app.views.pages.entries_page import EntriesPage
 from app.views.pages.exit_reasons_page import ExitReasonsPage
 from app.views.pages.exits_page import ExitsPage
 from app.views.pages.inventories_page import InventoriesPage
+from app.views.pages.licenses_page import LicensesPage
 from app.views.pages.placeholder_page import PlaceholderPage
 from app.views.pages.reports_page import ReportsPage
 from app.views.pages.sales_page import SalesPage
@@ -67,6 +68,7 @@ NAVIGATION_MODULES: list[str] = [
     "Utilisateurs",
     "Paramètres",
     "Sauvegardes",
+    "Licences",
 ]
 
 NAVIGATION_PERMISSIONS: dict[str, str] = {
@@ -84,6 +86,7 @@ NAVIGATION_PERMISSIONS: dict[str, str] = {
     "Utilisateurs": "USER_VIEW",
     "Paramètres": "SETTINGS_VIEW",
     "Sauvegardes": "BACKUP_VIEW",
+    "Licences": "LICENSE_VIEW",
 }
 
 
@@ -193,6 +196,8 @@ class MainWindow(QMainWindow):
             )
         if module_name == "Sauvegardes":
             return BackupsPage(self._services.backups, self._permissions)
+        if module_name == "Licences":
+            return LicensesPage(self._services.licenses, self._permissions)
         return PlaceholderPage(module_name)
 
     def _build_top_bar(self, parent: QWidget) -> QWidget:

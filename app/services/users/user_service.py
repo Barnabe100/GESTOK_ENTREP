@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from app.config.settings import Settings
 from app.db.session import session_scope
@@ -19,6 +19,9 @@ from app.security.password_hashing import hash_password
 from app.services.auth.permission_service import PermissionService
 from app.utils.exceptions import NotFoundError, ValidationError
 from app.utils.logging_config import get_logger
+
+if TYPE_CHECKING:
+    from app.services.licensing.license_service import LicenseService
 
 MIN_PASSWORD_LENGTH = 8
 
@@ -47,9 +50,15 @@ class UserSummary:
 
 
 class UserService:
-    def __init__(self, permission_service: PermissionService, settings: Optional[Settings] = None) -> None:
+    def __init__(
+        self,
+        permission_service: PermissionService,
+        settings: Optional[Settings] = None,
+        license_service: Optional["LicenseService"] = None,
+    ) -> None:
         self._permissions = permission_service
         self._settings = settings
+        self._license_service = license_service
 
     def _acting_user_id(self) -> Optional[int]:
         current_user = self._permissions.current_user
@@ -63,7 +72,14 @@ class UserService:
 
     def set_active(self, user_id: int, actif: bool) -> UserSummary:
         """Active ou désactive un compte. Toujours vérifié côté service,
-        indépendamment de ce que l'interface affiche ou masque."""
+        indépendamment de ce que l'interface affiche ou masque.
+
+        Activer un compte est le seul point d'entrée de l'application qui
+        augmente le nombre de comptes actifs (aucune création d'utilisateur
+        n'existe encore, voir docstring du module) : c'est donc ici, et
+        seulement ici, qu'est vérifiée la limite ``max_users`` de la licence
+        active (§12) — comptée sur les seuls comptes actifs, un compte
+        désactivé ne consommant pas de place."""
         self._permissions.require_permission("USER_ACTIVATE")
         acting_user_id = self._acting_user_id()
 
@@ -71,6 +87,9 @@ class UserService:
             user = session.get(User, user_id)
             if user is None:
                 raise NotFoundError(f"Utilisateur {user_id} introuvable.")
+
+            if actif and not user.actif and self._license_service is not None:
+                self._license_service.check_can_activate_user(session)
 
             user.actif = actif
             action = "USER_ACTIVATE" if actif else "USER_DEACTIVATE"

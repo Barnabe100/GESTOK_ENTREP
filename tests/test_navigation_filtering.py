@@ -6,7 +6,7 @@ EXPECTED_MODULES_BY_ROLE = {
     "Administrateur": {
         "Dashboard", "Articles", "Catégories", "Fournisseurs", "Motifs de sortie", "Entrées",
         "Sorties", "Ventes", "Mouvements", "Inventaires", "Rapports", "Utilisateurs", "Paramètres",
-        "Sauvegardes",
+        "Sauvegardes", "Licences",
     },
     "Gestionnaire de stock": {
         "Dashboard", "Articles", "Catégories", "Fournisseurs", "Entrées", "Sorties",
@@ -75,15 +75,14 @@ def test_only_administrateur_sees_utilisateurs_module(qtbot, login_as) -> None:
 
 def test_vendeur_cannot_reach_backup_restore_or_license_pages(qtbot, login_as) -> None:
     """Le cahier des charges exige explicitement : pas d'accès à la restauration des
-    sauvegardes ni à la gestion des licences pour le Vendeur. Le module Sauvegardes
-    (phase Sauvegardes) est bien dans la navigation, mais réservé à l'Administrateur ;
-    la gestion des licences n'existe pas encore (phase ultérieure), on vérifie donc pour
-    elle l'équivalent actuellement pertinent : aucune permission LICENSE_* n'est accordée."""
+    sauvegardes ni à la gestion des licences pour le Vendeur. Les modules Sauvegardes
+    et Licences sont bien dans la navigation, mais réservés à l'Administrateur."""
     stack, _ = login_as("Vendeur")
     window = _build_window(stack)
     qtbot.addWidget(window)
 
     assert "Sauvegardes" not in window.visible_modules
+    assert "Licences" not in window.visible_modules
     assert stack.permissions.has_permission("BACKUP_RESTORE") is False
     assert stack.permissions.has_permission("LICENSE_ACTIVATE") is False
     assert stack.permissions.has_permission("USER_VIEW") is False

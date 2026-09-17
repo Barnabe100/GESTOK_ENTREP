@@ -22,3 +22,8 @@ logs/
 # IDE
 .vscode/
 .idea/
+
+# Licences : clé privée de signature (jamais versionnée, voir
+# license_generator/README.md) et licences signées générées localement.
+license_generator/keys/
+*.lic

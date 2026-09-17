@@ -49,3 +49,10 @@ class DatabaseError(AppError):
 
 class ConfigurationError(AppError):
     """La configuration de l'application est invalide ou incomplète."""
+
+
+class LicenseError(AppError):
+    """La fonctionnalité demandée n'est pas autorisée par la licence active
+    (ou aucune licence valide n'est présente) — distincte de
+    ``PermissionDeniedError`` : l'utilisateur peut avoir la permission RBAC
+    requise et se voir néanmoins refuser l'accès faute de droit de licence."""
