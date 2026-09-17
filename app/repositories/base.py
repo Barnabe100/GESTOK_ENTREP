@@ -51,3 +51,14 @@ class SQLAlchemyRepository(AbstractRepository[ModelT]):
         self.session.add(entity)
         self.session.flush()
         return entity
+
+    def delete(self, entity: ModelT) -> None:
+        """Suppression physique. Volontairement absente de
+        :class:`AbstractRepository` (non abstraite) : la quasi-totalité des
+        entités métier de l'application ne sont jamais supprimées
+        physiquement (statut ACTIF/INACTIF ou ANNULEE à la place). Seuls les
+        services qui en ont explicitement besoin — ex. la suppression d'un
+        document encore en brouillon, sans aucun historique de mouvement à
+        préserver — y font appel."""
+        self.session.delete(entity)
+        self.session.flush()

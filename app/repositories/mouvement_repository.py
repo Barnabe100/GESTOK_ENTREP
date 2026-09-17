@@ -42,6 +42,19 @@ class MouvementRepository(SQLAlchemyRepository[MouvementStock]):
             query = query.filter(MouvementStock.type == type_mouvement)
         return query.order_by(MouvementStock.id).all()
 
+    def find_by_vente_ligne(
+        self, vente_ligne_id: int, type_mouvement: Optional[TypeMouvement] = None
+    ) -> list[MouvementStock]:
+        """Retrouve les mouvements générés pour une ligne de vente donnée —
+        utilisé notamment pour retrouver le mouvement VENTE d'origine lors
+        d'une annulation, afin de le lier via ``mouvement_origine_id``."""
+        query = self.session.query(MouvementStock).filter(
+            MouvementStock.vente_ligne_id == vente_ligne_id
+        )
+        if type_mouvement is not None:
+            query = query.filter(MouvementStock.type == type_mouvement)
+        return query.order_by(MouvementStock.id).all()
+
     def list_for_article(self, article_id: int) -> list[MouvementStock]:
         return (
             self.session.query(MouvementStock)

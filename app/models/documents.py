@@ -116,6 +116,7 @@ class Vente(TimestampMixin, Base):
     lignes: Mapped[list["VenteLigne"]] = relationship(
         "VenteLigne", back_populates="vente", cascade="all, delete-orphan"
     )
+    user: Mapped["User"] = relationship("User")
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"Vente(numero={self.numero!r}, statut={self.statut!r})"

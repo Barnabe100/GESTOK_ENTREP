@@ -56,6 +56,7 @@ PERMISSIONS: list[tuple[str, str, str]] = [
     ("STOCK_EXIT_CANCEL", "Annuler une sortie validée", "sorties"),
     ("SALE_VIEW", "Consulter les ventes", "ventes"),
     ("SALE_CREATE", "Créer une vente", "ventes"),
+    ("SALE_UPDATE", "Modifier une vente en brouillon", "ventes"),
     ("SALE_VALIDATE", "Valider une vente", "ventes"),
     ("SALE_CANCEL", "Annuler une vente validée", "ventes"),
     ("STOCK_MOVEMENT_VIEW", "Consulter les mouvements de stock", "mouvements"),
@@ -102,7 +103,7 @@ _GESTIONNAIRE_STOCK_CODES = [
 _VENDEUR_CODES = [
     "DASHBOARD_VIEW",
     "ARTICLE_VIEW",
-    "SALE_VIEW", "SALE_CREATE", "SALE_VALIDATE",
+    "SALE_VIEW", "SALE_CREATE", "SALE_UPDATE", "SALE_VALIDATE",
 ]
 
 _CONSULTATION_CODES = [

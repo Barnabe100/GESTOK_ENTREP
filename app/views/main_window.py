@@ -33,6 +33,7 @@ from app.views.pages.entries_page import EntriesPage
 from app.views.pages.exit_reasons_page import ExitReasonsPage
 from app.views.pages.exits_page import ExitsPage
 from app.views.pages.placeholder_page import PlaceholderPage
+from app.views.pages.sales_page import SalesPage
 from app.views.pages.suppliers_page import SuppliersPage
 from app.views.pages.users_page import UsersPage
 
@@ -159,6 +160,8 @@ class MainWindow(QMainWindow):
             return ExitsPage(
                 self._services.exits, self._services.exit_reasons, self._services.articles, self._permissions
             )
+        if module_name == "Ventes":
+            return SalesPage(self._services.sales, self._services.articles, self._permissions)
         return PlaceholderPage(module_name)
 
     def _build_top_bar(self, parent: QWidget) -> QWidget:
