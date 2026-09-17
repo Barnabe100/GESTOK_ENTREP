@@ -28,17 +28,21 @@ from app.resources import APP_ICON_PATH
 from app.services.registry import ServiceRegistry
 from app.views.change_password_dialog import ChangePasswordDialog
 from app.views.pages.categories_page import CategoriesPage
+from app.views.pages.exit_reasons_page import ExitReasonsPage
 from app.views.pages.placeholder_page import PlaceholderPage
 from app.views.pages.suppliers_page import SuppliersPage
 from app.views.pages.users_page import UsersPage
 
-# Ordre de navigation conforme au cahier des charges (§22), et permission
-# de consultation requise pour que chaque module apparaisse dans le menu.
+# Ordre de navigation conforme au cahier des charges (§22), complété par
+# « Motifs de sortie » (administration réservée à l'Administrateur, cf.
+# app/db/seed.py), et permission de consultation requise pour que chaque
+# module apparaisse dans le menu.
 NAVIGATION_MODULES: list[str] = [
     "Dashboard",
     "Articles",
     "Catégories",
     "Fournisseurs",
+    "Motifs de sortie",
     "Entrées",
     "Sorties",
     "Ventes",
@@ -54,6 +58,7 @@ NAVIGATION_PERMISSIONS: dict[str, str] = {
     "Articles": "ARTICLE_VIEW",
     "Catégories": "CATEGORY_VIEW",
     "Fournisseurs": "SUPPLIER_VIEW",
+    "Motifs de sortie": "STOCK_REASON_VIEW",
     "Entrées": "STOCK_ENTRY_VIEW",
     "Sorties": "STOCK_EXIT_VIEW",
     "Ventes": "SALE_VIEW",
@@ -137,6 +142,8 @@ class MainWindow(QMainWindow):
             return CategoriesPage(self._services.categories, self._permissions)
         if module_name == "Fournisseurs":
             return SuppliersPage(self._services.suppliers, self._permissions)
+        if module_name == "Motifs de sortie":
+            return ExitReasonsPage(self._services.exit_reasons, self._permissions)
         return PlaceholderPage(module_name)
 
     def _build_top_bar(self, parent: QWidget) -> QWidget:

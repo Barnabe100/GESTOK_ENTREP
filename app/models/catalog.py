@@ -55,13 +55,19 @@ class Supplier(TimestampMixin, Base):
 
 
 class ExitReason(TimestampMixin, Base):
-    """Motifs de sortie administrables (décision métier : table dédiée, cf §6)."""
+    """Motifs de sortie administrables (décision métier : table dédiée, cf §6).
+
+    Gestion réservée à l'Administrateur. Un motif actif sera proposé lors de
+    la création d'une sortie (module Sorties, phase ultérieure) ; un motif
+    désactivé reste visible dans l'historique mais n'est plus proposé pour une
+    nouvelle sortie — jamais de suppression physique.
+    """
 
     __tablename__ = "motifs_sortie"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    code: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
-    libelle: Mapped[str] = mapped_column(String(150), nullable=False)
+    libelle: Mapped[str] = mapped_column(String(150), unique=True, nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     statut: Mapped[StatutActifInactif] = mapped_column(
         SAEnum(StatutActifInactif, native_enum=False, length=20, name="statut_actif_inactif"),
         default=StatutActifInactif.ACTIF,
@@ -69,7 +75,7 @@ class ExitReason(TimestampMixin, Base):
     )
 
     def __repr__(self) -> str:  # pragma: no cover
-        return f"ExitReason(code={self.code!r})"
+        return f"ExitReason(libelle={self.libelle!r})"
 
 
 class Article(TimestampMixin, Base):

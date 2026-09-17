@@ -4,8 +4,8 @@ from app.views.main_window import MainWindow
 
 EXPECTED_MODULES_BY_ROLE = {
     "Administrateur": {
-        "Dashboard", "Articles", "Catégories", "Fournisseurs", "Entrées", "Sorties",
-        "Ventes", "Mouvements", "Inventaires", "Rapports", "Utilisateurs", "Paramètres",
+        "Dashboard", "Articles", "Catégories", "Fournisseurs", "Motifs de sortie", "Entrées",
+        "Sorties", "Ventes", "Mouvements", "Inventaires", "Rapports", "Utilisateurs", "Paramètres",
     },
     "Gestionnaire de stock": {
         "Dashboard", "Articles", "Catégories", "Fournisseurs", "Entrées", "Sorties",
@@ -34,6 +34,7 @@ def test_gestionnaire_stock_navigation_excludes_ventes_utilisateurs_parametres(q
 
     assert set(window.visible_modules) == EXPECTED_MODULES_BY_ROLE["Gestionnaire de stock"]
     assert "Ventes" not in window.visible_modules
+    assert "Motifs de sortie" not in window.visible_modules  # gestion réservée à l'Administrateur
     assert "Utilisateurs" not in window.visible_modules
     assert "Paramètres" not in window.visible_modules
 
