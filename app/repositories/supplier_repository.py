@@ -6,7 +6,7 @@ View -> Service -> Repository -> Model), à l'identique du module Catégories.
 """
 from __future__ import annotations
 
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.models.catalog import Supplier
@@ -33,3 +33,12 @@ class SupplierRepository(SQLAlchemyRepository[Supplier]):
         if not include_inactive:
             query = query.filter(Supplier.statut == StatutActifInactif.ACTIF)
         return query.order_by(Supplier.nom).all()
+
+    def count_active(self) -> int:
+        """Compteur ciblé pour le Dashboard (§8) — évite de charger tous les
+        fournisseurs juste pour en compter le nombre."""
+        return (
+            self.session.query(func.count(Supplier.id))
+            .filter(Supplier.statut == StatutActifInactif.ACTIF)
+            .scalar() or 0
+        )

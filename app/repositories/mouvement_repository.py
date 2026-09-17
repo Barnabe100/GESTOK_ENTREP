@@ -103,3 +103,16 @@ class MouvementRepository(SQLAlchemyRepository[MouvementStock]):
             .order_by(MouvementStock.date_heure.desc(), MouvementStock.id.desc())
             .all()
         )
+
+    def list_recent(self, limit: int) -> list[MouvementStock]:
+        """Les ``limit`` mouvements les plus récents, tous articles confondus
+        — utilisé par la section « Activité récente » du Dashboard (§6).
+        ``LIMIT`` appliqué en SQL, jamais un chargement de l'historique
+        complet suivi d'un découpage en Python (§8)."""
+        return (
+            self.session.query(MouvementStock)
+            .options(joinedload(MouvementStock.article), joinedload(MouvementStock.user))
+            .order_by(MouvementStock.date_heure.desc(), MouvementStock.id.desc())
+            .limit(limit)
+            .all()
+        )

@@ -17,6 +17,7 @@ from app.services.auth.auth_service import AuthService
 from app.services.auth.permission_service import PermissionService
 from app.services.backups.backup_service import BackupService
 from app.services.categories.category_service import CategoryService
+from app.services.dashboard.dashboard_service import DashboardService
 from app.services.entries.entry_service import EntryService
 from app.services.exit_reasons.exit_reason_service import ExitReasonService
 from app.services.exits.exit_service import ExitService
@@ -47,6 +48,7 @@ class ServiceRegistry:
     reports: ReportService
     backups: BackupService
     licenses: LicenseService
+    dashboard: DashboardService
 
 
 def build_service_registry(
@@ -64,6 +66,7 @@ def build_service_registry(
     permission_service = PermissionService(auth_service, permission_to_feature=PERMISSION_TO_FEATURE)
     license_service = LicenseService(permission_service, settings, public_key_bytes=license_public_key_bytes)
     permission_service.set_feature_gate(FeatureGate(license_service))
+    report_service = ReportService(permission_service, settings)
 
     return ServiceRegistry(
         auth=auth_service,
@@ -77,7 +80,8 @@ def build_service_registry(
         exits=ExitService(permission_service, settings),
         sales=SaleService(permission_service, settings),
         inventory=InventoryService(permission_service, settings),
-        reports=ReportService(permission_service, settings),
+        reports=report_service,
         backups=BackupService(permission_service, settings),
         licenses=license_service,
+        dashboard=DashboardService(permission_service, report_service, settings),
     )

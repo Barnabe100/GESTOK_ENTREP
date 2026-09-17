@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.catalog import Category
@@ -33,3 +34,12 @@ class CategoryRepository(SQLAlchemyRepository[Category]):
         if not include_inactive:
             query = query.filter(Category.statut == StatutActifInactif.ACTIF)
         return query.order_by(Category.nom).all()
+
+    def count_active(self) -> int:
+        """Compteur ciblé pour le Dashboard (§8) — évite de charger toutes
+        les catégories juste pour en compter le nombre."""
+        return (
+            self.session.query(func.count(Category.id))
+            .filter(Category.statut == StatutActifInactif.ACTIF)
+            .scalar() or 0
+        )

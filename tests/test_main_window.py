@@ -1,4 +1,6 @@
 from app.views.main_window import MainWindow
+from app.views.pages.dashboard_page import DashboardPage
+from app.views.pages.reports_page import ReportsPage
 
 
 def _build_window(stack) -> MainWindow:
@@ -65,3 +67,60 @@ def test_logout_button_logs_out_and_emits_signal(qtbot, login_as) -> None:
 
     assert signal_received == [True]
     assert stack.auth.is_authenticated is False
+
+
+def test_dashboard_module_renders_a_real_dashboard_page(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+
+    dashboard_index = window.visible_modules.index("Dashboard")
+    assert isinstance(window.page_stack.widget(dashboard_index), DashboardPage)
+
+
+def test_switch_to_module_moves_navigation_and_returns_true(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+
+    result = window.switch_to_module("Ventes")
+
+    assert result is True
+    assert window.page_stack.currentIndex() == window.visible_modules.index("Ventes")
+
+
+def test_switch_to_module_returns_false_for_a_module_the_user_cannot_see(qtbot, login_as) -> None:
+    stack, _ = login_as("Vendeur")
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+
+    result = window.switch_to_module("Utilisateurs")
+
+    assert result is False
+
+
+def test_switch_to_module_with_report_preset_preselects_report_type(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+
+    window.switch_to_module("Rapports", "Stock faible")
+
+    reports_index = window.visible_modules.index("Rapports")
+    reports_page = window.page_stack.widget(reports_index)
+    assert isinstance(reports_page, ReportsPage)
+    assert reports_page.report_combo.currentText() == "Stock faible"
+
+
+def test_dashboard_navigate_callback_switches_main_window_tab(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+
+    dashboard_index = window.visible_modules.index("Dashboard")
+    dashboard_page = window.page_stack.widget(dashboard_index)
+    assert isinstance(dashboard_page, DashboardPage)
+
+    dashboard_page.navigation_buttons["Ventes"].click()
+
+    assert window.page_stack.currentIndex() == window.visible_modules.index("Ventes")

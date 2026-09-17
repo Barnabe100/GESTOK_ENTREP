@@ -10,6 +10,8 @@ autorisé.
 """
 from __future__ import annotations
 
+from typing import Optional
+
 from PySide6.QtCore import QSize, QTimer, Signal
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
@@ -31,6 +33,7 @@ from app.views.change_password_dialog import ChangePasswordDialog
 from app.views.pages.articles_page import ArticlesPage
 from app.views.pages.backups_page import BackupsPage
 from app.views.pages.categories_page import CategoriesPage
+from app.views.pages.dashboard_page import DashboardPage
 from app.views.pages.entries_page import EntriesPage
 from app.views.pages.exit_reasons_page import ExitReasonsPage
 from app.views.pages.exits_page import ExitsPage
@@ -165,6 +168,8 @@ class MainWindow(QMainWindow):
         return container
 
     def _build_page(self, module_name: str) -> QWidget:
+        if module_name == "Dashboard":
+            return DashboardPage(self._services.dashboard, self._permissions, on_navigate=self.switch_to_module)
         if module_name == "Utilisateurs":
             return UsersPage(self._services.users, self._permissions)
         if module_name == "Catégories":
@@ -234,6 +239,25 @@ class MainWindow(QMainWindow):
             return
         self.page_stack.setCurrentIndex(index)
         self.page_title_label.setText(self.visible_modules[index])
+
+    def switch_to_module(self, module_name: str, report_preset: Optional[str] = None) -> bool:
+        """Bascule vers un autre module de la navigation — utilisé par les
+        accès rapides du Dashboard (§12 de la phase Dashboard). Retourne
+        ``False`` sans rien faire si le module n'est pas visible pour
+        l'utilisateur courant (jamais d'accès à un module non autorisé, même
+        via ce raccourci — même filtrage que la navigation elle-même).
+        ``report_preset``, si fourni et que la cible est « Rapports »,
+        présélectionne le type de rapport correspondant (ex. « Stock
+        faible »)."""
+        if module_name not in self.visible_modules:
+            return False
+        index = self.visible_modules.index(module_name)
+        self.navigation_list.setCurrentRow(index)
+        if report_preset is not None and module_name == "Rapports":
+            page = self.page_stack.widget(index)
+            if isinstance(page, ReportsPage):
+                page.select_report_type(report_preset)
+        return True
 
     def _on_change_password_clicked(self) -> None:
         dialog = ChangePasswordDialog(self._services.auth, parent=self)

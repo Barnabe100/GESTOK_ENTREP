@@ -2,10 +2,16 @@
 
 Seules les permissions listées ici sont soumises au contrôle de licence
 (``FeatureGate``, via ``PermissionService``) ; toute permission absente de ce
-dictionnaire reste régie uniquement par le RBAC (ex. ``DASHBOARD_VIEW``,
-``SETTINGS_*``, ``ROLE_*``). ``LICENSE_VIEW``/``LICENSE_ACTIVATE`` sont
-volontairement exclues : l'écran de licence doit rester accessible même sans
-licence valide, sous peine de rendre l'activation elle-même impossible.
+dictionnaire reste régie uniquement par le RBAC (ex. ``SETTINGS_*``,
+``ROLE_*``). ``LICENSE_VIEW``/``LICENSE_ACTIVATE`` sont volontairement
+exclues : l'écran de licence doit rester accessible même sans licence
+valide, sous peine de rendre l'activation elle-même impossible.
+
+``DASHBOARD_VIEW`` est mappée sur ``FEATURE_REPORTS`` (phase Dashboard) :
+le Dashboard est une couche de synthèse/visualisation des mêmes données que
+les rapports, il réutilise donc la fonctionnalité de licence déjà existante
+plutôt que d'en créer une nouvelle (aucune fonctionnalité de licence ne doit
+être inventée pour un module qui n'apporte pas de droit métier distinct).
 """
 from __future__ import annotations
 
@@ -26,6 +32,7 @@ from app.services.licensing.license_payload import (
 )
 
 PERMISSION_TO_FEATURE: dict[str, str] = {
+    "DASHBOARD_VIEW": FEATURE_REPORTS,
     "ARTICLE_VIEW": FEATURE_ARTICLES,
     "ARTICLE_CREATE": FEATURE_ARTICLES,
     "ARTICLE_UPDATE": FEATURE_ARTICLES,

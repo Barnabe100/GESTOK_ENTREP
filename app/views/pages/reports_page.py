@@ -137,6 +137,15 @@ class ReportsPage(QWidget):
         self._reload_motif_combo()
         self._on_report_changed(0)
 
+    def select_report_type(self, report_name: str) -> None:
+        """Présélectionne un type de rapport — utilisé par le Dashboard pour
+        les accès rapides (§12 de la phase Dashboard, ex. « Stock faible »
+        -> rapport Stock faible). Pure commodité d'affichage, aucune logique
+        métier : déclenche le même chemin que si l'utilisateur avait changé
+        le sélecteur lui-même."""
+        if report_name in _REPORTS:
+            self.report_combo.setCurrentText(report_name)
+
     # -- construction des filtres ---------------------------------------------
 
     def _build_filter_widgets(self) -> None:

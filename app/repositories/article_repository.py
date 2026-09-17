@@ -10,12 +10,13 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload
 
 from app.models.catalog import Article, Category
 from app.models.enums import StatutActifInactif
 from app.repositories.base import SQLAlchemyRepository
+from app.utils.money import round_money
 
 
 class ArticleRepository(SQLAlchemyRepository[Article]):
@@ -68,3 +69,68 @@ class ArticleRepository(SQLAlchemyRepository[Article]):
         if out_of_stock_only:
             query = query.filter(Article.stock_actuel == Decimal("0"))
         return query.order_by(Article.reference).all()
+
+    # -- agrégations ciblées pour le Dashboard (§8 : COUNT/SUM en SQL plutôt
+    #    que charger des objets complets juste pour un total ou un compteur) --
+
+    def count_active(self) -> int:
+        return (
+            self.session.query(func.count(Article.id))
+            .filter(Article.statut == StatutActifInactif.ACTIF)
+            .scalar() or 0
+        )
+
+    def count_low_stock(self) -> int:
+        return (
+            self.session.query(func.count(Article.id))
+            .filter(Article.statut == StatutActifInactif.ACTIF, Article.stock_actuel <= Article.stock_min)
+            .scalar() or 0
+        )
+
+    def count_out_of_stock(self) -> int:
+        return (
+            self.session.query(func.count(Article.id))
+            .filter(Article.statut == StatutActifInactif.ACTIF, Article.stock_actuel == Decimal("0"))
+            .scalar() or 0
+        )
+
+    def sum_stock_value(self, include_inactive: bool = False) -> Decimal:
+        """``somme(stock_actuel × CMUP)`` sur les colonnes déjà stockées —
+        strictement la même formule que ``ReportService.StockStateRow``,
+        jamais un nouveau calcul de CMUP. Ne charge que les deux colonnes
+        nécessaires (pas les entités ``Article`` complètes avec leurs
+        relations) ; la somme est faite en Python avec ``Decimal`` plutôt
+        qu'en SQL (SQLite n'a pas d'arithmétique décimale exacte — un
+        ``SUM`` SQL sur ces colonnes utiliserait une arithmétique flottante,
+        inacceptable pour un montant financier)."""
+        query = self.session.query(Article.stock_actuel, Article.cout_moyen_pondere)
+        if not include_inactive:
+            query = query.filter(Article.statut == StatutActifInactif.ACTIF)
+        total = sum((stock * cmup for stock, cmup in query), Decimal("0"))
+        return round_money(total)
+
+    def sum_stock_quantity(self, include_inactive: bool = False) -> Decimal:
+        query = self.session.query(Article.stock_actuel)
+        if not include_inactive:
+            query = query.filter(Article.statut == StatutActifInactif.ACTIF)
+        return sum((row[0] for row in query), Decimal("0"))
+
+    def sum_stock_value_by_category(self, include_inactive: bool = False) -> list[tuple[str, Decimal]]:
+        """Valeur du stock groupée par catégorie (§5.D), triée par valeur
+        décroissante. Requête ciblée (3 colonnes, jointure catégorie
+        uniquement) plutôt que la construction complète des lignes de
+        valorisation ; somme en Python en ``Decimal`` pour la même raison
+        que ``sum_stock_value``."""
+        query = self.session.query(Category.nom, Article.stock_actuel, Article.cout_moyen_pondere).join(
+            Article.category
+        )
+        if not include_inactive:
+            query = query.filter(Article.statut == StatutActifInactif.ACTIF)
+
+        totals: dict[str, Decimal] = {}
+        for category_nom, stock, cmup in query:
+            totals[category_nom] = totals.get(category_nom, Decimal("0")) + stock * cmup
+
+        rows = [(nom, round_money(value)) for nom, value in totals.items()]
+        rows.sort(key=lambda row: row[1], reverse=True)
+        return rows
