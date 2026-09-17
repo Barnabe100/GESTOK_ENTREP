@@ -7,12 +7,19 @@ démarrage de l'application.
 """
 from __future__ import annotations
 
+import secrets
+from typing import Optional
+
 from sqlalchemy.orm import Session
 
 from app.models.rbac import Permission, Role
+from app.models.user import User
+from app.security.password_hashing import hash_password
 from app.utils.logging_config import get_logger
 
 logger = get_logger("db.seed")
+
+INITIAL_ADMIN_USERNAME = "admin"
 
 # (code, libellé, module)
 PERMISSIONS: list[tuple[str, str, str]] = [
@@ -147,3 +154,34 @@ def seed_reference_data(session: Session, force: bool = False) -> None:
         len(roles_by_name),
         len(permissions_by_code),
     )
+
+
+def seed_initial_admin(session: Session) -> Optional[str]:
+    """Crée le compte Administrateur initial si aucun utilisateur n'existe.
+
+    Le mot de passe est généré aléatoirement (jamais stocké en clair) et
+    retourné une seule fois à l'appelant, à charge pour lui de le
+    communiquer à l'opérateur (journal de démarrage). ``must_change_password``
+    force son changement dès la première connexion.
+
+    Retourne le mot de passe généré, ou None si un utilisateur existe déjà
+    (aucune action effectuée).
+    """
+    if session.query(User).count() > 0:
+        return None
+
+    admin_role = session.query(Role).filter_by(nom="Administrateur").one()
+    generated_password = secrets.token_urlsafe(12)
+
+    admin_user = User(
+        username=INITIAL_ADMIN_USERNAME,
+        password_hash=hash_password(generated_password),
+        role_id=admin_role.id,
+        actif=True,
+        must_change_password=True,
+    )
+    session.add(admin_user)
+    session.flush()
+
+    logger.info("Compte administrateur initial créé : %r", INITIAL_ADMIN_USERNAME)
+    return generated_password

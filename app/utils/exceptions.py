@@ -28,6 +28,21 @@ class PermissionDeniedError(AppError):
     """L'utilisateur courant n'a pas la permission requise."""
 
 
+class AuthenticationError(AppError):
+    """Échec d'authentification."""
+
+
+class InvalidCredentialsError(AuthenticationError):
+    """Identifiant ou mot de passe invalide.
+
+    Volontairement le même type d'exception pour un utilisateur inconnu et
+    pour un mot de passe erroné (ne jamais révéler si un identifiant existe)."""
+
+
+class AccountDisabledError(AuthenticationError):
+    """Le compte existe et les identifiants sont corrects, mais il est désactivé."""
+
+
 class DatabaseError(AppError):
     """Erreur d'accès aux données (connexion, transaction, intégrité)."""
 

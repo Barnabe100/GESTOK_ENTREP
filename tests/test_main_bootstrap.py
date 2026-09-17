@@ -2,9 +2,11 @@ import logging
 import sys
 
 from app.config.settings import Settings
+from app.db.seed import INITIAL_ADMIN_USERNAME
 from app.db.session import session_scope
 from app.main import bootstrap
 from app.models.rbac import Role
+from app.models.user import User
 from app.utils import error_handler
 
 
@@ -38,3 +40,21 @@ def test_bootstrap_is_idempotent(test_settings: Settings) -> None:
 
     with session_scope(test_settings) as session:
         assert session.query(Role).count() == 4
+
+
+def test_bootstrap_creates_initial_admin_account(test_settings: Settings) -> None:
+    bootstrap()
+
+    with session_scope(test_settings) as session:
+        admin = session.query(User).filter_by(username=INITIAL_ADMIN_USERNAME).one()
+        assert admin.role.nom == "Administrateur"
+        assert admin.must_change_password is True
+
+
+def test_bootstrap_does_not_recreate_admin_on_second_run(test_settings: Settings) -> None:
+    bootstrap()
+    bootstrap()
+
+    with session_scope(test_settings) as session:
+        count = session.query(User).filter_by(username=INITIAL_ADMIN_USERNAME).count()
+    assert count == 1

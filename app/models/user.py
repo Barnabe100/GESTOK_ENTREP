@@ -15,6 +15,7 @@ class User(TimestampMixin, Base):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     role_id: Mapped[int] = mapped_column(ForeignKey("roles.id"), nullable=False)
     actif: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     dernier_login: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     role: Mapped["Role"] = relationship("Role", back_populates="users")

@@ -34,6 +34,14 @@ def captured_error_logs() -> Iterator[_ListHandler]:
         logger.setLevel(previous_level)
 
 
+@pytest.fixture(autouse=True)
+def _no_blocking_dialog(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``_show_error_dialog`` appelle ``QMessageBox.exec()``, qui bloque en attendant un
+    clic utilisateur. D'autres fichiers de test créent une QApplication réelle (via
+    qtbot) : sans ce mock, ces tests bloqueraient indéfiniment en exécution automatisée."""
+    monkeypatch.setattr("app.utils.error_handler._show_error_dialog", lambda *a, **k: None)
+
+
 def test_install_global_exception_handler_sets_excepthook() -> None:
     original = sys.excepthook
     try:
@@ -63,12 +71,12 @@ def test_handle_exception_logs_unexpected_error(captured_error_logs: _ListHandle
     assert any("boom" in message for message in messages)
 
 
-def test_handle_exception_does_not_raise_without_qapplication(
+def test_handle_exception_never_raises_for_app_errors(
     captured_error_logs: _ListHandler,
 ) -> None:
-    """En l'absence de QApplication active, le gestionnaire ne doit jamais lever."""
+    """``handle_exception`` ne doit jamais lever, quelle que soit l'exception d'origine."""
     try:
-        raise ValidationError("test sans interface graphique")
+        raise ValidationError("erreur métier")
     except ValidationError:
         handle_exception(*sys.exc_info())  # ne doit pas lever
 
