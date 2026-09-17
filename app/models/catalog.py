@@ -86,6 +86,10 @@ class Article(TimestampMixin, Base):
         CheckConstraint("cout_moyen_pondere >= 0", name="ck_article_cmup_positif"),
         CheckConstraint("stock_actuel >= 0", name="ck_article_stock_actuel_positif"),
         CheckConstraint("stock_min >= 0", name="ck_article_stock_min_positif"),
+        CheckConstraint("stock_max IS NULL OR stock_max >= 0", name="ck_article_stock_max_positif"),
+        CheckConstraint(
+            "stock_max IS NULL OR stock_max >= stock_min", name="ck_article_stock_max_gte_min"
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -104,6 +108,7 @@ class Article(TimestampMixin, Base):
     stock_max: Mapped[Optional[Decimal]] = mapped_column(QUANTITY, nullable=True)
     emplacement: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     description: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
+    code_barres: Mapped[Optional[str]] = mapped_column(String(50), unique=True, nullable=True)
     statut: Mapped[StatutActifInactif] = mapped_column(
         SAEnum(StatutActifInactif, native_enum=False, length=20, name="statut_actif_inactif"),
         default=StatutActifInactif.ACTIF,

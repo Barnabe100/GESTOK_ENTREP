@@ -27,6 +27,8 @@ PERMISSIONS: list[tuple[str, str, str]] = [
     ("ARTICLE_VIEW", "Consulter les articles", "articles"),
     ("ARTICLE_CREATE", "Créer un article", "articles"),
     ("ARTICLE_UPDATE", "Modifier un article", "articles"),
+    ("ARTICLE_ACTIVATE", "Activer un article", "articles"),
+    ("ARTICLE_DEACTIVATE", "Désactiver un article", "articles"),
     ("CATEGORY_VIEW", "Consulter les catégories", "categories"),
     ("CATEGORY_CREATE", "Créer une catégorie", "categories"),
     ("CATEGORY_UPDATE", "Modifier une catégorie", "categories"),
@@ -84,7 +86,7 @@ _ALL_CODES = [code for code, _, _ in PERMISSIONS]
 
 _GESTIONNAIRE_STOCK_CODES = [
     "DASHBOARD_VIEW",
-    "ARTICLE_VIEW", "ARTICLE_CREATE", "ARTICLE_UPDATE",
+    "ARTICLE_VIEW", "ARTICLE_CREATE", "ARTICLE_UPDATE", "ARTICLE_ACTIVATE", "ARTICLE_DEACTIVATE",
     "CATEGORY_VIEW", "CATEGORY_CREATE", "CATEGORY_UPDATE", "CATEGORY_ACTIVATE", "CATEGORY_DEACTIVATE",
     "SUPPLIER_VIEW", "SUPPLIER_CREATE", "SUPPLIER_UPDATE", "SUPPLIER_ACTIVATE", "SUPPLIER_DEACTIVATE",
     # Les motifs de sortie (STOCK_REASON_*) sont réservés à l'Administrateur (décision

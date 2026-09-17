@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from app.config.settings import Settings
+from app.services.articles.article_service import ArticleService
 from app.services.auth.auth_service import AuthService
 from app.services.auth.permission_service import PermissionService
 from app.services.categories.category_service import CategoryService
@@ -28,6 +29,7 @@ class ServiceRegistry:
     categories: CategoryService
     suppliers: SupplierService
     exit_reasons: ExitReasonService
+    articles: ArticleService
 
 
 def build_service_registry(settings: Optional[Settings] = None) -> ServiceRegistry:
@@ -40,4 +42,5 @@ def build_service_registry(settings: Optional[Settings] = None) -> ServiceRegist
         categories=CategoryService(permission_service, settings),
         suppliers=SupplierService(permission_service, settings),
         exit_reasons=ExitReasonService(permission_service, settings),
+        articles=ArticleService(permission_service, settings),
     )

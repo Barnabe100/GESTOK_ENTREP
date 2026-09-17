@@ -7,9 +7,39 @@ modal).
 """
 from __future__ import annotations
 
-from typing import Callable
+from decimal import Decimal, InvalidOperation
+from typing import Callable, Optional
 
 from PySide6.QtWidgets import QDialog, QMessageBox, QWidget
+
+from app.utils.exceptions import ValidationError
+
+
+def parse_decimal(text: str, field_label: str) -> Decimal:
+    """Convertit la saisie d'un champ numérique en ``Decimal``.
+
+    Simple conversion de type (accepte la virgule décimale française) : les
+    règles métier (signe, bornes) restent de la responsabilité du service
+    appelé ensuite. Lève :class:`ValidationError`, capturée comme toute autre
+    erreur métier par l'appelant (``except AppError``).
+    """
+    normalized = (text or "").strip().replace(",", ".")
+    if not normalized:
+        raise ValidationError(f"Le champ « {field_label} » est obligatoire.")
+    try:
+        return Decimal(normalized)
+    except InvalidOperation as exc:
+        raise ValidationError(f"Le champ « {field_label} » doit être un nombre valide.") from exc
+
+
+def parse_optional_decimal(text: str, field_label: str) -> Optional[Decimal]:
+    normalized = (text or "").strip().replace(",", ".")
+    if not normalized:
+        return None
+    try:
+        return Decimal(normalized)
+    except InvalidOperation as exc:
+        raise ValidationError(f"Le champ « {field_label} » doit être un nombre valide.") from exc
 
 
 def confirm_action(parent: QWidget, title: str, message: str) -> bool:

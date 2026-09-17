@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 from app.resources import APP_ICON_PATH
 from app.services.registry import ServiceRegistry
 from app.views.change_password_dialog import ChangePasswordDialog
+from app.views.pages.articles_page import ArticlesPage
 from app.views.pages.categories_page import CategoriesPage
 from app.views.pages.exit_reasons_page import ExitReasonsPage
 from app.views.pages.placeholder_page import PlaceholderPage
@@ -144,6 +145,10 @@ class MainWindow(QMainWindow):
             return SuppliersPage(self._services.suppliers, self._permissions)
         if module_name == "Motifs de sortie":
             return ExitReasonsPage(self._services.exit_reasons, self._permissions)
+        if module_name == "Articles":
+            return ArticlesPage(
+                self._services.articles, self._services.categories, self._services.suppliers, self._permissions
+            )
         return PlaceholderPage(module_name)
 
     def _build_top_bar(self, parent: QWidget) -> QWidget:
