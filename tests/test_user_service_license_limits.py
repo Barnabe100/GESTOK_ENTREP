@@ -1,14 +1,21 @@
 """Limite ``max_users`` de la licence active, appliquée par
-``UserService.set_active`` (§12) — seul point d'entrée actuel de
-l'application qui augmente le nombre de comptes actifs (aucune création
-d'utilisateur n'existe encore, voir app/services/users/user_service.py).
+``UserService.set_active`` ET ``UserService.create_user(actif=True)`` (§12) —
+les deux points d'entrée de l'application qui augmentent le nombre de
+comptes actifs (voir app/services/users/user_service.py).
 
 Règle retenue : seuls les comptes actifs (``User.actif is True``) comptent
 dans la limite ; un compte désactivé ne consomme pas de place."""
 import pytest
 
+from app.db.session import session_scope
+from app.models.rbac import Role
 from app.services.licensing.license_payload import KNOWN_FEATURES
 from app.utils.exceptions import ValidationError
+
+
+def _role_id(role_name: str) -> int:
+    with session_scope(None) as session:
+        return session.query(Role).filter_by(nom=role_name).one().id
 
 
 def _activate_license_with_max_users(stack, license_envelope_factory, max_users: int) -> None:
@@ -76,3 +83,40 @@ def test_reactivating_an_already_active_user_is_a_no_op_not_blocked(login_as, li
     updated = stack.users.set_active(current_user.id, True)
 
     assert updated.actif is True
+
+
+# -- création d'utilisateur (create_user) ---------------------------------------------
+
+
+def test_create_user_active_refused_when_it_would_exceed_max_users(login_as, license_envelope_factory) -> None:
+    stack, _ = login_as("Administrateur")  # 1 compte actif (l'administrateur connecté)
+    _activate_license_with_max_users(stack, license_envelope_factory, max_users=1)
+    role_id = _role_id("Vendeur")
+
+    with pytest.raises(ValidationError):
+        stack.users.create_user("nouveau_refuse", "MotDePasse!23", role_id, actif=True)
+
+    usernames = {u.username for u in stack.users.list_users()}
+    assert "nouveau_refuse" not in usernames  # rien n'a été créé
+
+
+def test_create_user_active_succeeds_when_still_under_max_users(login_as, license_envelope_factory) -> None:
+    stack, _ = login_as("Administrateur")  # 1 compte actif
+    _activate_license_with_max_users(stack, license_envelope_factory, max_users=2)
+    role_id = _role_id("Vendeur")
+
+    summary = stack.users.create_user("nouveau_accepte", "MotDePasse!23", role_id, actif=True)
+
+    assert summary.actif is True
+
+
+def test_create_user_inactive_is_never_blocked_by_the_limit(login_as, license_envelope_factory) -> None:
+    """Créer un compte inactif n'augmente pas le nombre de comptes actifs :
+    jamais concerné par la limite, même une licence déjà à sa limite."""
+    stack, _ = login_as("Administrateur")
+    _activate_license_with_max_users(stack, license_envelope_factory, max_users=1)  # déjà à sa limite
+    role_id = _role_id("Vendeur")
+
+    summary = stack.users.create_user("nouveau_inactif", "MotDePasse!23", role_id, actif=False)
+
+    assert summary.actif is False

@@ -1,7 +1,14 @@
+import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QTableWidgetItem
 
 from app.views.pages.users_page import UsersPage
+
+
+@pytest.fixture(autouse=True)
+def _no_blocking_dialogs(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.views.pages.users_page.QMessageBox.information", lambda *a, **k: None)
+    monkeypatch.setattr("app.views.pages.users_page.QMessageBox.warning", lambda *a, **k: None)
 
 
 def test_users_page_lists_users_for_administrateur(qtbot, login_as, make_user) -> None:
@@ -74,3 +81,79 @@ def test_users_page_action_is_blocked_even_if_button_force_enabled(
     # Le service doit avoir refusé l'action : le compte cible reste actif en base.
     target_summary = next(u for u in admin_stack.users.list_users() if u.username == "victime_ui")
     assert target_summary.actif is True
+
+
+# -- création d'utilisateur ----------------------------------------------------------
+
+
+def test_add_button_enabled_for_administrateur(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = UsersPage(stack.users, stack.permissions)
+    qtbot.addWidget(page)
+
+    assert page.add_button.isEnabled() is True
+
+
+def test_add_button_disabled_for_vendeur(qtbot, login_as) -> None:
+    stack, _ = login_as("Vendeur")
+    page = UsersPage(stack.users, stack.permissions)
+    qtbot.addWidget(page)
+
+    assert page.add_button.isEnabled() is False
+
+
+def test_submit_create_user_succeeds_and_refreshes_list(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = UsersPage(stack.users, stack.permissions)
+    qtbot.addWidget(page)
+    role_id = next(r.id for r in stack.users.list_roles() if r.nom == "Vendeur")
+
+    result = page._submit_create_user("nouveau_via_ui", "MotDePasse!23", role_id, True)
+    page.refresh()
+
+    assert result is True
+    usernames = {page.table.item(row, 0).text() for row in range(page.table.rowCount())}
+    assert "nouveau_via_ui" in usernames
+
+
+def test_submit_create_user_shows_error_on_duplicate_username(qtbot, login_as, make_user) -> None:
+    make_user("Vendeur", "existe_deja")
+    stack, _ = login_as("Administrateur")
+    page = UsersPage(stack.users, stack.permissions)
+    qtbot.addWidget(page)
+    role_id = next(r.id for r in stack.users.list_roles() if r.nom == "Vendeur")
+
+    result = page._submit_create_user("existe_deja", "MotDePasse!23", role_id, True)
+
+    assert result is False
+
+
+def test_submit_create_user_denied_for_role_without_permission(qtbot, login_as) -> None:
+    """Contournement de l'interface : même en appelant directement la
+    méthode de soumission (sans passer par le bouton désactivé), la
+    création reste refusée côté service pour un rôle non autorisé."""
+    stack, _ = login_as("Vendeur")
+    page = UsersPage(stack.users, stack.permissions)
+    qtbot.addWidget(page)
+
+    result = page._submit_create_user("intrus_ui", "MotDePasse!23", 1, True)
+
+    assert result is False
+    admin_stack, _ = login_as("Administrateur")
+    usernames = {u.username for u in admin_stack.users.list_users()}
+    assert "intrus_ui" not in usernames
+
+
+@pytest.mark.parametrize("role_name", ["Gestionnaire de stock", "Vendeur", "Consultation"])
+def test_submit_create_user_succeeds_for_each_role_via_ui(qtbot, login_as, role_name: str) -> None:
+    stack, _ = login_as("Administrateur")
+    page = UsersPage(stack.users, stack.permissions)
+    qtbot.addWidget(page)
+    role_id = next(r.id for r in stack.users.list_roles() if r.nom == role_name)
+    username = f"ui_{role_name.split()[0].lower()}"
+
+    result = page._submit_create_user(username, "MotDePasse!23", role_id, True)
+
+    assert result is True
+    created = next(u for u in stack.users.list_users() if u.username == username)
+    assert created.role_name == role_name
