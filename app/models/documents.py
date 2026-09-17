@@ -33,6 +33,8 @@ class Entree(TimestampMixin, Base):
     lignes: Mapped[list["EntreeLigne"]] = relationship(
         "EntreeLigne", back_populates="entree", cascade="all, delete-orphan"
     )
+    fournisseur: Mapped["Supplier"] = relationship("Supplier")
+    user: Mapped["User"] = relationship("User")
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"Entree(numero={self.numero!r}, statut={self.statut!r})"

@@ -29,6 +29,7 @@ from app.services.registry import ServiceRegistry
 from app.views.change_password_dialog import ChangePasswordDialog
 from app.views.pages.articles_page import ArticlesPage
 from app.views.pages.categories_page import CategoriesPage
+from app.views.pages.entries_page import EntriesPage
 from app.views.pages.exit_reasons_page import ExitReasonsPage
 from app.views.pages.placeholder_page import PlaceholderPage
 from app.views.pages.suppliers_page import SuppliersPage
@@ -148,6 +149,10 @@ class MainWindow(QMainWindow):
         if module_name == "Articles":
             return ArticlesPage(
                 self._services.articles, self._services.categories, self._services.suppliers, self._permissions
+            )
+        if module_name == "Entrées":
+            return EntriesPage(
+                self._services.entries, self._services.suppliers, self._services.articles, self._permissions
             )
         return PlaceholderPage(module_name)
 

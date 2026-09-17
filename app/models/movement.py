@@ -55,6 +55,7 @@ class MouvementStock(Base):
     commentaire: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
 
     article: Mapped["Article"] = relationship("Article")
+    user: Mapped["User"] = relationship("User")
     mouvement_origine: Mapped[Optional["MouvementStock"]] = relationship(
         "MouvementStock", remote_side="MouvementStock.id"
     )

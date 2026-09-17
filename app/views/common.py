@@ -7,12 +7,28 @@ modal).
 """
 from __future__ import annotations
 
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Callable, Optional
 
 from PySide6.QtWidgets import QDialog, QMessageBox, QWidget
 
 from app.utils.exceptions import ValidationError
+
+
+def parse_date(text: str, field_label: str) -> date:
+    """Convertit la saisie d'un champ date (format ``AAAA-MM-JJ``) en
+    :class:`datetime.date`. Lève :class:`ValidationError` sur saisie
+    invalide, capturée comme toute autre erreur métier par l'appelant."""
+    normalized = (text or "").strip()
+    if not normalized:
+        raise ValidationError(f"Le champ « {field_label} » est obligatoire.")
+    try:
+        return datetime.strptime(normalized, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise ValidationError(
+            f"Le champ « {field_label} » doit être une date valide (AAAA-MM-JJ)."
+        ) from exc
 
 
 def parse_decimal(text: str, field_label: str) -> Decimal:

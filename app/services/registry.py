@@ -16,6 +16,7 @@ from app.services.articles.article_service import ArticleService
 from app.services.auth.auth_service import AuthService
 from app.services.auth.permission_service import PermissionService
 from app.services.categories.category_service import CategoryService
+from app.services.entries.entry_service import EntryService
 from app.services.exit_reasons.exit_reason_service import ExitReasonService
 from app.services.suppliers.supplier_service import SupplierService
 from app.services.users.user_service import UserService
@@ -30,6 +31,7 @@ class ServiceRegistry:
     suppliers: SupplierService
     exit_reasons: ExitReasonService
     articles: ArticleService
+    entries: EntryService
 
 
 def build_service_registry(settings: Optional[Settings] = None) -> ServiceRegistry:
@@ -43,4 +45,5 @@ def build_service_registry(settings: Optional[Settings] = None) -> ServiceRegist
         suppliers=SupplierService(permission_service, settings),
         exit_reasons=ExitReasonService(permission_service, settings),
         articles=ArticleService(permission_service, settings),
+        entries=EntryService(permission_service, settings),
     )
