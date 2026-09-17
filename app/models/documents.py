@@ -76,6 +76,8 @@ class Sortie(TimestampMixin, Base):
     lignes: Mapped[list["SortieLigne"]] = relationship(
         "SortieLigne", back_populates="sortie", cascade="all, delete-orphan"
     )
+    motif: Mapped["ExitReason"] = relationship("ExitReason")
+    user: Mapped["User"] = relationship("User")
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"Sortie(numero={self.numero!r}, statut={self.statut!r})"

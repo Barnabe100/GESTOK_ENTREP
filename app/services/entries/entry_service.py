@@ -39,6 +39,7 @@ from app.repositories.entree_repository import EntreeRepository
 from app.repositories.mouvement_repository import MouvementRepository
 from app.repositories.supplier_repository import SupplierRepository
 from app.services.auth.permission_service import PermissionService
+from app.services.stock.movement_summary import MouvementSummary
 from app.services.stock.stock_service import StockService
 from app.utils.exceptions import ConflictError, NotFoundError, ValidationError
 from app.utils.logging_config import get_logger
@@ -129,43 +130,6 @@ class EntreeSummary:
             lignes=[EntreeLigneSummary.from_model(l) for l in entree.lignes],
             date_creation=entree.date_creation,
             date_modification=entree.date_modification,
-        )
-
-
-@dataclass(frozen=True)
-class MouvementSummary:
-    """Vue en lecture seule d'un mouvement de stock, pour la traçabilité
-    d'une entrée (§9 du cahier des charges : qui, quand, quel article,
-    quelle quantité, stock avant/après)."""
-
-    id: int
-    article_id: int
-    article_reference: str
-    type: TypeMouvement
-    quantite: Decimal
-    stock_avant: Decimal
-    stock_apres: Decimal
-    cout_unitaire: Optional[Decimal]
-    date_heure: datetime
-    user_id: int
-    username: str
-    commentaire: Optional[str]
-
-    @classmethod
-    def from_model(cls, mouvement: MouvementStock) -> "MouvementSummary":
-        return cls(
-            id=mouvement.id,
-            article_id=mouvement.article_id,
-            article_reference=mouvement.article.reference,
-            type=mouvement.type,
-            quantite=mouvement.quantite,
-            stock_avant=mouvement.stock_avant,
-            stock_apres=mouvement.stock_apres,
-            cout_unitaire=mouvement.cout_unitaire,
-            date_heure=mouvement.date_heure,
-            user_id=mouvement.user_id,
-            username=mouvement.user.username,
-            commentaire=mouvement.commentaire,
         )
 
 

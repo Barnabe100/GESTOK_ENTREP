@@ -31,6 +31,7 @@ from app.views.pages.articles_page import ArticlesPage
 from app.views.pages.categories_page import CategoriesPage
 from app.views.pages.entries_page import EntriesPage
 from app.views.pages.exit_reasons_page import ExitReasonsPage
+from app.views.pages.exits_page import ExitsPage
 from app.views.pages.placeholder_page import PlaceholderPage
 from app.views.pages.suppliers_page import SuppliersPage
 from app.views.pages.users_page import UsersPage
@@ -153,6 +154,10 @@ class MainWindow(QMainWindow):
         if module_name == "Entrées":
             return EntriesPage(
                 self._services.entries, self._services.suppliers, self._services.articles, self._permissions
+            )
+        if module_name == "Sorties":
+            return ExitsPage(
+                self._services.exits, self._services.exit_reasons, self._services.articles, self._permissions
             )
         return PlaceholderPage(module_name)
 
