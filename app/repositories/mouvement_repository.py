@@ -3,9 +3,10 @@ depuis les modules appelants — seul :class:`StockService` y écrit).
 """
 from __future__ import annotations
 
+from datetime import date, datetime, time, timedelta
 from typing import Optional
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.models.enums import TypeMouvement
 from app.models.movement import MouvementStock
@@ -15,6 +16,35 @@ from app.repositories.base import SQLAlchemyRepository
 class MouvementRepository(SQLAlchemyRepository[MouvementStock]):
     def __init__(self, session: Session) -> None:
         super().__init__(session, MouvementStock)
+
+    def search(
+        self,
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
+        article_id: Optional[int] = None,
+        type_mouvement: Optional[TypeMouvement] = None,
+        user_id: Optional[int] = None,
+    ) -> list[MouvementStock]:
+        """Utilisé par le rapport Mouvements. ``date_heure`` porte une heure
+        (contrairement aux dates des documents) : ``date_to`` est traité
+        comme une borne inclusive sur la journée entière (jusqu'à 23:59:59.999999),
+        en comparant à ``< début du jour suivant`` pour éviter tout piège lié
+        aux heures/minutes/secondes (§4 du cahier des charges de cette
+        phase)."""
+        query = self.session.query(MouvementStock).options(
+            joinedload(MouvementStock.article), joinedload(MouvementStock.user)
+        )
+        if date_from is not None:
+            query = query.filter(MouvementStock.date_heure >= datetime.combine(date_from, time.min))
+        if date_to is not None:
+            query = query.filter(MouvementStock.date_heure < datetime.combine(date_to + timedelta(days=1), time.min))
+        if article_id is not None:
+            query = query.filter(MouvementStock.article_id == article_id)
+        if type_mouvement is not None:
+            query = query.filter(MouvementStock.type == type_mouvement)
+        if user_id is not None:
+            query = query.filter(MouvementStock.user_id == user_id)
+        return query.order_by(MouvementStock.date_heure.desc(), MouvementStock.id.desc()).all()
 
     def find_by_entree_ligne(
         self, entree_ligne_id: int, type_mouvement: Optional[TypeMouvement] = None

@@ -20,6 +20,7 @@ from app.services.entries.entry_service import EntryService
 from app.services.exit_reasons.exit_reason_service import ExitReasonService
 from app.services.exits.exit_service import ExitService
 from app.services.inventory.inventory_service import InventoryService
+from app.services.reports.report_service import ReportService
 from app.services.sales.sale_service import SaleService
 from app.services.suppliers.supplier_service import SupplierService
 from app.services.users.user_service import UserService
@@ -38,6 +39,7 @@ class ServiceRegistry:
     exits: ExitService
     sales: SaleService
     inventory: InventoryService
+    reports: ReportService
 
 
 def build_service_registry(settings: Optional[Settings] = None) -> ServiceRegistry:
@@ -55,4 +57,5 @@ def build_service_registry(settings: Optional[Settings] = None) -> ServiceRegist
         exits=ExitService(permission_service, settings),
         sales=SaleService(permission_service, settings),
         inventory=InventoryService(permission_service, settings),
+        reports=ReportService(permission_service, settings),
     )

@@ -7,13 +7,14 @@ précédents.
 """
 from __future__ import annotations
 
+from datetime import date
 from typing import Optional
 
 from sqlalchemy import func, or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.models.catalog import Supplier
-from app.models.documents import Entree
+from app.models.documents import Entree, EntreeLigne
 from app.models.enums import StatutOperation
 from app.repositories.base import SQLAlchemyRepository
 
@@ -30,8 +31,20 @@ class EntreeRepository(SQLAlchemyRepository[Entree]):
         term: str = "",
         fournisseur_id: Optional[int] = None,
         statut: Optional[StatutOperation] = None,
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
     ) -> list[Entree]:
-        query = self.session.query(Entree).join(Entree.fournisseur)
+        # eager-load fournisseur/user/lignes(+article) : le rapport Entrées
+        # parcourt potentiellement des centaines de documents, évite le N+1.
+        query = (
+            self.session.query(Entree)
+            .join(Entree.fournisseur)
+            .options(
+                joinedload(Entree.fournisseur),
+                joinedload(Entree.user),
+                selectinload(Entree.lignes).joinedload(EntreeLigne.article),
+            )
+        )
         if term:
             like_term = f"%{term}%"
             query = query.filter(
@@ -45,6 +58,10 @@ class EntreeRepository(SQLAlchemyRepository[Entree]):
             query = query.filter(Entree.fournisseur_id == fournisseur_id)
         if statut is not None:
             query = query.filter(Entree.statut == statut)
+        if date_from is not None:
+            query = query.filter(Entree.date >= date_from)
+        if date_to is not None:
+            query = query.filter(Entree.date <= date_to)
         return query.order_by(Entree.date.desc(), Entree.id.desc()).all()
 
     def count_all(self) -> int:

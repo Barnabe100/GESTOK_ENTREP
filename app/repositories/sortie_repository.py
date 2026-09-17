@@ -6,13 +6,14 @@ View -> Service -> Repository -> Model), à l'identique du module Entrées.
 """
 from __future__ import annotations
 
+from datetime import date
 from typing import Optional
 
 from sqlalchemy import func, or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.models.catalog import ExitReason
-from app.models.documents import Sortie
+from app.models.documents import Sortie, SortieLigne
 from app.models.enums import StatutOperation
 from app.repositories.base import SQLAlchemyRepository
 
@@ -29,8 +30,20 @@ class SortieRepository(SQLAlchemyRepository[Sortie]):
         term: str = "",
         motif_id: Optional[int] = None,
         statut: Optional[StatutOperation] = None,
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
     ) -> list[Sortie]:
-        query = self.session.query(Sortie).join(Sortie.motif)
+        # eager-load motif/user/lignes(+article) : le rapport Sorties parcourt
+        # potentiellement des centaines de documents, évite le N+1.
+        query = (
+            self.session.query(Sortie)
+            .join(Sortie.motif)
+            .options(
+                joinedload(Sortie.motif),
+                joinedload(Sortie.user),
+                selectinload(Sortie.lignes).joinedload(SortieLigne.article),
+            )
+        )
         if term:
             like_term = f"%{term}%"
             query = query.filter(
@@ -45,6 +58,10 @@ class SortieRepository(SQLAlchemyRepository[Sortie]):
             query = query.filter(Sortie.motif_id == motif_id)
         if statut is not None:
             query = query.filter(Sortie.statut == statut)
+        if date_from is not None:
+            query = query.filter(Sortie.date >= date_from)
+        if date_to is not None:
+            query = query.filter(Sortie.date <= date_to)
         return query.order_by(Sortie.date.desc(), Sortie.id.desc()).all()
 
     def count_all(self) -> int:

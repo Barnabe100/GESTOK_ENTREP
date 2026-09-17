@@ -7,10 +7,11 @@ Catégories, Fournisseurs et Motifs de sortie.
 """
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Optional
 
 from sqlalchemy import or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.models.catalog import Article, Category
 from app.models.enums import StatutActifInactif
@@ -39,8 +40,16 @@ class ArticleRepository(SQLAlchemyRepository[Article]):
         category_id: Optional[int] = None,
         include_inactive: bool = True,
         low_stock_only: bool = False,
+        out_of_stock_only: bool = False,
     ) -> list[Article]:
-        query = self.session.query(Article).join(Article.category)
+        # eager-load category/fournisseur_principal : évite le N+1 lorsque
+        # l'appelant (ex. les rapports État du stock/Valorisation) parcourt
+        # potentiellement des centaines d'articles pour construire ses lignes.
+        query = (
+            self.session.query(Article)
+            .join(Article.category)
+            .options(joinedload(Article.category), joinedload(Article.fournisseur_principal))
+        )
         if term:
             like_term = f"%{term}%"
             query = query.filter(
@@ -56,4 +65,6 @@ class ArticleRepository(SQLAlchemyRepository[Article]):
             query = query.filter(Article.statut == StatutActifInactif.ACTIF)
         if low_stock_only:
             query = query.filter(Article.stock_actuel <= Article.stock_min)
+        if out_of_stock_only:
+            query = query.filter(Article.stock_actuel == Decimal("0"))
         return query.order_by(Article.reference).all()
