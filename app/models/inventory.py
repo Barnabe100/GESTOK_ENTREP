@@ -1,7 +1,7 @@
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import Date, ForeignKey, Integer
+from sqlalchemy import Date, ForeignKey, Integer, String
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -15,6 +15,7 @@ class Inventaire(TimestampMixin, Base):
     __tablename__ = "inventaires"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    numero: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
     date: Mapped[date] = mapped_column(Date, nullable=False)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     statut: Mapped[StatutInventaire] = mapped_column(
@@ -26,9 +27,10 @@ class Inventaire(TimestampMixin, Base):
     lignes: Mapped[list["InventaireLigne"]] = relationship(
         "InventaireLigne", back_populates="inventaire", cascade="all, delete-orphan"
     )
+    user: Mapped["User"] = relationship("User")
 
     def __repr__(self) -> str:  # pragma: no cover
-        return f"Inventaire(id={self.id!r}, statut={self.statut!r})"
+        return f"Inventaire(numero={self.numero!r}, statut={self.statut!r})"
 
 
 class InventaireLigne(Base):

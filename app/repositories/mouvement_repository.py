@@ -55,6 +55,17 @@ class MouvementRepository(SQLAlchemyRepository[MouvementStock]):
             query = query.filter(MouvementStock.type == type_mouvement)
         return query.order_by(MouvementStock.id).all()
 
+    def find_by_inventaire_ligne(self, inventaire_ligne_id: int) -> list[MouvementStock]:
+        """Retrouve le mouvement AJUSTEMENT généré pour une ligne d'inventaire
+        donnée (aucune annulation possible pour un inventaire — un seul
+        mouvement au plus par ligne, ou aucun si l'écart était nul)."""
+        return (
+            self.session.query(MouvementStock)
+            .filter(MouvementStock.inventaire_ligne_id == inventaire_ligne_id)
+            .order_by(MouvementStock.id)
+            .all()
+        )
+
     def list_for_article(self, article_id: int) -> list[MouvementStock]:
         return (
             self.session.query(MouvementStock)
