@@ -1,6 +1,9 @@
-from pathlib import Path
+from app.utils.runtime_paths import app_root
 
-RESOURCES_DIR = Path(__file__).resolve().parent
+# Résolu depuis la racine applicative plutôt que ``Path(__file__).parent`` :
+# reste valable une fois packagé par PyInstaller, où ``__file__`` ne
+# correspond plus à un fichier réel sur disque (voir runtime_paths.py).
+RESOURCES_DIR = app_root() / "app" / "resources"
 STYLES_DIR = RESOURCES_DIR / "styles"
 ICONS_DIR = RESOURCES_DIR / "icons"
 

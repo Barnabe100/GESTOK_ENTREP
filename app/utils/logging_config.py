@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
+import sys
 from pathlib import Path
 
 from app.config import Settings
@@ -35,9 +36,16 @@ def setup_logging(settings: Settings) -> logging.Logger:
     settings.ensure_directories()
     formatter = logging.Formatter(LOG_FORMAT)
 
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(formatter)
-    root_logger.addHandler(console_handler)
+    # Un exécutable Windows packagé sans console (voir stockmanager.spec,
+    # console=False) n'a pas de sys.stderr — logging.StreamHandler() le
+    # capturerait à la construction et planterait au premier appel. Le
+    # fichier journal (ci-dessous) reste dans tous les cas la source de
+    # diagnostic persistante (§13 du cahier des charges de la phase
+    # Packaging) ; la console n'est qu'un confort de développement.
+    if sys.stderr is not None:
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(formatter)
+        root_logger.addHandler(console_handler)
 
     log_file: Path = settings.log_dir / LOG_FILENAME
     file_handler = logging.handlers.RotatingFileHandler(

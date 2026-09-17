@@ -14,6 +14,7 @@ from app.resources import load_stylesheet
 from app.services.registry import ServiceRegistry, build_service_registry
 from app.utils.error_handler import install_global_exception_handler
 from app.utils.logging_config import get_logger, setup_logging
+from app.version import APP_NAME, __version__
 from app.views.change_password_dialog import ChangePasswordDialog
 from app.views.login_window import LoginWindow
 from app.views.main_window import MainWindow
@@ -28,7 +29,9 @@ def bootstrap() -> None:
     install_global_exception_handler()
 
     logger = get_logger("bootstrap")
-    logger.info("Démarrage de StockManager Desktop (environnement=%s)", settings.environment)
+    logger.info(
+        "Démarrage de %s %s (environnement=%s)", APP_NAME, __version__, settings.environment
+    )
 
     init_database(settings)
     with session_scope(settings) as session:
@@ -75,7 +78,8 @@ def main() -> int:
     bootstrap()
 
     app = QApplication(sys.argv)
-    app.setApplicationName("StockManager Desktop")
+    app.setApplicationName(APP_NAME)
+    app.setApplicationVersion(__version__)
     try:
         app.setStyleSheet(load_stylesheet())
     except OSError:

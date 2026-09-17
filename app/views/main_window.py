@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 from app.resources import APP_ICON_PATH
 from app.services.registry import ServiceRegistry
 from app.utils.logging_config import get_logger
+from app.version import __version__
 from app.views.change_password_dialog import ChangePasswordDialog
 from app.views.pages.articles_page import ArticlesPage
 from app.views.pages.backups_page import BackupsPage
@@ -131,7 +132,7 @@ class MainWindow(QMainWindow):
         if self.visible_modules:
             self.navigation_list.setCurrentRow(0)
 
-        self.statusBar().showMessage("Prêt")
+        self.statusBar().showMessage(f"Prêt — StockManager Desktop {__version__}")
 
         # Minuteur de sauvegarde planifiée (§7-8) : ne peut s'exécuter que
         # tant que cette fenêtre (donc l'application) est ouverte. Le

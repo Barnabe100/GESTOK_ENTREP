@@ -27,3 +27,9 @@ logs/
 # license_generator/README.md) et licences signées générées localement.
 license_generator/keys/
 *.lic
+
+# Packaging : métadonnées de version générées depuis app/version.py à
+# chaque build (voir packaging/README.md) — jamais éditées à la main, donc
+# jamais versionnées, pour ne jamais diverger silencieusement de la source.
+packaging/file_version_info.txt
+packaging/installer_output/

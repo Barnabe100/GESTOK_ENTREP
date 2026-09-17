@@ -1,0 +1,8 @@
+# Dépendances de packaging uniquement — jamais dans requirements.txt
+# (qui reflète ce que StockManager Desktop exécute réellement, voir §22 du
+# cahier des charges de la phase Packaging). Inclut requirements.txt : le
+# build a besoin de l'application elle-même pour l'analyser.
+-r requirements.txt
+
+pyinstaller==6.22.3
+Pillow==12.3.0

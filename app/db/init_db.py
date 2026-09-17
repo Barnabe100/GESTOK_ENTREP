@@ -7,7 +7,6 @@ schéma sans perte de données chez les clients déjà installés.
 """
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Optional
 
 from alembic import command
@@ -15,10 +14,11 @@ from alembic.config import Config
 
 from app.config import Settings, get_settings
 from app.utils.logging_config import get_logger
+from app.utils.runtime_paths import app_root
 
 logger = get_logger("db.init")
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = app_root()
 ALEMBIC_INI_PATH = PROJECT_ROOT / "alembic.ini"
 MIGRATIONS_PATH = PROJECT_ROOT / "migrations"
 

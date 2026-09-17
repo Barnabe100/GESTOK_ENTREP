@@ -48,3 +48,22 @@ def test_setup_logging_is_idempotent(test_settings: Settings) -> None:
 def test_get_logger_returns_child_of_stockmanager() -> None:
     logger = logging_config.get_logger("some.module")
     assert logger.name == "stockmanager.some.module"
+
+
+def test_setup_logging_skips_console_handler_when_no_stderr(
+    test_settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Un exécutable Windows packagé sans console (stockmanager.spec,
+    console=False) n'a pas de sys.stderr : logging.StreamHandler()
+    planterait au premier appel. Le fichier journal doit rester la seule
+    trace (§13 du cahier des charges de la phase Packaging)."""
+    monkeypatch.setattr("sys.stderr", None)
+
+    logger = logging_config.setup_logging(test_settings)
+    logger.info("message sans console")
+    for handler in logger.handlers:
+        handler.flush()
+
+    assert len(logger.handlers) == 1  # uniquement le RotatingFileHandler
+    log_file = test_settings.log_dir / logging_config.LOG_FILENAME
+    assert "message sans console" in log_file.read_text(encoding="utf-8")
