@@ -16,16 +16,17 @@ au sélecteur et sélectionné.
 """
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 from typing import Callable, Optional
 
 from PySide6.QtWidgets import (
     QComboBox,
+    QDateEdit,
     QDialog,
     QFormLayout,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMessageBox,
     QPushButton,
     QTableWidget,
@@ -35,7 +36,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.utils.exceptions import ValidationError
-from app.views.common import parse_decimal
+from app.views.common import date_to_qdate, parse_decimal
 from app.views.sale_line_form_dialog import SaleLineFormDialog
 
 _LINE_COLUMNS = ["Article", "Quantité", "Prix unitaire", "Montant"]
@@ -69,9 +70,10 @@ class SaleFormDialog(QDialog):
         layout = QVBoxLayout(self)
         form = QFormLayout()
 
-        self.date_edit = QLineEdit(self)
-        self.date_edit.setPlaceholderText("AAAA-MM-JJ")
-        self.date_edit.setText(initial.get("date", "") or "")
+        self.date_edit = QDateEdit(self)
+        self.date_edit.setCalendarPopup(True)
+        self.date_edit.setDisplayFormat("yyyy-MM-dd")
+        self.date_edit.setDate(date_to_qdate(initial.get("date") or date.today()))
         form.addRow("Date", self.date_edit)
 
         client_row = QHBoxLayout()
@@ -214,7 +216,7 @@ class SaleFormDialog(QDialog):
 
     def values(self) -> dict:
         return {
-            "date": self.date_edit.text(),
+            "date": self.date_edit.date().toPython(),
             "client_id": self.client_combo.currentData(),
             "lignes": list(self._lines),
         }

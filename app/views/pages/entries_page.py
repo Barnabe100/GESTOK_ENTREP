@@ -34,7 +34,7 @@ from app.services.settings.company_settings_service import get_effective_currenc
 from app.services.suppliers.supplier_service import SupplierService
 from app.utils.exceptions import AppError, ValidationError
 from app.utils.money import format_money
-from app.views.common import confirm_action, parse_date, parse_decimal, run_modal_form
+from app.views.common import confirm_action, parse_decimal, run_modal_form
 from app.views.entry_detail_dialog import EntryDetailDialog
 from app.views.entry_form_dialog import EntryFormDialog
 
@@ -199,7 +199,7 @@ class EntriesPage(QWidget):
     def _on_add_clicked(self) -> None:
         suppliers = self._load_suppliers_for_form()
         articles = self._load_articles_for_form()
-        initial = {"date": str(date.today())}
+        initial = {"date": date.today()}
         self._open_form(entry_id=None, suppliers=suppliers, articles=articles, initial=initial)
 
     def _on_edit_clicked(self) -> None:
@@ -224,7 +224,7 @@ class EntriesPage(QWidget):
             return None
         return {
             "fournisseur_id": entry.fournisseur_id,
-            "date": str(entry.date),
+            "date": entry.date,
             "reference_document": entry.reference_document,
             "commentaire": entry.commentaire,
             "lignes": [
@@ -264,7 +264,7 @@ class EntriesPage(QWidget):
             fournisseur_id = values["fournisseur_id"]
             if fournisseur_id is None:
                 raise ValidationError("Veuillez sélectionner un fournisseur.")
-            entry_date = parse_date(values["date"], "date")
+            entry_date = values["date"]
             lines = [
                 EntreeLigneInput(
                     article_id=line["article_id"],

@@ -136,7 +136,7 @@ def test_submit_form_creates_draft_exit_without_stock_impact(qtbot, login_as) ->
     qtbot.addWidget(page)
 
     values = {
-        "motif_id": motif.id, "date": "2026-01-01",
+        "motif_id": motif.id, "date": date(2026, 1, 1),
         "beneficiaire": "Service X", "reference": "REF-1", "commentaire": "",
         "lignes": [{"article_id": article.id, "article_label": "x", "quantite": Decimal("10"), "cout_unitaire": Decimal("100")}],
     }
@@ -156,23 +156,7 @@ def test_submit_form_rejects_missing_motif(qtbot, login_as) -> None:
     qtbot.addWidget(page)
 
     values = {
-        "motif_id": None, "date": "2026-01-01",
-        "beneficiaire": "", "reference": "", "commentaire": "", "lignes": [],
-    }
-
-    result = page._submit_form(None, values)
-
-    assert result is False
-
-
-def test_submit_form_rejects_invalid_date(qtbot, login_as) -> None:
-    stack, _ = login_as("Administrateur")
-    motif = _make_motif(stack)
-    page = _build_page(stack)
-    qtbot.addWidget(page)
-
-    values = {
-        "motif_id": motif.id, "date": "pas une date",
+        "motif_id": None, "date": date(2026, 1, 1),
         "beneficiaire": "", "reference": "", "commentaire": "", "lignes": [],
     }
 
@@ -191,7 +175,7 @@ def test_submit_form_updates_existing_draft(qtbot, login_as) -> None:
     exit_ = stack.exits.create_exit(motif.id, date(2026, 1, 1), [])
 
     values = {
-        "motif_id": motif.id, "date": "2026-02-01",
+        "motif_id": motif.id, "date": date(2026, 2, 1),
         "beneficiaire": "", "reference": "REF-2", "commentaire": "",
         "lignes": [{"article_id": article.id, "article_label": "x", "quantite": Decimal("3"), "cout_unitaire": Decimal("100")}],
     }
@@ -217,6 +201,7 @@ def test_load_edit_initial_returns_lines(qtbot, login_as) -> None:
 
     assert initial is not None
     assert initial["motif_id"] == motif.id
+    assert initial["date"] == date(2026, 1, 1)
     assert len(initial["lignes"]) == 1
     assert initial["lignes"][0]["article_id"] == article.id
 

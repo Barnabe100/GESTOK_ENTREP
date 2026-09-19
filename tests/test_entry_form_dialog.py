@@ -1,8 +1,9 @@
+from datetime import date
 from decimal import Decimal
 
 import pytest
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QDialog
+from PySide6.QtCore import QDate, Qt
+from PySide6.QtWidgets import QDateEdit, QDialog
 
 from app.views.entry_form_dialog import EntryFormDialog
 
@@ -32,9 +33,37 @@ def _no_blocking_message_boxes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("app.views.entry_form_dialog.QMessageBox.warning", lambda *a, **k: None)
 
 
+def test_dialog_uses_qdateedit_with_calendar_popup(qtbot) -> None:
+    dialog = EntryFormDialog(_SUPPLIERS, _ARTICLES)
+    qtbot.addWidget(dialog)
+
+    assert isinstance(dialog.date_edit, QDateEdit)
+    assert dialog.date_edit.calendarPopup() is True
+    assert dialog.date_edit.displayFormat() == "yyyy-MM-dd"
+
+
+def test_dialog_defaults_date_to_today_on_creation(qtbot) -> None:
+    dialog = EntryFormDialog(_SUPPLIERS, _ARTICLES)
+    qtbot.addWidget(dialog)
+
+    assert dialog.date_edit.date() == QDate.currentDate()
+    assert dialog.values()["date"] == date.today()
+
+
+def test_dialog_date_change_is_reflected_in_values(qtbot) -> None:
+    initial = {"date": date(2026, 1, 15)}
+    dialog = EntryFormDialog(_SUPPLIERS, _ARTICLES, initial)
+    qtbot.addWidget(dialog)
+
+    dialog.date_edit.setDate(QDate(2026, 3, 1))
+
+    assert dialog.values()["date"] == date(2026, 3, 1)
+    assert isinstance(dialog.values()["date"], date)
+
+
 def test_dialog_prefills_header_from_initial(qtbot) -> None:
     initial = {
-        "fournisseur_id": 2, "date": "2026-01-15",
+        "fournisseur_id": 2, "date": date(2026, 1, 15),
         "reference_document": "BL-42", "commentaire": "Livraison test",
     }
     dialog = EntryFormDialog(_SUPPLIERS, _ARTICLES, initial)
@@ -42,7 +71,8 @@ def test_dialog_prefills_header_from_initial(qtbot) -> None:
 
     values = dialog.values()
     assert values["fournisseur_id"] == 2
-    assert values["date"] == "2026-01-15"
+    assert values["date"] == date(2026, 1, 15)
+    assert dialog.date_edit.date() == QDate(2026, 1, 15)
     assert values["reference_document"] == "BL-42"
     assert values["commentaire"] == "Livraison test"
 

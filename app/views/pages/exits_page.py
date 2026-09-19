@@ -34,7 +34,7 @@ from app.services.exits.exit_service import ExitService, SortieLigneInput
 from app.services.settings.company_settings_service import get_effective_currency
 from app.utils.exceptions import AppError, ValidationError
 from app.utils.money import format_money
-from app.views.common import confirm_action, parse_date, run_modal_form
+from app.views.common import confirm_action, run_modal_form
 from app.views.exit_detail_dialog import ExitDetailDialog
 from app.views.exit_form_dialog import ExitFormDialog
 
@@ -199,7 +199,7 @@ class ExitsPage(QWidget):
     def _on_add_clicked(self) -> None:
         motifs = self._load_motifs_for_form()
         articles = self._load_articles_for_form()
-        initial = {"date": str(date.today())}
+        initial = {"date": date.today()}
         self._open_form(exit_id=None, motifs=motifs, articles=articles, initial=initial)
 
     def _on_edit_clicked(self) -> None:
@@ -224,7 +224,7 @@ class ExitsPage(QWidget):
             return None
         return {
             "motif_id": exit_.motif_id,
-            "date": str(exit_.date),
+            "date": exit_.date,
             "beneficiaire": exit_.beneficiaire,
             "reference": exit_.reference,
             "commentaire": exit_.commentaire,
@@ -265,7 +265,7 @@ class ExitsPage(QWidget):
             motif_id = values["motif_id"]
             if motif_id is None:
                 raise ValidationError("Veuillez sélectionner un motif.")
-            exit_date = parse_date(values["date"], "date")
+            exit_date = values["date"]
             lines = [
                 SortieLigneInput(article_id=line["article_id"], quantite=line["quantite"])
                 for line in values["lignes"]

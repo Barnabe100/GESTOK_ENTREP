@@ -10,12 +10,14 @@ formulaires (Articles, Fournisseurs...).
 """
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 from typing import Optional
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
+    QDateEdit,
     QDialog,
     QFormLayout,
     QHBoxLayout,
@@ -31,7 +33,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.utils.exceptions import ValidationError
-from app.views.common import parse_decimal
+from app.views.common import date_to_qdate, parse_decimal
 from app.views.entry_line_form_dialog import EntryLineFormDialog
 
 _LINE_COLUMNS = ["Article", "Quantité", "Prix unitaire", "Montant"]
@@ -65,9 +67,10 @@ class EntryFormDialog(QDialog):
         self._select_combo_data(self.supplier_combo, initial.get("fournisseur_id"))
         form.addRow("Fournisseur", self.supplier_combo)
 
-        self.date_edit = QLineEdit(self)
-        self.date_edit.setPlaceholderText("AAAA-MM-JJ")
-        self.date_edit.setText(initial.get("date", "") or "")
+        self.date_edit = QDateEdit(self)
+        self.date_edit.setCalendarPopup(True)
+        self.date_edit.setDisplayFormat("yyyy-MM-dd")
+        self.date_edit.setDate(date_to_qdate(initial.get("date") or date.today()))
         form.addRow("Date", self.date_edit)
 
         self.reference_document_edit = QLineEdit(self)
@@ -194,7 +197,7 @@ class EntryFormDialog(QDialog):
     def values(self) -> dict:
         return {
             "fournisseur_id": self.supplier_combo.currentData(),
-            "date": self.date_edit.text(),
+            "date": self.date_edit.date().toPython(),
             "reference_document": self.reference_document_edit.text(),
             "commentaire": self.commentaire_edit.toPlainText(),
             "lignes": list(self._lines),

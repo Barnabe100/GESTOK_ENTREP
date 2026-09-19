@@ -142,7 +142,7 @@ def test_submit_form_creates_draft_entry_without_stock_impact(qtbot, login_as) -
     qtbot.addWidget(page)
 
     values = {
-        "fournisseur_id": supplier.id, "date": "2026-01-01",
+        "fournisseur_id": supplier.id, "date": date(2026, 1, 1),
         "reference_document": "BL-1", "commentaire": "",
         "lignes": [
             {"article_id": article.id, "article_label": "x", "quantite": Decimal("10"), "prix_unitaire": Decimal("100")}
@@ -164,23 +164,7 @@ def test_submit_form_rejects_missing_supplier(qtbot, login_as) -> None:
     qtbot.addWidget(page)
 
     values = {
-        "fournisseur_id": None, "date": "2026-01-01",
-        "reference_document": "", "commentaire": "", "lignes": [],
-    }
-
-    result = page._submit_form(None, values)
-
-    assert result is False
-
-
-def test_submit_form_rejects_invalid_date(qtbot, login_as) -> None:
-    stack, _ = login_as("Administrateur")
-    supplier = _make_supplier(stack)
-    page = _build_page(stack)
-    qtbot.addWidget(page)
-
-    values = {
-        "fournisseur_id": supplier.id, "date": "pas une date",
+        "fournisseur_id": None, "date": date(2026, 1, 1),
         "reference_document": "", "commentaire": "", "lignes": [],
     }
 
@@ -199,7 +183,7 @@ def test_submit_form_updates_existing_draft(qtbot, login_as) -> None:
     entry = stack.entries.create_entry(supplier.id, date(2026, 1, 1), [])
 
     values = {
-        "fournisseur_id": supplier.id, "date": "2026-02-01",
+        "fournisseur_id": supplier.id, "date": date(2026, 2, 1),
         "reference_document": "BL-2", "commentaire": "",
         "lignes": [
             {"article_id": article.id, "article_label": "x", "quantite": Decimal("3"), "prix_unitaire": Decimal("50")}
@@ -229,6 +213,7 @@ def test_load_edit_initial_returns_lines(qtbot, login_as) -> None:
 
     assert initial is not None
     assert initial["fournisseur_id"] == supplier.id
+    assert initial["date"] == date(2026, 1, 1)
     assert len(initial["lignes"]) == 1
     assert initial["lignes"][0]["article_id"] == article.id
 

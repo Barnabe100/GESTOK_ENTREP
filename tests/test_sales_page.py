@@ -125,7 +125,7 @@ def test_submit_form_creates_draft_sale_without_stock_impact(qtbot, login_as) ->
     qtbot.addWidget(page)
 
     values = {
-        "date": "2026-01-01",
+        "date": date(2026, 1, 1),
         "lignes": [{"article_id": article.id, "article_label": "x", "quantite": Decimal("10"), "prix_unitaire": Decimal("150")}],
     }
 
@@ -138,18 +138,6 @@ def test_submit_form_creates_draft_sale_without_stock_impact(qtbot, login_as) ->
     assert stack.articles.get_article(article.id).stock_actuel == Decimal("50")
 
 
-def test_submit_form_rejects_invalid_date(qtbot, login_as) -> None:
-    stack, _ = login_as("Administrateur")
-    page = _build_page(stack)
-    qtbot.addWidget(page)
-
-    values = {"date": "pas une date", "lignes": []}
-
-    result = page._submit_form(None, values)
-
-    assert result is False
-
-
 def test_submit_form_updates_existing_draft(qtbot, login_as) -> None:
     stack, _ = login_as("Administrateur")
     article = _make_article(stack)
@@ -159,7 +147,7 @@ def test_submit_form_updates_existing_draft(qtbot, login_as) -> None:
     sale = stack.sales.create_sale(date(2026, 1, 1), [])
 
     values = {
-        "date": "2026-02-01",
+        "date": date(2026, 2, 1),
         "lignes": [{"article_id": article.id, "article_label": "x", "quantite": Decimal("3"), "prix_unitaire": Decimal("150")}],
     }
 
@@ -181,6 +169,7 @@ def test_load_edit_initial_returns_lines(qtbot, login_as) -> None:
     initial = page._load_edit_initial(sale.id)
 
     assert initial is not None
+    assert initial["date"] == date(2026, 1, 1)
     assert len(initial["lignes"]) == 1
     assert initial["lignes"][0]["article_id"] == article.id
 
@@ -353,7 +342,7 @@ def test_submit_form_with_client_id_associates_sale_to_client(qtbot, login_as) -
     qtbot.addWidget(page)
 
     values = {
-        "date": "2026-01-01",
+        "date": date(2026, 1, 1),
         "client_id": client.id,
         "lignes": [{"article_id": article.id, "article_label": "x", "quantite": Decimal("2"), "prix_unitaire": Decimal("150")}],
     }

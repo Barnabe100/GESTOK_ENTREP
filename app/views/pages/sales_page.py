@@ -42,7 +42,7 @@ from app.services.settings.company_settings_service import get_effective_currenc
 from app.utils.exceptions import AppError, ValidationError
 from app.utils.money import format_money
 from app.views.client_form_dialog import ClientFormDialog
-from app.views.common import confirm_action, parse_date, run_modal_form
+from app.views.common import confirm_action, run_modal_form
 from app.views.sale_detail_dialog import SaleDetailDialog
 from app.views.sale_form_dialog import SaleFormDialog
 
@@ -241,7 +241,7 @@ class SalesPage(QWidget):
     def _on_add_clicked(self) -> None:
         articles = self._load_articles_for_form()
         clients = self._load_clients_for_form()
-        initial = {"date": str(date.today())}
+        initial = {"date": date.today()}
         self._open_form(sale_id=None, articles=articles, clients=clients, initial=initial)
 
     def _on_edit_clicked(self) -> None:
@@ -265,7 +265,7 @@ class SalesPage(QWidget):
             QMessageBox.warning(self, "Opération refusée", str(exc))
             return None
         return {
-            "date": str(sale.date),
+            "date": sale.date,
             "client_id": sale.client_id,
             "lignes": [
                 {
@@ -335,7 +335,7 @@ class SalesPage(QWidget):
         """Convertit la saisie, appelle le service et affiche le résultat.
         Isolé de ``_open_form`` pour rester testable sans dialogue modal."""
         try:
-            sale_date = parse_date(values["date"], "date")
+            sale_date = values["date"]
             client_id = values.get("client_id")
             lines = [
                 VenteLigneInput(

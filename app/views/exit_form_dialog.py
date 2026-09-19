@@ -10,11 +10,13 @@ la soumission.
 """
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 from typing import Optional
 
 from PySide6.QtWidgets import (
     QComboBox,
+    QDateEdit,
     QDialog,
     QFormLayout,
     QHBoxLayout,
@@ -30,7 +32,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.utils.exceptions import ValidationError
-from app.views.common import parse_decimal
+from app.views.common import date_to_qdate, parse_decimal
 from app.views.exit_line_form_dialog import ExitLineFormDialog
 
 _LINE_COLUMNS = ["Article", "Quantité", "Coût (CMUP)", "Montant"]
@@ -64,9 +66,10 @@ class ExitFormDialog(QDialog):
         self._select_combo_data(self.motif_combo, initial.get("motif_id"))
         form.addRow("Motif", self.motif_combo)
 
-        self.date_edit = QLineEdit(self)
-        self.date_edit.setPlaceholderText("AAAA-MM-JJ")
-        self.date_edit.setText(initial.get("date", "") or "")
+        self.date_edit = QDateEdit(self)
+        self.date_edit.setCalendarPopup(True)
+        self.date_edit.setDisplayFormat("yyyy-MM-dd")
+        self.date_edit.setDate(date_to_qdate(initial.get("date") or date.today()))
         form.addRow("Date", self.date_edit)
 
         self.beneficiaire_edit = QLineEdit(self)
@@ -198,7 +201,7 @@ class ExitFormDialog(QDialog):
     def values(self) -> dict:
         return {
             "motif_id": self.motif_combo.currentData(),
-            "date": self.date_edit.text(),
+            "date": self.date_edit.date().toPython(),
             "beneficiaire": self.beneficiaire_edit.text(),
             "reference": self.reference_edit.text(),
             "commentaire": self.commentaire_edit.toPlainText(),

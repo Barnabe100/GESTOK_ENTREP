@@ -35,7 +35,7 @@ from app.services.articles.article_service import ArticleService
 from app.services.auth.permission_service import PermissionService
 from app.services.inventory.inventory_service import InventaireLigneInput, InventoryService
 from app.utils.exceptions import AppError, ValidationError
-from app.views.common import confirm_action, parse_date, run_modal_form
+from app.views.common import confirm_action, run_modal_form
 from app.views.inventory_detail_dialog import InventoryDetailDialog
 from app.views.inventory_form_dialog import InventoryFormDialog
 
@@ -178,7 +178,7 @@ class InventoriesPage(QWidget):
 
     def _on_add_clicked(self) -> None:
         articles = self._load_articles_for_form()
-        initial = {"date": str(date.today())}
+        initial = {"date": date.today()}
         self._open_form(inventory_id=None, articles=articles, initial=initial)
 
     def _on_edit_clicked(self) -> None:
@@ -201,7 +201,7 @@ class InventoriesPage(QWidget):
             QMessageBox.warning(self, "Opération refusée", str(exc))
             return None
         return {
-            "date": str(inventory.date),
+            "date": inventory.date,
             "lignes": [
                 {
                     "article_id": ligne.article_id,
@@ -230,7 +230,7 @@ class InventoriesPage(QWidget):
         """Convertit la saisie, appelle le service et affiche le résultat.
         Isolé de ``_open_form`` pour rester testable sans dialogue modal."""
         try:
-            inventory_date = parse_date(values["date"], "date")
+            inventory_date = values["date"]
             lines = [
                 InventaireLigneInput(article_id=line["article_id"], stock_physique=line["stock_physique"])
                 for line in values["lignes"]

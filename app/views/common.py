@@ -11,9 +11,20 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Callable, Optional
 
+from PySide6.QtCore import QDate
 from PySide6.QtWidgets import QDialog, QMessageBox, QWidget
 
 from app.utils.exceptions import ValidationError
+
+
+def date_to_qdate(value: date) -> QDate:
+    """Convertit une ``date`` Python en ``QDate`` — utilisé pour préremplir
+    un ``QDateEdit`` (formulaires Ventes/Entrées/Sorties/Inventaires) à
+    partir d'une date déjà connue côté Python (aujourd'hui, ou la date d'un
+    document existant en modification). Jamais l'inverse dans ce sens :
+    lire un ``QDateEdit`` se fait directement via ``QDate.toPython()``, qui
+    ne justifie pas un symétrique ici."""
+    return QDate(value.year, value.month, value.day)
 
 
 def parse_date(text: str, field_label: str) -> date:
