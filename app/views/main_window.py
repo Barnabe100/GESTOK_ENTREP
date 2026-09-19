@@ -30,6 +30,7 @@ from app.resources import APP_ICON_PATH
 from app.services.registry import ServiceRegistry
 from app.utils.logging_config import get_logger
 from app.version import __version__
+from app.views.about_dialog import AboutDialog
 from app.views.change_password_dialog import ChangePasswordDialog
 from app.views.pages.articles_page import ArticlesPage
 from app.views.pages.audit_page import AuditPage
@@ -249,6 +250,10 @@ class MainWindow(QMainWindow):
         self.user_label = QLabel(user_text, top_bar)
         top_bar_layout.addWidget(self.user_label)
 
+        self.about_button = QPushButton("À propos", top_bar)
+        self.about_button.clicked.connect(self._on_about_clicked)
+        top_bar_layout.addWidget(self.about_button)
+
         self.change_password_button = QPushButton("Changer le mot de passe", top_bar)
         self.change_password_button.clicked.connect(self._on_change_password_clicked)
         top_bar_layout.addWidget(self.change_password_button)
@@ -283,6 +288,10 @@ class MainWindow(QMainWindow):
             if isinstance(page, ReportsPage):
                 page.select_report_type(report_preset)
         return True
+
+    def _on_about_clicked(self) -> None:
+        dialog = AboutDialog(self._services.licenses, self._permissions, parent=self)
+        dialog.exec()
 
     def _on_change_password_clicked(self) -> None:
         dialog = ChangePasswordDialog(self._services.auth, parent=self)
