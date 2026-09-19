@@ -32,6 +32,7 @@ from app.utils.logging_config import get_logger
 from app.version import __version__
 from app.views.change_password_dialog import ChangePasswordDialog
 from app.views.pages.articles_page import ArticlesPage
+from app.views.pages.audit_page import AuditPage
 from app.views.pages.backups_page import BackupsPage
 from app.views.pages.categories_page import CategoriesPage
 from app.views.pages.clients_page import ClientsPage
@@ -76,6 +77,7 @@ NAVIGATION_MODULES: list[str] = [
     "Utilisateurs",
     "Paramètres",
     "Sauvegardes",
+    "Audit",
     "Licences",
 ]
 
@@ -95,6 +97,7 @@ NAVIGATION_PERMISSIONS: dict[str, str] = {
     "Utilisateurs": "USER_VIEW",
     "Paramètres": "SETTINGS_VIEW",
     "Sauvegardes": "BACKUP_VIEW",
+    "Audit": "AUDIT_VIEW",
     "Licences": "LICENSE_VIEW",
 }
 
@@ -216,6 +219,8 @@ class MainWindow(QMainWindow):
             return SettingsPage(self._services.parameters, self._permissions)
         if module_name == "Sauvegardes":
             return BackupsPage(self._services.backups, self._permissions)
+        if module_name == "Audit":
+            return AuditPage(self._services.audit, self._permissions)
         if module_name == "Licences":
             return LicensesPage(self._services.licenses, self._permissions)
         return PlaceholderPage(module_name)

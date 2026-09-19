@@ -6,7 +6,7 @@ EXPECTED_MODULES_BY_ROLE = {
     "Administrateur": {
         "Dashboard", "Articles", "Catégories", "Fournisseurs", "Motifs de sortie", "Entrées",
         "Sorties", "Clients", "Ventes", "Mouvements", "Inventaires", "Rapports", "Utilisateurs",
-        "Paramètres", "Sauvegardes", "Licences",
+        "Paramètres", "Sauvegardes", "Audit", "Licences",
     },
     "Gestionnaire de stock": {
         "Dashboard", "Articles", "Catégories", "Fournisseurs", "Entrées", "Sorties",
@@ -71,6 +71,19 @@ def test_only_administrateur_sees_utilisateurs_module(qtbot, login_as) -> None:
     window = _build_window(stack)
     qtbot.addWidget(window)
     assert "Utilisateurs" in window.visible_modules
+
+
+def test_only_administrateur_sees_audit_module(qtbot, login_as) -> None:
+    for role_name in ("Gestionnaire de stock", "Vendeur", "Consultation"):
+        stack, _ = login_as(role_name)
+        window = _build_window(stack)
+        qtbot.addWidget(window)
+        assert "Audit" not in window.visible_modules
+
+    stack, _ = login_as("Administrateur")
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+    assert "Audit" in window.visible_modules
 
 
 def test_vendeur_cannot_reach_backup_restore_or_license_pages(qtbot, login_as) -> None:

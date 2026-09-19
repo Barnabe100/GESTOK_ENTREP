@@ -13,6 +13,7 @@ from typing import Optional
 
 from app.config.settings import Settings
 from app.services.articles.article_service import ArticleService
+from app.services.audit.audit_service import AuditService
 from app.services.auth.auth_service import AuthService
 from app.services.auth.permission_service import PermissionService
 from app.services.backups.backup_service import BackupService
@@ -57,6 +58,7 @@ class ServiceRegistry:
     dashboard: DashboardService
     parameters: CompanySettingsService
     documents: ReceiptService
+    audit: AuditService
 
 
 def build_service_registry(
@@ -96,4 +98,5 @@ def build_service_registry(
         dashboard=DashboardService(permission_service, report_service, settings),
         parameters=CompanySettingsService(permission_service, settings),
         documents=ReceiptService(permission_service, settings),
+        audit=AuditService(permission_service, settings),
     )
