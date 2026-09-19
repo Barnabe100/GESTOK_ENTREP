@@ -396,6 +396,60 @@ def test_create_article_initial_cmup_equals_purchase_price(login_as) -> None:
     assert article.cout_moyen_pondere == Decimal("42.50")
 
 
+def test_create_article_with_initial_stock_uses_stock_service_apply_movement(login_as, monkeypatch) -> None:
+    """§Lot G : le stock initial positif doit obligatoirement passer par
+    StockService.apply_movement (plus de construction manuelle de
+    MouvementStock / écriture directe de stock_actuel dans ArticleService)."""
+    from app.services.stock.stock_service import StockService
+
+    stack, _ = login_as("Administrateur")
+    category = _make_category(stack)
+
+    calls: list[tuple] = []
+    original_apply_movement = StockService.apply_movement
+
+    def _spy_apply_movement(self, session, article, type_mouvement, quantite_signee, **kwargs):
+        calls.append((type_mouvement, quantite_signee, kwargs))
+        return original_apply_movement(self, session, article, type_mouvement, quantite_signee, **kwargs)
+
+    monkeypatch.setattr(StockService, "apply_movement", _spy_apply_movement)
+
+    article = stack.articles.create_article(
+        "ART-STOCKSVC", "Article", category.id, "unité", Decimal("100"), Decimal("150"), Decimal("5"),
+        stock_initial=Decimal("50"),
+    )
+
+    assert len(calls) == 1
+    type_mouvement, quantite_signee, kwargs = calls[0]
+    assert type_mouvement == TypeMouvement.AJUSTEMENT
+    assert quantite_signee == Decimal("50")
+    assert kwargs["cout_unitaire"] == Decimal("100")
+    assert article.stock_actuel == Decimal("50")
+
+
+def test_create_article_without_initial_stock_does_not_call_apply_movement(login_as, monkeypatch) -> None:
+    """§Lot G : si stock_initial = 0, aucun mouvement n'est créé et
+    StockService.apply_movement n'est donc pas appelé."""
+    from app.services.stock.stock_service import StockService
+
+    stack, _ = login_as("Administrateur")
+    category = _make_category(stack)
+
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        StockService,
+        "apply_movement",
+        lambda self, *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    article = stack.articles.create_article(
+        "ART-NOSTOCKSVC", "Article", category.id, "unité", Decimal("100"), Decimal("150"), Decimal("5"),
+    )
+
+    assert calls == []
+    assert article.stock_actuel == Decimal("0")
+
+
 def test_negative_initial_stock_is_rejected(login_as) -> None:
     stack, _ = login_as("Administrateur")
     category = _make_category(stack)

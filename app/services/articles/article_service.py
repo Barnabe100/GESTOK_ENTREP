@@ -33,11 +33,11 @@ from app.db.session import session_scope
 from app.models.audit import AuditLog
 from app.models.catalog import Article
 from app.models.enums import ResultatAudit, StatutActifInactif, TypeMouvement
-from app.models.movement import MouvementStock
 from app.repositories.article_repository import ArticleRepository
 from app.repositories.category_repository import CategoryRepository
 from app.repositories.supplier_repository import SupplierRepository
 from app.services.auth.permission_service import PermissionService
+from app.services.stock.stock_service import StockService
 from app.utils.exceptions import ConflictError, NotFoundError, ValidationError
 from app.utils.logging_config import get_logger
 
@@ -161,6 +161,7 @@ class ArticleService:
     def __init__(self, permission_service: PermissionService, settings: Optional[Settings] = None) -> None:
         self._permissions = permission_service
         self._settings = settings
+        self._stock = StockService()
 
     def _acting_user_id(self) -> Optional[int]:
         current_user = self._permissions.current_user
@@ -275,7 +276,7 @@ class ArticleService:
                 # Règle métier retenue : en l'absence de tout historique d'entrée,
                 # le CMUP initial est égal au prix d'achat renseigné à la création.
                 cout_moyen_pondere=prix_achat,
-                stock_actuel=stock_initial,
+                stock_actuel=Decimal("0"),
                 stock_min=stock_min,
                 stock_max=stock_max,
                 emplacement=emplacement,
@@ -292,19 +293,15 @@ class ArticleService:
                 ) from exc
 
             if stock_initial > 0:
-                session.add(
-                    MouvementStock(
-                        article_id=article.id,
-                        type=TypeMouvement.AJUSTEMENT,
-                        quantite=stock_initial,
-                        stock_avant=Decimal("0"),
-                        stock_apres=stock_initial,
-                        cout_unitaire=prix_achat,
-                        user_id=acting_user_id,
-                        commentaire="Stock initial à la création de l'article.",
-                    )
+                self._stock.apply_movement(
+                    session,
+                    article,
+                    TypeMouvement.AJUSTEMENT,
+                    stock_initial,
+                    user_id=acting_user_id,
+                    cout_unitaire=prix_achat,
+                    commentaire="Stock initial à la création de l'article.",
                 )
-                session.flush()
 
             self._audit(session, "ARTICLE_CREATE", article.id)
             summary = ArticleSummary.from_model(article)
