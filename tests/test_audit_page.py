@@ -5,6 +5,7 @@ import pytest
 from PySide6.QtWidgets import QTableWidget
 
 from app.views.audit_detail_dialog import AuditDetailDialog
+from app.views.optional_date_edit import OptionalDateEdit
 from app.views.pages.audit_page import AuditPage, _DEFAULT_PERIOD_DAYS
 
 
@@ -73,6 +74,65 @@ def test_consultation_role_cannot_view_audit(qtbot, login_as) -> None:
     assert page.table.rowCount() == 0
 
 
+# -- Lot E-B.4 : OptionalDateEdit pour la période -----------------------------------------
+
+
+def test_date_fields_are_optional_date_edit(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert isinstance(page.date_from_edit, OptionalDateEdit)
+    assert isinstance(page.date_to_edit, OptionalDateEdit)
+
+
+def test_date_fields_use_calendar_popup_and_yyyy_mm_dd_format(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    for widget in (page.date_from_edit, page.date_to_edit):
+        assert widget.date_edit.calendarPopup() is True
+        assert widget.date_edit.displayFormat() == "yyyy-MM-dd"
+
+
+def test_date_edit_is_enabled_when_checked_by_default(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.date_from_edit.date_edit.isEnabled() is True
+    assert page.date_to_edit.date_edit.isEnabled() is True
+
+
+def test_unchecking_date_from_only_sets_it_to_none_and_keeps_date_to(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    original_date_to = page.date_to_edit.date_or_none()
+
+    page.date_from_edit.checkbox.setChecked(False)
+
+    assert page.date_from_edit.date_or_none() is None
+    assert page.date_from_edit.date_edit.isEnabled() is False
+    assert page.date_to_edit.date_or_none() == original_date_to  # borne indépendante, inchangée
+
+
+def test_period_filter_transmits_selected_dates_to_service(qtbot, login_as) -> None:
+    """Preuve de transmission correcte à ``AuditService.list_audits`` :
+    le nombre de lignes affichées correspond exactement à un appel service
+    direct avec les mêmes bornes que celles lues sur les widgets."""
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    date_from = page.date_from_edit.date_or_none()
+    date_to = page.date_to_edit.date_or_none()
+    expected = stack.audit.list_audits(date_from=date_from, date_to=date_to)
+
+    assert page.table.rowCount() == len(expected)
+
+
 # -- période par défaut -------------------------------------------------------------------
 
 
@@ -83,9 +143,10 @@ def test_default_period_is_last_30_days(qtbot, login_as) -> None:
     qtbot.addWidget(page)
 
     today = date.today()
-    expected_from = (today - timedelta(days=_DEFAULT_PERIOD_DAYS)).isoformat()
-    assert page.date_from_edit.text() == expected_from
-    assert page.date_to_edit.text() == today.isoformat()
+    assert page.date_from_edit.checkbox.isChecked() is True
+    assert page.date_to_edit.checkbox.isChecked() is True
+    assert page.date_from_edit.date_or_none() == today - timedelta(days=_DEFAULT_PERIOD_DAYS)
+    assert page.date_to_edit.date_or_none() == today
 
 
 def test_default_period_notice_is_visible(qtbot, login_as) -> None:
@@ -101,17 +162,35 @@ def test_reset_filters_restores_default_period(qtbot, login_as) -> None:
     page = _build_page(stack)
     qtbot.addWidget(page)
 
-    page.date_from_edit.setText("2020-01-01")
-    page.date_to_edit.setText("2020-01-02")
+    page.date_from_edit.set_date_or_none(date(2020, 1, 1))
+    page.date_to_edit.set_date_or_none(date(2020, 1, 2))
     page.search_edit.setText("quelque chose")
     page.refresh()
 
     page._on_reset_filters_clicked()
 
     today = date.today()
-    assert page.date_from_edit.text() == (today - timedelta(days=_DEFAULT_PERIOD_DAYS)).isoformat()
-    assert page.date_to_edit.text() == today.isoformat()
+    assert page.date_from_edit.checkbox.isChecked() is True
+    assert page.date_to_edit.checkbox.isChecked() is True
+    assert page.date_from_edit.date_or_none() == today - timedelta(days=_DEFAULT_PERIOD_DAYS)
+    assert page.date_to_edit.date_or_none() == today
     assert page.search_edit.text() == ""
+
+
+def test_reset_filters_recalculates_period_rather_than_keeping_old_dates(qtbot, login_as) -> None:
+    """§Reset : doit recalculer la période des 30 derniers jours, ne
+    jamais simplement conserver d'anciennes dates figées."""
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page.date_from_edit.checkbox.setChecked(False)
+    page.date_to_edit.checkbox.setChecked(False)
+
+    page._on_reset_filters_clicked()
+
+    today = date.today()
+    assert page.date_from_edit.date_or_none() == today - timedelta(days=_DEFAULT_PERIOD_DAYS)
+    assert page.date_to_edit.date_or_none() == today
 
 
 # -- accès à l'historique complet ----------------------------------------------------------
@@ -123,11 +202,29 @@ def test_clearing_date_fields_gives_access_to_full_history(qtbot, login_as) -> N
     qtbot.addWidget(page)
     rows_within_default_period = page.table.rowCount()
 
-    page.date_from_edit.setText("2000-01-01")
+    page.date_from_edit.set_date_or_none(date(2000, 1, 1))
     page.refresh()
 
     # Toujours au moins autant de lignes (jamais moins) une fois la période
     # étendue à un historique bien plus large que la fenêtre par défaut.
+    assert page.table.rowCount() >= rows_within_default_period
+
+
+def test_unchecking_both_dates_gives_access_to_full_history(qtbot, login_as) -> None:
+    """§3 : décocher les deux bornes (date_from = None, date_to = None)
+    doit donner accès à l'historique complet — le mécanisme central déjà
+    validé au Lot B, désormais porté par ``OptionalDateEdit``."""
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    rows_within_default_period = page.table.rowCount()
+
+    page.date_from_edit.checkbox.setChecked(False)
+    page.date_to_edit.checkbox.setChecked(False)
+    page.refresh()
+
+    assert page.date_from_edit.date_or_none() is None
+    assert page.date_to_edit.date_or_none() is None
     assert page.table.rowCount() >= rows_within_default_period
 
 

@@ -10,15 +10,12 @@ validations d'Entrées/Sorties/Ventes/Inventaires. Cette page ne propose donc
 aucun bouton d'action, uniquement des filtres de consultation.
 
 Filtres regroupés derrière un bouton « Actualiser » explicite (plutôt qu'un
-rafraîchissement à chaque frappe) : les deux champs de date acceptent une
-saisie partielle le temps d'être complétée, et déclencher une validation à
-chaque caractère saisi ferait apparaître une erreur intempestive — même
-convention que la page Rapports (voir ``ReportsPage``).
+rafraîchissement à chaque frappe). Les deux dates de période sont des
+``OptionalDateEdit`` (case à cocher + ``QDateEdit``) : décochées, aucune
+borne n'est transmise au service (tout l'historique) — même convention que
+la page Rapports (voir ``ReportsPage``).
 """
 from __future__ import annotations
-
-from datetime import date
-from typing import Optional
 
 from PySide6.QtWidgets import (
     QComboBox,
@@ -37,7 +34,7 @@ from app.models.enums import TypeMouvement
 from app.services.auth.permission_service import PermissionService
 from app.services.stock.movement_service import MovementService
 from app.utils.exceptions import AppError
-from app.views.common import parse_date
+from app.views.optional_date_edit import OptionalDateEdit
 
 _COLUMNS = [
     "Date/heure", "Article", "Type", "Quantité", "Stock avant", "Stock après",
@@ -72,12 +69,12 @@ class MouvementsPage(QWidget):
         self.search_edit.setPlaceholderText("Rechercher (article, utilisateur, commentaire)…")
         toolbar.addWidget(self.search_edit)
 
-        self.date_from_edit = QLineEdit(self)
-        self.date_from_edit.setPlaceholderText("Du (AAAA-MM-JJ)")
+        toolbar.addWidget(QLabel("Du", self))
+        self.date_from_edit = OptionalDateEdit(self)
         toolbar.addWidget(self.date_from_edit)
 
-        self.date_to_edit = QLineEdit(self)
-        self.date_to_edit.setPlaceholderText("Au (AAAA-MM-JJ)")
+        toolbar.addWidget(QLabel("Au", self))
+        self.date_to_edit = OptionalDateEdit(self)
         toolbar.addWidget(self.date_to_edit)
 
         self.type_filter_combo = QComboBox(self)
@@ -113,28 +110,18 @@ class MouvementsPage(QWidget):
 
     # -- filtres -----------------------------------------------------------
 
-    def _parse_optional_date(self, text: str, field_label: str) -> Optional[date]:
-        text = (text or "").strip()
-        if not text:
-            return None
-        return parse_date(text, field_label)
-
     def _on_reset_filters_clicked(self) -> None:
         self.search_edit.clear()
-        self.date_from_edit.clear()
-        self.date_to_edit.clear()
+        self.date_from_edit.set_date_or_none(None)
+        self.date_to_edit.set_date_or_none(None)
         self.type_filter_combo.setCurrentIndex(0)
         self.refresh()
 
     # -- rafraîchissement ----------------------------------------------------
 
     def refresh(self) -> None:
-        try:
-            date_from = self._parse_optional_date(self.date_from_edit.text(), "date de début")
-            date_to = self._parse_optional_date(self.date_to_edit.text(), "date de fin")
-        except AppError as exc:
-            QMessageBox.warning(self, "Filtre invalide", str(exc))
-            return
+        date_from = self.date_from_edit.date_or_none()
+        date_to = self.date_to_edit.date_or_none()
 
         try:
             movements = self._movement_service.list_movements(

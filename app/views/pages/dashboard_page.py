@@ -23,12 +23,11 @@ from PySide6.QtCore import Qt
 from PySide6.QtCharts import QBarCategoryAxis, QBarSeries, QBarSet, QChart, QChartView, QPieSeries, QValueAxis
 from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import (
+    QDateEdit,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
-    QMessageBox,
     QPushButton,
     QScrollArea,
     QTableWidget,
@@ -43,7 +42,7 @@ from app.services.dashboard.dashboard_service import DashboardOverview, Dashboar
 from app.services.settings.company_settings_service import get_effective_currency
 from app.utils.exceptions import AppError
 from app.utils.money import format_money
-from app.views.common import parse_date
+from app.views.common import date_to_qdate
 
 # Permissions requises pour chaque accès rapide (§12) — jamais affiché si
 # l'utilisateur courant ne les a pas, indépendamment de DASHBOARD_VIEW.
@@ -110,8 +109,8 @@ class DashboardPage(QWidget):
         layout.addLayout(self._build_recent_activity_box())
 
         period_from, period_to = default_period()
-        self.date_from_edit.setText(period_from.isoformat())
-        self.date_to_edit.setText(period_to.isoformat())
+        self.date_from_edit.setDate(date_to_qdate(period_from))
+        self.date_to_edit.setDate(date_to_qdate(period_to))
 
         self.refresh_button.clicked.connect(self.refresh)
         self.refresh()
@@ -121,12 +120,14 @@ class DashboardPage(QWidget):
     def _build_period_row(self) -> QHBoxLayout:
         row = QHBoxLayout()
         row.addWidget(QLabel("Période — du", self))
-        self.date_from_edit = QLineEdit(self)
-        self.date_from_edit.setPlaceholderText("AAAA-MM-JJ")
+        self.date_from_edit = QDateEdit(self)
+        self.date_from_edit.setCalendarPopup(True)
+        self.date_from_edit.setDisplayFormat("yyyy-MM-dd")
         row.addWidget(self.date_from_edit)
         row.addWidget(QLabel("au", self))
-        self.date_to_edit = QLineEdit(self)
-        self.date_to_edit.setPlaceholderText("AAAA-MM-JJ")
+        self.date_to_edit = QDateEdit(self)
+        self.date_to_edit.setCalendarPopup(True)
+        self.date_to_edit.setDisplayFormat("yyyy-MM-dd")
         row.addWidget(self.date_to_edit)
         self.refresh_button = QPushButton("Actualiser", self)
         row.addWidget(self.refresh_button)
@@ -276,20 +277,15 @@ class DashboardPage(QWidget):
 
     # -- rafraîchissement ---------------------------------------------------------------
 
-    def _read_period(self) -> Optional[tuple[date, date]]:
-        try:
-            period_from = parse_date(self.date_from_edit.text(), "date de début")
-            period_to = parse_date(self.date_to_edit.text(), "date de fin")
-        except AppError as exc:
-            QMessageBox.warning(self, "Période invalide", str(exc))
-            return None
-        return period_from, period_to
+    def _read_period(self) -> tuple[date, date]:
+        """Les deux bornes sont toujours renseignées : un ``QDateEdit``
+        porte nécessairement une date valide, aucune saisie ne peut plus
+        produire une période invalide — contrairement à l'ancien
+        ``QLineEdit`` texte, ``parse_date`` n'est donc plus nécessaire ici."""
+        return self.date_from_edit.date().toPython(), self.date_to_edit.date().toPython()
 
     def refresh(self) -> None:
-        period = self._read_period()
-        if period is None:
-            return
-        period_from, period_to = period
+        period_from, period_to = self._read_period()
 
         try:
             overview = self._dashboard_service.get_overview(period_from, period_to)

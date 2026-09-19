@@ -3,21 +3,18 @@ KPI, visibilité des accès rapides selon les permissions, actualisation.
 
 Complété par le Lot D (UX) : présence du QScrollArea, messages "aucune
 donnée" par section, et renommage du libellé KPI ventes -> chiffre
-d'affaires."""
-from datetime import date
+d'affaires. Complété par le Lot E-B.2 : QDateEdit obligatoires pour la
+période (plus de saisie texte, donc plus de QMessageBox d'avertissement
+sur une période invalide — ce cas n'existe plus)."""
+from datetime import date, timedelta
 from decimal import Decimal
 
-import pytest
-from PySide6.QtWidgets import QMessageBox, QScrollArea
+from PySide6.QtCore import QDate
+from PySide6.QtWidgets import QDateEdit, QScrollArea
 
 from app.services.entries.entry_service import EntreeLigneInput
 from app.services.sales.sale_service import VenteLigneInput
 from app.views.pages.dashboard_page import DashboardPage
-
-
-@pytest.fixture(autouse=True)
-def _no_blocking_dialogs(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("app.views.pages.dashboard_page.QMessageBox.warning", lambda *a, **k: None)
 
 
 def _build_page(stack, on_navigate=None) -> DashboardPage:
@@ -125,23 +122,6 @@ def test_refresh_button_reloads_kpis_after_change(qtbot, login_as) -> None:
     page.refresh_button.click()
 
     assert page.kpi_articles_label.text() == "1"
-
-
-def test_invalid_period_shows_warning_and_does_not_crash(qtbot, login_as, monkeypatch) -> None:
-    stack, _ = login_as("Administrateur")
-    page = _build_page(stack)
-    qtbot.addWidget(page)
-
-    warnings = []
-    monkeypatch.setattr(
-        "app.views.pages.dashboard_page.QMessageBox.warning",
-        lambda *a, **k: warnings.append(a) or QMessageBox.StandardButton.Ok,
-    )
-
-    page.date_from_edit.setText("pas une date")
-    page.refresh_button.click()
-
-    assert len(warnings) == 1
 
 
 def test_dashboard_page_never_modifies_stock(qtbot, login_as) -> None:
@@ -361,3 +341,110 @@ def test_kpi_sales_value_unchanged_after_rename(qtbot, login_as) -> None:
     qtbot.addWidget(page)
 
     assert "300" in page.kpi_sales_label.text()  # 2 x 150 = 300, valeur/calcul inchangés
+
+
+# -- Lot E-B.2 : QDateEdit obligatoires pour la période ----------------------------------
+
+
+def test_period_fields_are_qdateedit_with_calendar_popup_and_format(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert isinstance(page.date_from_edit, QDateEdit)
+    assert isinstance(page.date_to_edit, QDateEdit)
+    for widget in (page.date_from_edit, page.date_to_edit):
+        assert widget.calendarPopup() is True
+        assert widget.displayFormat() == "yyyy-MM-dd"
+
+
+def test_period_defaults_to_first_day_of_month_and_today(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    today = date.today()
+    assert page.date_from_edit.date() == QDate(today.year, today.month, 1)
+    assert page.date_to_edit.date() == QDate(today.year, today.month, today.day)
+
+
+def test_read_period_returns_python_date_objects(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    period_from, period_to = page._read_period()
+
+    assert isinstance(period_from, date)
+    assert isinstance(period_to, date)
+    today = date.today()
+    assert period_from == today.replace(day=1)
+    assert period_to == today
+
+
+def test_changing_dates_is_reflected_by_read_period(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    page.date_from_edit.setDate(QDate(2026, 3, 1))
+    page.date_to_edit.setDate(QDate(2026, 3, 17))
+
+    period_from, period_to = page._read_period()
+
+    assert period_from == date(2026, 3, 1)
+    assert period_to == date(2026, 3, 17)
+
+
+def test_changing_dates_and_refreshing_transmits_selected_period_to_service(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    category = stack.categories.create_category("Boissons")
+    article = stack.articles.create_article(
+        "ART-1", "Eau", category.id, "u", Decimal("100"), Decimal("150"), Decimal("5"), stock_initial=Decimal("50")
+    )
+    # Une vente hors de la période par défaut (mois courant) : ne doit
+    # apparaître dans le chiffre d'affaires qu'une fois la période élargie
+    # pour l'inclure, preuve que la période sélectionnée est bien transmise
+    # au service plutôt qu'une valeur figée.
+    past_date = date(2020, 1, 15)
+    sale = stack.sales.create_sale(past_date, [VenteLigneInput(article.id, Decimal("2"), Decimal("150"))])
+    stack.sales.validate_sale(sale.id)
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    assert "300" not in page.kpi_sales_label.text()  # hors période par défaut (mois courant)
+
+    page.date_from_edit.setDate(QDate(2020, 1, 1))
+    page.date_to_edit.setDate(QDate(2020, 1, 31))
+    page.refresh_button.click()
+
+    assert "300" in page.kpi_sales_label.text()
+
+
+def test_refresh_still_works_after_selecting_a_date_range(qtbot, login_as) -> None:
+    """Non-régression : le Dashboard reste fonctionnel (aucun crash, aucun
+    statut d'erreur) après une modification manuelle des deux dates."""
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    page.date_from_edit.setDate(QDate(2025, 6, 1))
+    page.date_to_edit.setDate(QDate(2025, 6, 30))
+    page.refresh_button.click()
+
+    assert page.status_label.isHidden() is True
+
+
+def test_dashboard_works_for_vendeur_role_with_selected_period(qtbot, login_as) -> None:
+    """Non-régression des permissions (Lot D/§9 du Lot D) : un Vendeur sans
+    REPORT_VIEW continue de voir un Dashboard partiel, y compris après
+    changement de période."""
+    stack, _ = login_as("Vendeur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    page.date_from_edit.setDate(QDate(2025, 1, 1))
+    page.date_to_edit.setDate(QDate(2025, 12, 31))
+    page.refresh_button.click()
+
+    assert page.kpi_stock_value_label.text() == "—"  # section REPORT_VIEW toujours masquée

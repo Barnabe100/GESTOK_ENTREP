@@ -6,6 +6,8 @@ affichée.
 """
 from __future__ import annotations
 
+import importlib
+
 import pytest
 
 from app.views.pages.articles_page import ArticlesPage
@@ -18,12 +20,18 @@ from app.views.pages.sales_page import SalesPage
 
 @pytest.fixture(autouse=True)
 def _no_blocking_dialogs(monkeypatch: pytest.MonkeyPatch) -> None:
-    for module in (
+    for module_name in (
         "app.views.pages.articles_page", "app.views.pages.dashboard_page", "app.views.pages.entries_page",
         "app.views.pages.exits_page", "app.views.pages.reports_page", "app.views.pages.sales_page",
     ):
-        monkeypatch.setattr(f"{module}.QMessageBox.information", lambda *a, **k: None, raising=False)
-        monkeypatch.setattr(f"{module}.QMessageBox.warning", lambda *a, **k: None, raising=False)
+        # DashboardPage n'importe plus QMessageBox depuis le Lot E-B.2 (ses
+        # deux dates de période sont désormais des QDateEdit, toujours
+        # valides : plus aucun avertissement de période invalide à afficher).
+        module = importlib.import_module(module_name)
+        if not hasattr(module, "QMessageBox"):
+            continue
+        monkeypatch.setattr(f"{module_name}.QMessageBox.information", lambda *a, **k: None, raising=False)
+        monkeypatch.setattr(f"{module_name}.QMessageBox.warning", lambda *a, **k: None, raising=False)
 
 
 def test_pages_default_to_settings_default_currency_when_unconfigured(qtbot, login_as) -> None:

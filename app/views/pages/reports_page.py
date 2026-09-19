@@ -47,7 +47,7 @@ from app.services.reports.report_service import ReportService
 from app.services.settings.company_settings_service import get_effective_currency
 from app.utils.exceptions import AppError, ValidationError
 from app.utils.money import format_money
-from app.views.common import parse_date
+from app.views.optional_date_edit import OptionalDateEdit
 
 _REPORTS = [
     "État du stock", "Stock faible", "Ruptures", "Mouvements",
@@ -164,14 +164,12 @@ class ReportsPage(QWidget):
         self._filters_grid.addWidget(self.include_inactive_checkbox, 0, 4)
 
         self.date_from_label = QLabel("Du", self)
-        self.date_from_edit = QLineEdit(self)
-        self.date_from_edit.setPlaceholderText("AAAA-MM-JJ")
+        self.date_from_edit = OptionalDateEdit(self)
         self._filters_grid.addWidget(self.date_from_label, 1, 0)
         self._filters_grid.addWidget(self.date_from_edit, 1, 1)
 
         self.date_to_label = QLabel("Au", self)
-        self.date_to_edit = QLineEdit(self)
-        self.date_to_edit.setPlaceholderText("AAAA-MM-JJ")
+        self.date_to_edit = OptionalDateEdit(self)
         self._filters_grid.addWidget(self.date_to_label, 1, 2)
         self._filters_grid.addWidget(self.date_to_edit, 1, 3)
 
@@ -269,8 +267,8 @@ class ReportsPage(QWidget):
         self.search_edit.clear()
         self.category_combo.setCurrentIndex(0)
         self.include_inactive_checkbox.setChecked(False)
-        self.date_from_edit.clear()
-        self.date_to_edit.clear()
+        self.date_from_edit.set_date_or_none(None)
+        self.date_to_edit.set_date_or_none(None)
         self.article_combo.setCurrentIndex(0)
         self.type_mouvement_combo.setCurrentIndex(0)
         self.statut_combo.setCurrentIndex(0)
@@ -279,16 +277,8 @@ class ReportsPage(QWidget):
 
     # -- lecture des filtres communs ------------------------------------------
 
-    def _parse_optional_date(self, text: str, field_label: str) -> Optional[date]:
-        text = (text or "").strip()
-        if not text:
-            return None
-        return parse_date(text, field_label)
-
     def _read_period(self) -> tuple[Optional[date], Optional[date]]:
-        date_from = self._parse_optional_date(self.date_from_edit.text(), "date de début")
-        date_to = self._parse_optional_date(self.date_to_edit.text(), "date de fin")
-        return date_from, date_to
+        return self.date_from_edit.date_or_none(), self.date_to_edit.date_or_none()
 
     # -- rafraîchissement -------------------------------------------------------
 

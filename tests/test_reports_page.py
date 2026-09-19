@@ -6,6 +6,7 @@ from PySide6.QtWidgets import QMessageBox
 
 from app.services.entries.entry_service import EntreeLigneInput
 from app.services.sales.sale_service import VenteLigneInput
+from app.views.optional_date_edit import OptionalDateEdit
 from app.views.pages.reports_page import ReportsPage
 
 
@@ -233,3 +234,156 @@ def test_reports_never_modify_stock(qtbot, login_as) -> None:
         page.report_combo.setCurrentText(report_name)
 
     assert stack.articles.get_article(article.id).stock_actuel == Decimal("42")
+
+
+# -- Lot E-B.3 : OptionalDateEdit pour la période -----------------------------------------
+
+
+def test_date_fields_are_optional_date_edit(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert isinstance(page.date_from_edit, OptionalDateEdit)
+    assert isinstance(page.date_to_edit, OptionalDateEdit)
+
+
+def test_dates_are_none_by_default(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.date_from_edit.date_or_none() is None
+    assert page.date_to_edit.date_or_none() is None
+    assert page._read_period() == (None, None)
+
+
+def test_checking_date_from_makes_it_active(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    page.date_from_edit.set_date_or_none(date(2026, 1, 1))
+
+    assert page.date_from_edit.checkbox.isChecked() is True
+    assert page.date_from_edit.date_or_none() == date(2026, 1, 1)
+
+
+def test_unchecking_date_from_returns_none(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page.date_from_edit.set_date_or_none(date(2026, 1, 1))
+
+    page.date_from_edit.checkbox.setChecked(False)
+
+    assert page.date_from_edit.date_or_none() is None
+
+
+def test_checking_date_to_makes_it_active(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    page.date_to_edit.set_date_or_none(date(2026, 1, 31))
+
+    assert page.date_to_edit.checkbox.isChecked() is True
+    assert page.date_to_edit.date_or_none() == date(2026, 1, 31)
+
+
+def test_unchecking_date_to_returns_none(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page.date_to_edit.set_date_or_none(date(2026, 1, 31))
+
+    page.date_to_edit.checkbox.setChecked(False)
+
+    assert page.date_to_edit.date_or_none() is None
+
+
+def test_read_period_returns_selected_optional_dates(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    page.date_from_edit.set_date_or_none(date(2026, 1, 1))
+    page.date_to_edit.set_date_or_none(date(2026, 1, 31))
+
+    assert page._read_period() == (date(2026, 1, 1), date(2026, 1, 31))
+
+
+def test_read_period_returns_none_for_unchecked_bound_only(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    page.date_from_edit.set_date_or_none(date(2026, 1, 1))
+    # date_to reste décochée.
+
+    assert page._read_period() == (date(2026, 1, 1), None)
+
+
+def test_reset_filters_sets_both_dates_to_none(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page.date_from_edit.set_date_or_none(date(2026, 1, 1))
+    page.date_to_edit.set_date_or_none(date(2026, 1, 31))
+
+    page._on_reset_filters_clicked()
+
+    assert page.date_from_edit.date_or_none() is None
+    assert page.date_to_edit.date_or_none() is None
+
+
+def test_date_fields_hidden_for_report_without_period(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    page.report_combo.setCurrentText("État du stock")
+
+    assert page.date_from_label.isHidden() is True
+    assert page.date_from_edit.isHidden() is True
+    assert page.date_to_label.isHidden() is True
+    assert page.date_to_edit.isHidden() is True
+
+
+def test_date_fields_visible_for_report_with_period(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    page.report_combo.setCurrentText("Mouvements")
+
+    assert page.date_from_label.isHidden() is False
+    assert page.date_from_edit.isHidden() is False
+    assert page.date_to_label.isHidden() is False
+    assert page.date_to_edit.isHidden() is False
+
+
+def test_period_report_transmits_selected_dates_to_service(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    supplier = stack.suppliers.create_supplier("F")
+    article = _make_article(stack, stock_initial=Decimal("0"))
+    old_entry = stack.entries.create_entry(
+        supplier.id, date(2020, 1, 1), [EntreeLigneInput(article.id, Decimal("5"), Decimal("100"))]
+    )
+    stack.entries.validate_entry(old_entry.id)
+    recent_entry = stack.entries.create_entry(
+        supplier.id, date(2026, 6, 15), [EntreeLigneInput(article.id, Decimal("5"), Decimal("100"))]
+    )
+    stack.entries.validate_entry(recent_entry.id)
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page.report_combo.setCurrentText("Entrées")
+    assert page.table.rowCount() == 2  # aucune borne : tout l'historique
+
+    page.date_from_edit.set_date_or_none(date(2026, 1, 1))
+    page.date_to_edit.set_date_or_none(date(2026, 12, 31))
+    page.refresh()
+
+    assert page.table.rowCount() == 1
+    assert page.table.item(0, 0).text() == recent_entry.numero

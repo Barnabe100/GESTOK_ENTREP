@@ -1,10 +1,11 @@
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
 from PySide6.QtWidgets import QMessageBox, QTableWidget
 
 from app.services.entries.entry_service import EntreeLigneInput
+from app.views.optional_date_edit import OptionalDateEdit
 from app.views.pages.mouvements_page import MouvementsPage
 
 
@@ -155,3 +156,116 @@ def test_consultation_role_can_view_movements(qtbot, login_as) -> None:
     qtbot.addWidget(page)
 
     assert page.table.rowCount() == 0
+
+
+# -- Lot E-B.3 : OptionalDateEdit pour la période -----------------------------------------
+
+
+def test_date_fields_are_optional_date_edit(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert isinstance(page.date_from_edit, OptionalDateEdit)
+    assert isinstance(page.date_to_edit, OptionalDateEdit)
+
+
+def test_dates_are_none_by_default(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.date_from_edit.date_or_none() is None
+    assert page.date_to_edit.date_or_none() is None
+
+
+def test_full_history_shown_when_no_date_selected(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    supplier = stack.suppliers.create_supplier("F")
+    article = _make_article(stack, stock_initial=Decimal("0"))
+    old_entry = stack.entries.create_entry(
+        supplier.id, date(2020, 1, 1), [EntreeLigneInput(article.id, Decimal("10"), Decimal("100"))]
+    )
+    stack.entries.validate_entry(old_entry.id)
+    recent_entry = stack.entries.create_entry(
+        supplier.id, date(2026, 6, 15), [EntreeLigneInput(article.id, Decimal("10"), Decimal("100"))]
+    )
+    stack.entries.validate_entry(recent_entry.id)
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.table.rowCount() == 2  # aucune borne : tout l'historique
+
+
+def test_selecting_date_from_and_date_to_narrows_results(qtbot, login_as) -> None:
+    """``MouvementStock.date_heure`` est horodaté à la validation (§ voir
+    ``MouvementRepository``), jamais à la date métier du document — le
+    filtre est donc exercé par rapport à aujourd'hui, comme
+    ``test_movement_service.py::test_filtered_by_period``."""
+    stack, _ = login_as("Administrateur")
+    supplier = stack.suppliers.create_supplier("F")
+    article = _make_article(stack, stock_initial=Decimal("0"))
+    entry = stack.entries.create_entry(
+        supplier.id, date.today(), [EntreeLigneInput(article.id, Decimal("10"), Decimal("100"))]
+    )
+    stack.entries.validate_entry(entry.id)
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    assert page.table.rowCount() == 1
+
+    yesterday = date.today() - timedelta(days=1)
+    page.date_from_edit.set_date_or_none(yesterday)
+    page.date_to_edit.set_date_or_none(yesterday)
+    page.refresh()
+    assert page.table.rowCount() == 0
+
+    page.date_from_edit.set_date_or_none(date.today())
+    page.date_to_edit.set_date_or_none(date.today())
+    page.refresh()
+    assert page.table.rowCount() == 1
+    assert page.table.item(0, 6).text() == entry.numero
+
+
+def test_selecting_only_date_from_transmits_a_single_bound(qtbot, login_as) -> None:
+    """Transmission correcte au service : seule la borne cochée est
+    transmise, l'autre reste ``None`` (historique ouvert vers l'avenir)."""
+    stack, _ = login_as("Administrateur")
+    supplier = stack.suppliers.create_supplier("F")
+    article = _make_article(stack, stock_initial=Decimal("0"))
+    entry = stack.entries.create_entry(
+        supplier.id, date.today(), [EntreeLigneInput(article.id, Decimal("10"), Decimal("100"))]
+    )
+    stack.entries.validate_entry(entry.id)
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    tomorrow = date.today() + timedelta(days=1)
+    page.date_from_edit.set_date_or_none(tomorrow)
+    page.refresh()
+    assert page.table.rowCount() == 0  # borne de début après le seul mouvement existant
+
+    page.date_from_edit.set_date_or_none(date.today())
+    page.refresh()
+    assert page.table.rowCount() == 1
+    assert page.table.item(0, 6).text() == entry.numero
+
+
+def test_reset_filters_sets_both_dates_to_none_and_restores_full_history(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("10"))
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page.date_from_edit.set_date_or_none(date(2099, 1, 1))
+    page.date_to_edit.set_date_or_none(date(2099, 12, 31))
+    page.refresh()
+    assert page.table.rowCount() == 0  # aucun mouvement dans cette période lointaine
+
+    page._on_reset_filters_clicked()
+
+    assert page.date_from_edit.date_or_none() is None
+    assert page.date_to_edit.date_or_none() is None
+    assert page.table.rowCount() == 1  # historique complet restauré

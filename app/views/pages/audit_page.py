@@ -19,7 +19,6 @@ archivé ou masqué définitivement par cette valeur.
 from __future__ import annotations
 
 from datetime import date, timedelta
-from typing import Optional
 
 from PySide6.QtWidgets import (
     QComboBox,
@@ -39,7 +38,7 @@ from app.services.audit.audit_service import AuditService
 from app.services.auth.permission_service import PermissionService
 from app.utils.exceptions import AppError
 from app.views.audit_detail_dialog import AuditDetailDialog
-from app.views.common import parse_date
+from app.views.optional_date_edit import OptionalDateEdit
 
 _COLUMNS = ["Date/heure", "Utilisateur", "Action", "Entité", "Référence", "Résultat", "Détails"]
 
@@ -74,12 +73,12 @@ class AuditPage(QWidget):
         self.search_edit.setPlaceholderText("Rechercher (action, utilisateur, détails)…")
         toolbar.addWidget(self.search_edit)
 
-        self.date_from_edit = QLineEdit(self)
-        self.date_from_edit.setPlaceholderText("Du (AAAA-MM-JJ)")
+        toolbar.addWidget(QLabel("Du", self))
+        self.date_from_edit = OptionalDateEdit(self)
         toolbar.addWidget(self.date_from_edit)
 
-        self.date_to_edit = QLineEdit(self)
-        self.date_to_edit.setPlaceholderText("Au (AAAA-MM-JJ)")
+        toolbar.addWidget(QLabel("Au", self))
+        self.date_to_edit = OptionalDateEdit(self)
         toolbar.addWidget(self.date_to_edit)
 
         self.entite_filter_combo = QComboBox(self)
@@ -132,17 +131,13 @@ class AuditPage(QWidget):
             return []
 
     def _apply_default_period(self) -> None:
-        """Pré-remplit la période par défaut (30 derniers jours) — utilisé à
-        la construction et par « Réinitialiser les filtres »."""
+        """Pré-remplit la période par défaut (30 derniers jours), les deux
+        bornes cochées — utilisé à la construction et par « Réinitialiser
+        les filtres » (qui doit recalculer la période, pas conserver
+        d'anciennes dates)."""
         today = date.today()
-        self.date_from_edit.setText((today - timedelta(days=_DEFAULT_PERIOD_DAYS)).isoformat())
-        self.date_to_edit.setText(today.isoformat())
-
-    def _parse_optional_date(self, text: str, field_label: str) -> Optional[date]:
-        text = (text or "").strip()
-        if not text:
-            return None
-        return parse_date(text, field_label)
+        self.date_from_edit.set_date_or_none(today - timedelta(days=_DEFAULT_PERIOD_DAYS))
+        self.date_to_edit.set_date_or_none(today)
 
     def _on_reset_filters_clicked(self) -> None:
         self.search_edit.clear()
@@ -153,12 +148,8 @@ class AuditPage(QWidget):
     # -- rafraîchissement ----------------------------------------------------
 
     def refresh(self) -> None:
-        try:
-            date_from = self._parse_optional_date(self.date_from_edit.text(), "date de début")
-            date_to = self._parse_optional_date(self.date_to_edit.text(), "date de fin")
-        except AppError as exc:
-            QMessageBox.warning(self, "Filtre invalide", str(exc))
-            return
+        date_from = self.date_from_edit.date_or_none()
+        date_to = self.date_to_edit.date_or_none()
 
         try:
             audits = self._audit_service.list_audits(
