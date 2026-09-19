@@ -10,10 +10,13 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from PySide6.QtCore import QDate
-from PySide6.QtWidgets import QDateEdit, QScrollArea
+from PySide6.QtWidgets import QDateEdit, QScrollArea, QToolTip
 
 from app.services.entries.entry_service import EntreeLigneInput
+from app.services.exits.exit_service import SortieLigneInput
+from app.services.inventory.inventory_service import InventaireLigneInput
 from app.services.sales.sale_service import VenteLigneInput
+from app.utils.money import format_money
 from app.views.pages.dashboard_page import DashboardPage
 
 
@@ -448,3 +451,197 @@ def test_dashboard_works_for_vendeur_role_with_selected_period(qtbot, login_as) 
     page.refresh_button.click()
 
     assert page.kpi_stock_value_label.text() == "—"  # section REPORT_VIEW toujours masquée
+
+
+# -- Lot D.1 : KPI secondaires (déjà calculés, jusqu'ici non affichés) -----------------
+
+
+def _setup_full_activity(stack):
+    """Une entrée, une sortie, une vente et un inventaire validés
+    aujourd'hui — même patron que
+    test_dashboard_service.py::test_activity_kpis_counts_only_validated_documents."""
+    category = stack.categories.create_category("Boissons")
+    supplier = stack.suppliers.create_supplier("Fournisseur A")
+    motif = stack.exit_reasons.create_exit_reason("Casse")
+    article = stack.articles.create_article(
+        "ART-1", "Eau", category.id, "u", Decimal("10"), Decimal("15"), Decimal("5"), stock_initial=Decimal("50")
+    )
+    today = date.today()
+
+    entry = stack.entries.create_entry(
+        supplier.id, today, [EntreeLigneInput(article.id, Decimal("10"), Decimal("10"))]
+    )
+    stack.entries.validate_entry(entry.id)
+
+    exit_doc = stack.exits.create_exit(motif.id, today, [SortieLigneInput(article.id, Decimal("5"))])
+    stack.exits.validate_exit(exit_doc.id)
+
+    sale = stack.sales.create_sale(today, [VenteLigneInput(article.id, Decimal("2"), Decimal("15"))])
+    stack.sales.validate_sale(sale.id)
+
+    inventory = stack.inventory.create_inventory(today, [InventaireLigneInput(article.id, Decimal("100"))])
+    stack.inventory.validate_inventory(inventory.id)
+
+    return article
+
+
+def test_secondary_kpi_cards_exist(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    for attr in (
+        "kpi_stock_quantity_label", "kpi_entries_label", "kpi_exits_label",
+        "kpi_sales_count_label", "kpi_inventories_label",
+    ):
+        assert hasattr(page, attr)
+
+
+def test_secondary_kpi_stock_quantity_matches_service(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    _setup_catalog(stack)
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    expected = str(stack.dashboard.get_stock_kpis().total_quantity)
+    assert page.kpi_stock_quantity_label.text() == expected
+
+
+def test_secondary_kpi_activity_counts_reflect_validated_documents(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    _setup_full_activity(stack)
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.kpi_entries_label.text() == "1"
+    assert page.kpi_exits_label.text() == "1"
+    assert page.kpi_sales_count_label.text() == "1"
+    assert page.kpi_inventories_label.text() == "1"
+
+
+def test_existing_sales_amount_kpi_unaffected_by_new_sales_count_kpi(qtbot, login_as) -> None:
+    """Non-régression : le KPI existant « Chiffre d'affaires (période) »
+    (montant) reste distinct du nouveau « Ventes (période) » (nombre)."""
+    stack, _ = login_as("Administrateur")
+    _setup_full_activity(stack)
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.kpi_sales_label.text() == format_money(Decimal("30.00"), page._currency_code)
+    assert page.kpi_sales_count_label.text() == "1"
+
+
+def test_secondary_kpi_cards_show_dash_without_report_view(qtbot, login_as) -> None:
+    stack, _ = login_as("Vendeur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.kpi_stock_quantity_label.text() == "—"
+    assert page.kpi_entries_label.text() == "—"
+    assert page.kpi_exits_label.text() == "—"
+    assert page.kpi_sales_count_label.text() == "—"
+    assert page.kpi_inventories_label.text() == "—"
+
+
+def test_secondary_kpi_cards_show_zero_with_no_activity_in_period(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.kpi_entries_label.text() == "0"
+    assert page.kpi_exits_label.text() == "0"
+    assert page.kpi_sales_count_label.text() == "0"
+    assert page.kpi_inventories_label.text() == "0"
+
+
+# -- Lot D.1 : tooltips natifs Qt Charts ------------------------------------------------
+
+
+def test_sales_chart_tooltip_shows_exact_amount_on_hover(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    _setup_full_activity(stack)
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert len(page._sales_chart_points) == 1
+    page._on_sales_bar_hovered(True, 0, None)
+
+    point = page._sales_chart_points[0]
+    expected = f"{point.label} : {format_money(point.amount, page._currency_code)}"
+    assert QToolTip.text() == expected
+    assert "FCFA" in QToolTip.text()  # XOF par défaut : vérifie le format monétaire
+
+
+def test_sales_chart_tooltip_out_of_range_index_hides_without_crash(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    _setup_full_activity(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    page._on_sales_bar_hovered(True, 999, None)
+    page._on_sales_bar_hovered(False, 0, None)
+
+
+def test_movement_chart_tooltip_reuses_real_slice_label_on_hover(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    _setup_full_activity(stack)
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    series = page.movement_chart_view.chart().series()[0]
+    slices = series.slices()
+    assert slices  # au moins la VENTE générée par _setup_full_activity
+    target_slice = slices[0]
+
+    page._on_movement_slice_hovered(target_slice, True)
+
+    assert QToolTip.text() == target_slice.label()
+    page._on_movement_slice_hovered(target_slice, False)
+
+
+def test_category_chart_tooltip_shows_exact_value_on_hover(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    _setup_catalog(stack)
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert len(page._category_chart_rows) == 1
+    page._on_category_bar_hovered(True, 0, None)
+
+    row = page._category_chart_rows[0]
+    expected = f"{row.category_nom} : {format_money(row.valeur_stock, page._currency_code)}"
+    assert QToolTip.text() == expected
+    assert "FCFA" in QToolTip.text()
+
+
+# -- Lot D.1 : rafraîchissement de la devise --------------------------------------------
+
+
+def test_currency_defaults_to_xof(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    _setup_catalog(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert "FCFA" in page.kpi_stock_value_label.text()
+
+
+def test_refresh_reloads_currency_and_updates_displayed_amounts(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    _setup_catalog(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    assert "FCFA" in page.kpi_stock_value_label.text()
+
+    stack.parameters.update_config(nom="Ma Société", adresse=None, telephone=None, email=None, devise="EUR")
+    page.refresh()
+
+    assert "€" in page.kpi_stock_value_label.text()
+    assert "FCFA" not in page.kpi_stock_value_label.text()
+    assert page._currency_code == "EUR"

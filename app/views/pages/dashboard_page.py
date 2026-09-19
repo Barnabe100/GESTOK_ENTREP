@@ -20,8 +20,10 @@ from decimal import Decimal
 from typing import Callable, Optional
 
 from PySide6.QtCore import Qt
-from PySide6.QtCharts import QBarCategoryAxis, QBarSeries, QBarSet, QChart, QChartView, QPieSeries, QValueAxis
-from PySide6.QtGui import QPainter
+from PySide6.QtCharts import (
+    QBarCategoryAxis, QBarSeries, QBarSet, QChart, QChartView, QPieSeries, QPieSlice, QValueAxis,
+)
+from PySide6.QtGui import QCursor, QPainter
 from PySide6.QtWidgets import (
     QDateEdit,
     QGridLayout,
@@ -32,6 +34,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QTableWidget,
     QTableWidgetItem,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
@@ -75,7 +78,16 @@ class DashboardPage(QWidget):
         self._dashboard_service = dashboard_service
         self._permissions = permission_service
         self._on_navigate = on_navigate
+        # Relue à chaque refresh() (voir refresh()) plutôt qu'une seule fois
+        # ici : un changement de devise dans Paramètres pendant que le
+        # Dashboard est déjà ouvert doit se refléter au prochain rafraîchissement.
         self._currency_code = get_effective_currency()
+        # Données brutes des graphiques, conservées pour que les gestionnaires
+        # de survol (tooltips) retrouvent la valeur exacte (Decimal) associée
+        # à l'index survolé, plutôt que de la reconstruire depuis le float
+        # utilisé pour la géométrie des barres (voir _decimal_to_float).
+        self._sales_chart_points: list = []
+        self._category_chart_rows: list = []
 
         # Le contenu (KPI + graphiques + tableaux) peut dépasser la hauteur
         # disponible sur une petite fenêtre — enveloppé dans un QScrollArea
@@ -97,6 +109,7 @@ class DashboardPage(QWidget):
 
         layout.addLayout(self._build_period_row())
         layout.addLayout(self._build_kpi_row())
+        layout.addLayout(self._build_secondary_kpi_row())
 
         self.status_label = QLabel("", self)
         self.status_label.setStyleSheet("color: #b00020; font-weight: 600;")
@@ -153,6 +166,24 @@ class DashboardPage(QWidget):
         for card in (
             self.kpi_articles_card, self.kpi_stock_value_card, self.kpi_low_stock_card,
             self.kpi_out_of_stock_card, self.kpi_sales_card,
+        ):
+            row.addWidget(card)
+        return row
+
+    def _build_secondary_kpi_row(self) -> QHBoxLayout:
+        """Seconde ligne, sobre, pour les indicateurs déjà calculés par
+        ``DashboardService`` (§Lot D.1) mais jusqu'ici non affichés — même
+        composant ``_build_kpi_card`` que la première ligne, aucun nouveau
+        calcul métier introduit ici."""
+        row = QHBoxLayout()
+        self.kpi_stock_quantity_card, self.kpi_stock_quantity_label = self._build_kpi_card("Quantité en stock")
+        self.kpi_entries_card, self.kpi_entries_label = self._build_kpi_card("Entrées (période)")
+        self.kpi_exits_card, self.kpi_exits_label = self._build_kpi_card("Sorties (période)")
+        self.kpi_sales_count_card, self.kpi_sales_count_label = self._build_kpi_card("Ventes (période)")
+        self.kpi_inventories_card, self.kpi_inventories_label = self._build_kpi_card("Inventaires (période)")
+        for card in (
+            self.kpi_stock_quantity_card, self.kpi_entries_card, self.kpi_exits_card,
+            self.kpi_sales_count_card, self.kpi_inventories_card,
         ):
             row.addWidget(card)
         return row
@@ -285,6 +316,10 @@ class DashboardPage(QWidget):
         return self.date_from_edit.date().toPython(), self.date_to_edit.date().toPython()
 
     def refresh(self) -> None:
+        # Relu à chaque rafraîchissement (voir __init__) : un changement de
+        # devise dans Paramètres pendant que le Dashboard est déjà ouvert se
+        # reflète dès le prochain « Actualiser », sans avoir à rouvrir la page.
+        self._currency_code = get_effective_currency()
         period_from, period_to = self._read_period()
 
         try:
@@ -313,20 +348,30 @@ class DashboardPage(QWidget):
             self.kpi_stock_value_label.setText(format_money(stock.total_value, self._currency_code))
             self.kpi_low_stock_label.setText(str(stock.low_stock_count))
             self.kpi_out_of_stock_label.setText(str(stock.out_of_stock_count))
+            self.kpi_stock_quantity_label.setText(str(stock.total_quantity))
             self.low_stock_alert_label.setText(f"{stock.low_stock_count} article(s) en stock faible")
             self.out_of_stock_alert_label.setText(f"{stock.out_of_stock_count} article(s) en rupture")
         else:
             self.kpi_stock_value_label.setText("—")
             self.kpi_low_stock_label.setText("—")
             self.kpi_out_of_stock_label.setText("—")
+            self.kpi_stock_quantity_label.setText("—")
             self.low_stock_alert_label.setText("")
             self.out_of_stock_alert_label.setText("")
 
         activity = overview.activity
         if activity is not None:
             self.kpi_sales_label.setText(format_money(activity.sales_amount, self._currency_code))
+            self.kpi_entries_label.setText(str(activity.entries_validated))
+            self.kpi_exits_label.setText(str(activity.exits_validated))
+            self.kpi_sales_count_label.setText(str(activity.sales_validated))
+            self.kpi_inventories_label.setText(str(activity.inventories_validated))
         else:
             self.kpi_sales_label.setText("—")
+            self.kpi_entries_label.setText("—")
+            self.kpi_exits_label.setText("—")
+            self.kpi_sales_count_label.setText("—")
+            self.kpi_inventories_label.setText("—")
 
         self._apply_sales_chart(overview.sales_evolution or [])
         self._apply_movement_chart(overview.movement_breakdown or {})
@@ -341,6 +386,11 @@ class DashboardPage(QWidget):
         if not has_data:
             return
 
+        # Conservé pour le tooltip (§Lot D.1) : retrouve la valeur Decimal
+        # exacte au survol, plutôt que de la reconstruire depuis le float
+        # utilisé pour la géométrie des barres (_decimal_to_float).
+        self._sales_chart_points = points
+
         chart = QChart()
         chart.setTitle("Évolution des ventes")
         bar_set = QBarSet("Montant des ventes")
@@ -350,6 +400,7 @@ class DashboardPage(QWidget):
             categories.append(point.label)
         series = QBarSeries()
         series.append(bar_set)
+        series.hovered.connect(self._on_sales_bar_hovered)
         chart.addSeries(series)
 
         axis_x = QBarCategoryAxis()
@@ -364,6 +415,17 @@ class DashboardPage(QWidget):
         chart.legend().setVisible(False)
         self.sales_chart_view.setChart(chart)
 
+    def _on_sales_bar_hovered(self, status: bool, index: int, _barset: QBarSet | None = None) -> None:
+        """Tooltip natif Qt Charts (signal ``hovered`` de ``QBarSeries``,
+        §Lot D.1) : n'ajoute qu'une précision au survol, le graphique reste
+        pleinement lisible sans (libellés déjà sur l'axe)."""
+        if not status or not (0 <= index < len(self._sales_chart_points)):
+            QToolTip.hideText()
+            return
+        point = self._sales_chart_points[index]
+        text = f"{point.label} : {format_money(point.amount, self._currency_code)}"
+        QToolTip.showText(QCursor.pos(), text, self.sales_chart_view)
+
     def _apply_movement_chart(self, breakdown: dict[TypeMouvement, int]) -> None:
         has_data = bool(breakdown)
         self.movement_chart_view.setVisible(has_data)
@@ -376,8 +438,19 @@ class DashboardPage(QWidget):
         series = QPieSeries()
         for type_mouvement, count in sorted(breakdown.items(), key=lambda kv: kv[0].value):
             series.append(f"{type_mouvement.value} ({count})", count)
+        series.hovered.connect(self._on_movement_slice_hovered)
         chart.addSeries(series)
         self.movement_chart_view.setChart(chart)
+
+    def _on_movement_slice_hovered(self, slice_: QPieSlice, state: bool) -> None:
+        """Réutilise directement le libellé déjà affiché sur la part
+        (``"TYPE (n)"``, construit ci-dessus) — jamais une donnée reformée
+        séparément (§Lot D.1 : « utiliser les libellés réellement présents
+        dans les données plutôt que de fabriquer des informations »)."""
+        if not state:
+            QToolTip.hideText()
+            return
+        QToolTip.showText(QCursor.pos(), slice_.label(), self.movement_chart_view)
 
     def _apply_category_value_chart(self, category_values) -> None:
         has_data = bool(category_values)
@@ -385,6 +458,8 @@ class DashboardPage(QWidget):
         self.category_value_empty_label.setVisible(not has_data)
         if not has_data:
             return
+
+        self._category_chart_rows = category_values
 
         chart = QChart()
         chart.setTitle("Valeur du stock par catégorie")
@@ -395,6 +470,7 @@ class DashboardPage(QWidget):
             categories.append(row.category_nom)
         series = QBarSeries()
         series.append(bar_set)
+        series.hovered.connect(self._on_category_bar_hovered)
         chart.addSeries(series)
 
         axis_x = QBarCategoryAxis()
@@ -408,6 +484,14 @@ class DashboardPage(QWidget):
 
         chart.legend().setVisible(False)
         self.category_value_chart_view.setChart(chart)
+
+    def _on_category_bar_hovered(self, status: bool, index: int, _barset: QBarSet | None = None) -> None:
+        if not status or not (0 <= index < len(self._category_chart_rows)):
+            QToolTip.hideText()
+            return
+        row = self._category_chart_rows[index]
+        text = f"{row.category_nom} : {format_money(row.valeur_stock, self._currency_code)}"
+        QToolTip.showText(QCursor.pos(), text, self.category_value_chart_view)
 
     def _apply_low_stock_table(self, rows) -> None:
         has_data = bool(rows)
