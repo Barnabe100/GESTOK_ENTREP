@@ -112,6 +112,34 @@ class CompanySettingsConfig:
     logo_path: Optional[Path]
 
 
+def _read_profile_from_db(settings: Settings) -> CompanySettingsConfig:
+    with session_scope(settings) as session:
+        repo = ParameterRepository(session)
+        nom = repo.get_value(_KEY_NOM)
+        adresse = repo.get_value(_KEY_ADRESSE)
+        telephone = repo.get_value(_KEY_TELEPHONE)
+        email = repo.get_value(_KEY_EMAIL)
+        devise = repo.get_value(_KEY_DEVISE)
+        logo_raw = repo.get_value(_KEY_LOGO_PATH)
+    return CompanySettingsConfig(
+        nom=nom, adresse=adresse, telephone=telephone, email=email,
+        devise=devise or settings.default_currency,
+        logo_path=Path(logo_raw) if logo_raw else None,
+    )
+
+
+def get_company_profile(settings: Optional[Settings] = None) -> CompanySettingsConfig:
+    """Profil entreprise (nom/adresse/téléphone/email/devise/logo) pour les
+    documents générés (reçus, futurs PDF/rapports) — fonction autonome, sans
+    vérification de permission, symétrique de ``get_effective_currency()`` :
+    un rôle disposant de ``SALE_VIEW`` mais pas de ``SETTINGS_VIEW`` (ex.
+    Vendeur) doit pouvoir imprimer le reçu de sa propre vente sans passer par
+    l'écran Paramètres (réservé, lui, à l'Administrateur). Ne donne accès à
+    rien de plus que ce qui apparaît déjà sur tout document imprimé remis à
+    un client."""
+    return _read_profile_from_db(settings or get_settings())
+
+
 class CompanySettingsService:
     def __init__(self, permission_service: PermissionService, settings: Optional[Settings] = None) -> None:
         self._permissions = permission_service
@@ -140,19 +168,7 @@ class CompanySettingsService:
         return self._read_config()
 
     def _read_config(self) -> CompanySettingsConfig:
-        with session_scope(self._settings) as session:
-            repo = ParameterRepository(session)
-            nom = repo.get_value(_KEY_NOM)
-            adresse = repo.get_value(_KEY_ADRESSE)
-            telephone = repo.get_value(_KEY_TELEPHONE)
-            email = repo.get_value(_KEY_EMAIL)
-            devise = repo.get_value(_KEY_DEVISE)
-            logo_raw = repo.get_value(_KEY_LOGO_PATH)
-        return CompanySettingsConfig(
-            nom=nom, adresse=adresse, telephone=telephone, email=email,
-            devise=devise or self._effective_settings().default_currency,
-            logo_path=Path(logo_raw) if logo_raw else None,
-        )
+        return _read_profile_from_db(self._effective_settings())
 
     def update_config(
         self,

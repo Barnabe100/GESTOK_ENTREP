@@ -194,7 +194,9 @@ class MainWindow(QMainWindow):
                 self._services.exits, self._services.exit_reasons, self._services.articles, self._permissions
             )
         if module_name == "Ventes":
-            return SalesPage(self._services.sales, self._services.articles, self._permissions)
+            return SalesPage(
+                self._services.sales, self._services.articles, self._services.documents, self._permissions
+            )
         if module_name == "Mouvements":
             return MouvementsPage(self._services.movements, self._permissions)
         if module_name == "Inventaires":

@@ -3,6 +3,7 @@ from app.services.settings.company_settings_service import (
     CompanySettingsService,
     DEFAULT_CURRENCY,
     SUPPORTED_CURRENCIES,
+    get_company_profile,
     get_effective_currency,
 )
 
@@ -11,5 +12,6 @@ __all__ = [
     "CompanySettingsService",
     "DEFAULT_CURRENCY",
     "SUPPORTED_CURRENCIES",
+    "get_company_profile",
     "get_effective_currency",
 ]

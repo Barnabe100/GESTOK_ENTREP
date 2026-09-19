@@ -18,6 +18,7 @@ from app.services.auth.permission_service import PermissionService
 from app.services.backups.backup_service import BackupService
 from app.services.categories.category_service import CategoryService
 from app.services.dashboard.dashboard_service import DashboardService
+from app.services.documents.receipt_service import ReceiptService
 from app.services.entries.entry_service import EntryService
 from app.services.exit_reasons.exit_reason_service import ExitReasonService
 from app.services.exits.exit_service import ExitService
@@ -53,6 +54,7 @@ class ServiceRegistry:
     licenses: LicenseService
     dashboard: DashboardService
     parameters: CompanySettingsService
+    documents: ReceiptService
 
 
 def build_service_registry(
@@ -90,4 +92,5 @@ def build_service_registry(
         licenses=license_service,
         dashboard=DashboardService(permission_service, report_service, settings),
         parameters=CompanySettingsService(permission_service, settings),
+        documents=ReceiptService(permission_service, settings),
     )

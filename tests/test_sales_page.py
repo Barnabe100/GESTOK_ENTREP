@@ -16,7 +16,7 @@ def _no_blocking_dialogs(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _build_page(stack) -> SalesPage:
-    return SalesPage(stack.sales, stack.articles, stack.permissions)
+    return SalesPage(stack.sales, stack.articles, stack.documents, stack.permissions)
 
 
 def _make_article(stack, reference="ART-1", stock_initial=Decimal("50")):

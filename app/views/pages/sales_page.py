@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 from app.models.enums import StatutOperation
 from app.services.articles.article_service import ArticleService
 from app.services.auth.permission_service import PermissionService
+from app.services.documents.receipt_service import ReceiptService
 from app.services.sales.sale_service import SaleService, VenteLigneInput
 from app.services.settings.company_settings_service import get_effective_currency
 from app.utils.exceptions import AppError, ValidationError
@@ -59,12 +60,14 @@ class SalesPage(QWidget):
         self,
         sale_service: SaleService,
         article_service: ArticleService,
+        receipt_service: ReceiptService,
         permission_service: PermissionService,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._sale_service = sale_service
         self._article_service = article_service
+        self._receipt_service = receipt_service
         self._permissions = permission_service
         self._currency_code = get_effective_currency()
 
@@ -305,7 +308,9 @@ class SalesPage(QWidget):
         if result is None:
             return
         sale, movements = result
-        dialog = SaleDetailDialog(sale, movements, self._currency_code, parent=self)
+        dialog = SaleDetailDialog(
+            sale, movements, self._currency_code, self._receipt_service, self._permissions, parent=self
+        )
         dialog.exec()
 
     def _load_sale_for_detail(self, sale_id: int):
