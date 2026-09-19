@@ -23,7 +23,7 @@ class MouvementStock(Base):
     __tablename__ = "mouvements_stock"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    date_heure: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    date_heure: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False, index=True)
     article_id: Mapped[int] = mapped_column(ForeignKey("articles.id"), nullable=False, index=True)
     type: Mapped[TypeMouvement] = mapped_column(
         SAEnum(TypeMouvement, native_enum=False, length=20, name="type_mouvement"), nullable=False

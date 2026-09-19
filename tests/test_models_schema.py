@@ -69,3 +69,17 @@ def test_article_reference_has_unique_index(initialized_db: Settings) -> None:
         for col in index["column_names"]
     }
     assert "reference" in unique_columns or "reference" in indexed_unique_columns
+
+
+def test_mouvements_stock_date_heure_has_index(initialized_db: Settings) -> None:
+    """Lot K : filtres de période (page Mouvements, rapport Mouvements,
+    Dashboard) et tri par date décroissante doivent s'appuyer sur un index
+    dédié, comme audit_logs.date_heure."""
+    engine = get_engine(initialized_db)
+    inspector = inspect(engine)
+    indexed_columns = {
+        col
+        for index in inspector.get_indexes("mouvements_stock")
+        for col in index["column_names"]
+    }
+    assert "date_heure" in indexed_columns
