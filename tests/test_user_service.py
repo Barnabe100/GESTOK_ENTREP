@@ -264,3 +264,142 @@ def test_list_roles_denied_for_non_administrateur(login_as) -> None:
         assert False, "devait lever PermissionDeniedError"
     except PermissionDeniedError:
         pass
+
+
+# -- modification du rôle (lot Gestion complète des utilisateurs) --------------------
+
+
+def test_update_user_as_administrateur_succeeds(login_as, make_user) -> None:
+    make_user("Vendeur", "cible_role")
+    stack, _ = login_as("Administrateur")
+    target_id = next(u.id for u in stack.users.list_users() if u.username == "cible_role")
+    role_id = _role_id("Gestionnaire de stock")
+
+    updated = stack.users.update_user(target_id, role_id)
+
+    assert updated.role_name == "Gestionnaire de stock"
+
+
+def test_update_user_unknown_role_raises_not_found(login_as, make_user) -> None:
+    make_user("Vendeur", "cible_role_inconnu")
+    stack, _ = login_as("Administrateur")
+    target_id = next(u.id for u in stack.users.list_users() if u.username == "cible_role_inconnu")
+
+    try:
+        stack.users.update_user(target_id, 999999)
+        assert False, "devait lever NotFoundError"
+    except NotFoundError:
+        pass
+
+
+def test_update_user_unknown_user_raises_not_found(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    role_id = _role_id("Vendeur")
+
+    try:
+        stack.users.update_user(999999, role_id)
+        assert False, "devait lever NotFoundError"
+    except NotFoundError:
+        pass
+
+
+def test_update_user_denied_for_non_administrateur(login_as, make_user) -> None:
+    make_user("Vendeur", "cible_refus")
+    stack, _ = login_as("Vendeur")
+    role_id = _role_id("Gestionnaire de stock")
+
+    try:
+        stack.users.update_user(1, role_id)
+        assert False, "devait lever PermissionDeniedError"
+    except PermissionDeniedError:
+        pass
+
+
+def test_update_user_writes_audit_log(login_as, make_user) -> None:
+    make_user("Vendeur", "cible_audit")
+    stack, admin_user = login_as("Administrateur")
+    target_id = next(u.id for u in stack.users.list_users() if u.username == "cible_audit")
+    role_id = _role_id("Consultation")
+
+    stack.users.update_user(target_id, role_id)
+
+    with session_scope(None) as session:
+        entries = session.query(AuditLog).filter_by(action="USER_UPDATE", entite_id=target_id).all()
+        assert len(entries) == 1
+        assert entries[0].user_id == admin_user.id
+
+
+def test_update_user_does_not_change_username_or_password(login_as, make_user) -> None:
+    make_user("Vendeur", "cible_inchangee", "MotDePasseInitial1")
+    stack, _ = login_as("Administrateur")
+    target_id = next(u.id for u in stack.users.list_users() if u.username == "cible_inchangee")
+    role_id = _role_id("Gestionnaire de stock")
+
+    stack.users.update_user(target_id, role_id)
+
+    with session_scope(None) as session:
+        from app.models.user import User
+
+        user = session.get(User, target_id)
+        assert user.username == "cible_inchangee"
+        assert verify_password("MotDePasseInitial1", user.password_hash) is True
+
+
+def test_update_user_cannot_remove_own_administrateur_role(login_as) -> None:
+    """§6 : un administrateur ne peut pas retirer son propre rôle Administrateur."""
+    stack, current_user = login_as("Administrateur")
+    role_id = _role_id("Vendeur")
+
+    try:
+        stack.users.update_user(current_user.id, role_id)
+        assert False, "devait lever ValidationError"
+    except ValidationError:
+        pass
+
+    with session_scope(None) as session:
+        from app.models.user import User
+
+        user = session.get(User, current_user.id)
+        assert user.role.nom == "Administrateur"
+
+
+def test_update_user_can_change_another_administrateur_role(login_as) -> None:
+    """Un administrateur peut rétrograder un AUTRE administrateur (seule
+    l'auto-rétrogradation est bloquée)."""
+    stack, _ = login_as("Administrateur")
+    role_id = _role_id("Vendeur")
+    admin_role_id = _role_id("Administrateur")
+    other_admin = stack.users.create_user("autre_admin", "MotDePasse!23", admin_role_id)
+
+    updated = stack.users.update_user(other_admin.id, role_id)
+
+    assert updated.role_name == "Vendeur"
+
+
+# -- protection du dernier administrateur actif (§6) ----------------------------------
+
+
+def test_set_active_cannot_deactivate_last_active_administrateur(login_as) -> None:
+    stack, current_user = login_as("Administrateur")
+
+    try:
+        stack.users.set_active(current_user.id, False)
+        assert False, "devait lever ValidationError"
+    except ValidationError:
+        pass
+
+    with session_scope(None) as session:
+        from app.models.user import User
+
+        user = session.get(User, current_user.id)
+        assert user.actif is True
+
+
+def test_set_active_can_deactivate_administrateur_when_another_active_admin_exists(login_as) -> None:
+    stack, current_user = login_as("Administrateur")
+    admin_role_id = _role_id("Administrateur")
+    other_admin = stack.users.create_user("second_admin_actif", "MotDePasse!23", admin_role_id)
+
+    updated = stack.users.set_active(other_admin.id, False)
+
+    assert updated.actif is False

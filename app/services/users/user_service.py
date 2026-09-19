@@ -22,7 +22,7 @@ from app.models.rbac import Role
 from app.models.user import User
 from app.security.password_hashing import hash_password
 from app.services.auth.permission_service import PermissionService
-from app.utils.exceptions import ConflictError, NotFoundError, ValidationError
+from app.utils.exceptions import ConflictError, NotFoundError, PermissionDeniedError, ValidationError
 from app.utils.logging_config import get_logger
 
 if TYPE_CHECKING:
@@ -30,6 +30,12 @@ if TYPE_CHECKING:
 
 MIN_PASSWORD_LENGTH = 8
 MAX_USERNAME_LENGTH = 50  # aligné sur User.username (String(50))
+
+# Nom du rôle disposant de tous les droits (seedé par app.db.seed) — utilisé
+# pour les garde-fous de protection du compte administrateur ci-dessous.
+# "Administrateur" est un rôle comme un autre, jamais un compte spécial : la
+# protection porte sur le nombre de comptes actifs affectés à ce rôle.
+_ROLE_ADMINISTRATEUR = "Administrateur"
 
 logger = get_logger("services.users")
 
@@ -104,10 +110,15 @@ class UserService:
             return [UserSummary.from_model(user) for user in users]
 
     def list_roles(self) -> list[RoleSummary]:
-        """Rôles disponibles pour l'assignation à un nouvel utilisateur —
-        gardée par ``USER_CREATE`` : n'a de sens que pour peupler l'écran de
-        création, seul appelant actuel."""
-        self._permissions.require_permission("USER_CREATE")
+        """Rôles disponibles pour l'assignation à un utilisateur — utile pour
+        peupler le sélecteur de rôle des écrans de création (``USER_CREATE``)
+        et de modification (``USER_UPDATE``). Aucune permission dédiée : l'un
+        ou l'autre suffit, pas besoin de connaître l'intention de l'appelant."""
+        if not (
+            self._permissions.has_permission("USER_CREATE")
+            or self._permissions.has_permission("USER_UPDATE")
+        ):
+            raise PermissionDeniedError("Permission requise : USER_CREATE ou USER_UPDATE")
         with session_scope(self._settings) as session:
             roles = session.query(Role).order_by(Role.nom).all()
             return [RoleSummary(id=role.id, nom=role.nom) for role in roles]
@@ -195,6 +206,22 @@ class UserService:
             if user is None:
                 raise NotFoundError(f"Utilisateur {user_id} introuvable.")
 
+            if not actif and user.actif and user.role.nom == _ROLE_ADMINISTRATEUR:
+                other_active_admins = (
+                    session.query(User)
+                    .join(Role)
+                    .filter(
+                        Role.nom == _ROLE_ADMINISTRATEUR,
+                        User.actif.is_(True),
+                        User.id != user_id,
+                    )
+                    .count()
+                )
+                if other_active_admins == 0:
+                    raise ValidationError(
+                        "Impossible de désactiver le dernier compte Administrateur actif."
+                    )
+
             if actif and not user.actif and self._license_service is not None:
                 self._license_service.check_can_activate_user(session)
 
@@ -213,6 +240,68 @@ class UserService:
             summary = UserSummary.from_model(user)
 
         logger.info("Compte %s : %s (par acteur id=%s)", user_id, action, acting_user_id)
+        return summary
+
+    def update_user(self, user_id: int, role_id: int) -> UserSummary:
+        """Modifie le rôle d'un utilisateur existant (écran Administration →
+        Utilisateurs). Ne modifie jamais le nom d'utilisateur (identifiant de
+        connexion, hors périmètre de cette opération) ni le mot de passe.
+
+        Le nouveau rôle ne prend effet qu'à la prochaine connexion de
+        l'utilisateur concerné : les permissions d'une session déjà ouverte
+        sont figées dans son ``CurrentUser`` au moment du login
+        (``AuthService.login``) et ne sont jamais recalculées en cours de
+        session — aucun mécanisme d'invalidation à ajouter ici.
+
+        Protection du compte administrateur : un utilisateur ne peut pas
+        retirer le rôle Administrateur de son propre compte (il resterait
+        éventuellement d'autres administrateurs, mais s'auto-verrouiller
+        n'est jamais une opération valide). Un autre Administrateur peut en
+        revanche légitimement rétrograder un pair."""
+        self._permissions.require_permission("USER_UPDATE")
+        acting_user_id = self._acting_user_id()
+
+        with session_scope(self._settings) as session:
+            user = session.get(User, user_id)
+            if user is None:
+                raise NotFoundError(f"Utilisateur {user_id} introuvable.")
+
+            role = session.get(Role, role_id)
+            if role is None:
+                raise NotFoundError(f"Rôle {role_id} introuvable.")
+
+            if (
+                user.role.nom == _ROLE_ADMINISTRATEUR
+                and role.nom != _ROLE_ADMINISTRATEUR
+                and user_id == acting_user_id
+            ):
+                raise ValidationError(
+                    "Vous ne pouvez pas retirer votre propre rôle Administrateur."
+                )
+
+            # Affecté via la relation ``role`` (et non le seul ``role_id``
+            # scalaire) : l'objet ``user`` reste utilisé plus bas dans cette
+            # même transaction pour construire le ``UserSummary`` retourné,
+            # qui lit ``user.role.nom`` — un simple ``user.role_id = role_id``
+            # laisserait la relation déjà chargée (utilisée par la garde
+            # ci-dessus) pointer vers l'ancien rôle jusqu'au prochain rechargement.
+            user.role = role
+            session.add(
+                AuditLog(
+                    user_id=acting_user_id,
+                    action="USER_UPDATE",
+                    entite="users",
+                    entite_id=user_id,
+                    resultat=ResultatAudit.SUCCES,
+                )
+            )
+            session.flush()
+            summary = UserSummary.from_model(user)
+
+        logger.info(
+            "Rôle modifié pour l'utilisateur %s : nouveau rôle id=%s (par acteur id=%s)",
+            user_id, role_id, acting_user_id,
+        )
         return summary
 
     def reset_password(self, user_id: int, new_password: str) -> None:

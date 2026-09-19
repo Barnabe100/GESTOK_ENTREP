@@ -157,3 +157,121 @@ def test_submit_create_user_succeeds_for_each_role_via_ui(qtbot, login_as, role_
     assert result is True
     created = next(u for u in stack.users.list_users() if u.username == username)
     assert created.role_name == role_name
+
+
+# -- modification du rôle -------------------------------------------------------------
+
+
+def test_edit_button_enabled_for_administrateur(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = UsersPage(stack.users, stack.permissions)
+    qtbot.addWidget(page)
+
+    assert page.edit_button.isEnabled() is True
+
+
+def test_edit_button_disabled_for_vendeur(qtbot, login_as) -> None:
+    stack, _ = login_as("Vendeur")
+    page = UsersPage(stack.users, stack.permissions)
+    qtbot.addWidget(page)
+
+    assert page.edit_button.isEnabled() is False
+
+
+def test_submit_update_user_succeeds_and_refreshes_list(qtbot, login_as, make_user) -> None:
+    make_user("Vendeur", "cible_ui_edit")
+    stack, _ = login_as("Administrateur")
+    page = UsersPage(stack.users, stack.permissions)
+    qtbot.addWidget(page)
+    target_id = next(u.id for u in stack.users.list_users() if u.username == "cible_ui_edit")
+    role_id = next(r.id for r in stack.users.list_roles() if r.nom == "Gestionnaire de stock")
+
+    result = page._submit_update_user(target_id, role_id)
+    page.refresh()
+
+    assert result is True
+    updated = next(u for u in stack.users.list_users() if u.username == "cible_ui_edit")
+    assert updated.role_name == "Gestionnaire de stock"
+
+
+def test_submit_update_user_shows_error_when_blocked_by_admin_guard(qtbot, login_as) -> None:
+    """Contournement de l'interface : même via l'appel direct de soumission,
+    l'auto-retrait du rôle Administrateur reste refusé côté service."""
+    stack, current_user = login_as("Administrateur")
+    page = UsersPage(stack.users, stack.permissions)
+    qtbot.addWidget(page)
+    role_id = next(r.id for r in stack.users.list_roles() if r.nom == "Vendeur")
+
+    result = page._submit_update_user(current_user.id, role_id)
+
+    assert result is False
+    unchanged = next(u for u in stack.users.list_users() if u.id == current_user.id)
+    assert unchanged.role_name == "Administrateur"
+
+
+def test_submit_update_user_denied_for_role_without_permission(qtbot, login_as, make_user) -> None:
+    make_user("Vendeur", "cible_ui_refus")
+    stack, _ = login_as("Vendeur")
+    page = UsersPage(stack.users, stack.permissions)
+    qtbot.addWidget(page)
+
+    result = page._submit_update_user(1, 1)
+
+    assert result is False
+
+
+# -- réinitialisation du mot de passe --------------------------------------------------
+
+
+def test_reset_password_button_enabled_for_administrateur(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = UsersPage(stack.users, stack.permissions)
+    qtbot.addWidget(page)
+
+    assert page.reset_password_button.isEnabled() is True
+
+
+def test_reset_password_button_disabled_for_vendeur(qtbot, login_as) -> None:
+    stack, _ = login_as("Vendeur")
+    page = UsersPage(stack.users, stack.permissions)
+    qtbot.addWidget(page)
+
+    assert page.reset_password_button.isEnabled() is False
+
+
+def test_submit_reset_password_succeeds(qtbot, login_as, make_user) -> None:
+    make_user("Vendeur", "cible_ui_reset", "MotDePasseInitial1")
+    stack, _ = login_as("Administrateur")
+    page = UsersPage(stack.users, stack.permissions)
+    qtbot.addWidget(page)
+    target_id = next(u.id for u in stack.users.list_users() if u.username == "cible_ui_reset")
+
+    result = page._submit_reset_password(target_id, "NouveauMotDePasse99")
+
+    assert result is True
+    stack.auth.logout()
+    reconnected = stack.auth.login("cible_ui_reset", "NouveauMotDePasse99")
+    assert reconnected.must_change_password is True
+
+
+def test_submit_reset_password_shows_error_on_too_short_password(qtbot, login_as, make_user) -> None:
+    make_user("Vendeur", "cible_ui_reset_court")
+    stack, _ = login_as("Administrateur")
+    page = UsersPage(stack.users, stack.permissions)
+    qtbot.addWidget(page)
+    target_id = next(u.id for u in stack.users.list_users() if u.username == "cible_ui_reset_court")
+
+    result = page._submit_reset_password(target_id, "court")
+
+    assert result is False
+
+
+def test_submit_reset_password_denied_for_role_without_permission(qtbot, login_as, make_user) -> None:
+    make_user("Vendeur", "cible_ui_reset_refus")
+    stack, _ = login_as("Consultation")
+    page = UsersPage(stack.users, stack.permissions)
+    qtbot.addWidget(page)
+
+    result = page._submit_reset_password(1, "NouveauMotDePasse99")
+
+    assert result is False
