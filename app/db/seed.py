@@ -59,6 +59,11 @@ PERMISSIONS: list[tuple[str, str, str]] = [
     ("SALE_UPDATE", "Modifier une vente en brouillon", "ventes"),
     ("SALE_VALIDATE", "Valider une vente", "ventes"),
     ("SALE_CANCEL", "Annuler une vente validée", "ventes"),
+    ("CLIENT_VIEW", "Consulter les clients", "clients"),
+    ("CLIENT_CREATE", "Créer un client", "clients"),
+    ("CLIENT_UPDATE", "Modifier un client", "clients"),
+    ("CLIENT_ACTIVATE", "Activer un client", "clients"),
+    ("CLIENT_DEACTIVATE", "Désactiver un client", "clients"),
     ("STOCK_MOVEMENT_VIEW", "Consulter les mouvements de stock", "mouvements"),
     ("INVENTORY_VIEW", "Consulter les inventaires", "inventaires"),
     ("INVENTORY_CREATE", "Créer un inventaire", "inventaires"),
@@ -98,12 +103,17 @@ _GESTIONNAIRE_STOCK_CODES = [
     "STOCK_MOVEMENT_VIEW",
     "INVENTORY_VIEW", "INVENTORY_CREATE", "INVENTORY_UPDATE", "INVENTORY_VALIDATE",
     "REPORT_VIEW", "REPORT_EXPORT",
+    "CLIENT_VIEW", "CLIENT_CREATE", "CLIENT_UPDATE", "CLIENT_ACTIVATE", "CLIENT_DEACTIVATE",
 ]
 
 _VENDEUR_CODES = [
     "DASHBOARD_VIEW",
     "ARTICLE_VIEW",
     "SALE_VIEW", "SALE_CREATE", "SALE_UPDATE", "SALE_VALIDATE",
+    # Le Vendeur peut rechercher/sélectionner et créer un client à la volée
+    # au moment de la vente, mais jamais activer/désactiver un compte client
+    # (décision métier explicite de ce lot).
+    "CLIENT_VIEW", "CLIENT_CREATE", "CLIENT_UPDATE",
 ]
 
 _CONSULTATION_CODES = [

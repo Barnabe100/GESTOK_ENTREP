@@ -8,6 +8,7 @@ from app.models.base import Base
 from app.models.rbac import Permission, Role, role_permissions
 from app.models.user import User
 from app.models.catalog import Article, Category, ExitReason, Supplier
+from app.models.client import Client
 from app.models.documents import (
     Entree,
     EntreeLigne,
@@ -31,6 +32,7 @@ __all__ = [
     "Category",
     "Supplier",
     "ExitReason",
+    "Client",
     "Article",
     "Entree",
     "EntreeLigne",

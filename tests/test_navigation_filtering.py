@@ -5,14 +5,14 @@ from app.views.main_window import MainWindow
 EXPECTED_MODULES_BY_ROLE = {
     "Administrateur": {
         "Dashboard", "Articles", "Catégories", "Fournisseurs", "Motifs de sortie", "Entrées",
-        "Sorties", "Ventes", "Mouvements", "Inventaires", "Rapports", "Utilisateurs", "Paramètres",
-        "Sauvegardes", "Licences",
+        "Sorties", "Clients", "Ventes", "Mouvements", "Inventaires", "Rapports", "Utilisateurs",
+        "Paramètres", "Sauvegardes", "Licences",
     },
     "Gestionnaire de stock": {
         "Dashboard", "Articles", "Catégories", "Fournisseurs", "Entrées", "Sorties",
-        "Mouvements", "Inventaires", "Rapports",
+        "Clients", "Mouvements", "Inventaires", "Rapports",
     },
-    "Vendeur": {"Dashboard", "Articles", "Ventes"},
+    "Vendeur": {"Dashboard", "Articles", "Clients", "Ventes"},
     "Consultation": {"Dashboard", "Articles", "Catégories", "Fournisseurs", "Mouvements", "Rapports"},
 }
 
@@ -40,7 +40,7 @@ def test_gestionnaire_stock_navigation_excludes_ventes_utilisateurs_parametres(q
     assert "Paramètres" not in window.visible_modules
 
 
-def test_vendeur_navigation_is_limited_to_dashboard_articles_ventes(qtbot, login_as) -> None:
+def test_vendeur_navigation_is_limited_to_dashboard_articles_clients_ventes(qtbot, login_as) -> None:
     stack, _ = login_as("Vendeur")
     window = _build_window(stack)
     qtbot.addWidget(window)

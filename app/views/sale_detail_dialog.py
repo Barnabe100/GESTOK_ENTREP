@@ -75,6 +75,7 @@ class SaleDetailDialog(QDialog):
 
         form.addRow("Numéro", QLabel(sale.numero, self))
         form.addRow("Date", QLabel(str(sale.date), self))
+        form.addRow("Client", QLabel(sale.client_nom or "—", self))
         form.addRow("Créée par", QLabel(sale.username, self))
         form.addRow("Statut", QLabel(_STATUT_LABELS.get(sale.statut, str(sale.statut)), self))
         form.addRow("Créée le", QLabel(sale.date_creation.strftime("%Y-%m-%d %H:%M"), self))

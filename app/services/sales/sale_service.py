@@ -49,6 +49,7 @@ from app.models.documents import Vente, VenteLigne
 from app.models.enums import ResultatAudit, StatutActifInactif, StatutOperation, TypeMouvement
 from app.models.movement import MouvementStock
 from app.repositories.article_repository import ArticleRepository
+from app.repositories.client_repository import ClientRepository
 from app.repositories.mouvement_repository import MouvementRepository
 from app.repositories.vente_repository import VenteRepository
 from app.services.auth.permission_service import PermissionService
@@ -115,6 +116,11 @@ class VenteSummary:
     lignes: list[VenteLigneSummary]
     date_creation: datetime
     date_modification: datetime
+    # Optionnels avec valeur par défaut : champs ajoutés après la première
+    # version de ce DTO (vente comptant = client_id/client_nom à None), ne
+    # cassent aucun appelant existant.
+    client_id: Optional[int] = None
+    client_nom: Optional[str] = None
 
     @classmethod
     def from_model(cls, vente: Vente) -> "VenteSummary":
@@ -129,6 +135,8 @@ class VenteSummary:
             lignes=[VenteLigneSummary.from_model(l) for l in vente.lignes],
             date_creation=vente.date_creation,
             date_modification=vente.date_modification,
+            client_id=vente.client_id,
+            client_nom=vente.client.nom if vente.client is not None else None,
         )
 
 
@@ -195,13 +203,34 @@ class SaleService:
             total += ligne.sous_total
         return round_money(total)
 
+    def _validate_client(self, session, client_id: Optional[int]) -> Optional[int]:
+        """Vérifie qu'un client optionnel existe et est actif avant de
+        l'associer à une vente — défense en profondeur, le sélecteur de
+        l'interface exclut déjà les clients inactifs (§8 du lot Clients).
+        Une vente sans client (``client_id=None``) reste parfaitement valide
+        (vente comptant) ; le client n'a aucun impact sur le stock, le CMUP,
+        les mouvements, les prix ou les quantités — il ne fait que
+        transiter jusqu'à ``Vente.client_id``."""
+        if client_id is None:
+            return None
+        client = ClientRepository(session).get_by_id(client_id)
+        if client is None:
+            raise NotFoundError(f"Client {client_id} introuvable.")
+        if client.statut != StatutActifInactif.ACTIF:
+            raise ValidationError(
+                f"Le client « {client.nom} » est inactif et ne peut pas être sélectionné pour une nouvelle vente."
+            )
+        return client_id
+
     # -- consultation -----------------------------------------------------------
 
-    def list_sales(self, search: str = "", statut: Optional[StatutOperation] = None) -> list[VenteSummary]:
+    def list_sales(
+        self, search: str = "", statut: Optional[StatutOperation] = None, client_id: Optional[int] = None
+    ) -> list[VenteSummary]:
         self._permissions.require_permission("SALE_VIEW")
         with session_scope(self._settings) as session:
             repo = VenteRepository(session)
-            ventes = repo.search(search, statut=statut)
+            ventes = repo.search(search, statut=statut, client_id=client_id)
             return [VenteSummary.from_model(v) for v in ventes]
 
     def get_sale(self, sale_id: int) -> VenteSummary:
@@ -237,13 +266,16 @@ class SaleService:
         self,
         date_vente: date,
         lines: Sequence[VenteLigneInput] = (),
+        client_id: Optional[int] = None,
     ) -> VenteSummary:
-        """Crée une vente en BROUILLON : n'a aucun impact sur le stock."""
+        """Crée une vente en BROUILLON : n'a aucun impact sur le stock.
+        ``client_id`` est optionnel (``None`` = vente comptant)."""
         self._permissions.require_permission("SALE_CREATE")
         acting_user_id = self._acting_user_id()
 
         with session_scope(self._settings) as session:
             vente_repo = VenteRepository(session)
+            client_id = self._validate_client(session, client_id)
 
             numero = f"VNT-{vente_repo.count_all() + 1:06d}"
 
@@ -251,6 +283,7 @@ class SaleService:
                 numero=numero,
                 date=date_vente,
                 user_id=acting_user_id,
+                client_id=client_id,
                 statut=StatutOperation.BROUILLON,
                 total=Decimal("0"),
             )
@@ -273,14 +306,18 @@ class SaleService:
         sale_id: int,
         date_vente: date,
         lines: Sequence[VenteLigneInput],
+        client_id: Optional[int] = None,
     ) -> VenteSummary:
         """Modifie une vente en BROUILLON (remplace intégralement les
-        lignes). Refuse toute modification d'une vente déjà validée ou
+        lignes, et le client — ``client_id=None`` efface l'association
+        existante, exactement comme pour toute autre modification de
+        brouillon). Refuse toute modification d'une vente déjà validée ou
         annulée."""
         self._permissions.require_permission("SALE_UPDATE")
 
         with session_scope(self._settings) as session:
             vente_repo = VenteRepository(session)
+            client_id = self._validate_client(session, client_id)
 
             vente = vente_repo.get_by_id(sale_id)
             if vente is None:
@@ -289,6 +326,7 @@ class SaleService:
                 raise ConflictError("Seule une vente en brouillon peut être modifiée.")
 
             vente.date = date_vente
+            vente.client_id = client_id
             vente.lignes = self._build_lignes(session, lines)
             vente.total = self._compute_total(vente.lignes)
             session.flush()

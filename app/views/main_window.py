@@ -34,6 +34,7 @@ from app.views.change_password_dialog import ChangePasswordDialog
 from app.views.pages.articles_page import ArticlesPage
 from app.views.pages.backups_page import BackupsPage
 from app.views.pages.categories_page import CategoriesPage
+from app.views.pages.clients_page import ClientsPage
 from app.views.pages.dashboard_page import DashboardPage
 from app.views.pages.entries_page import EntriesPage
 from app.views.pages.exit_reasons_page import ExitReasonsPage
@@ -67,6 +68,7 @@ NAVIGATION_MODULES: list[str] = [
     "Motifs de sortie",
     "Entrées",
     "Sorties",
+    "Clients",
     "Ventes",
     "Mouvements",
     "Inventaires",
@@ -85,6 +87,7 @@ NAVIGATION_PERMISSIONS: dict[str, str] = {
     "Motifs de sortie": "STOCK_REASON_VIEW",
     "Entrées": "STOCK_ENTRY_VIEW",
     "Sorties": "STOCK_EXIT_VIEW",
+    "Clients": "CLIENT_VIEW",
     "Ventes": "SALE_VIEW",
     "Mouvements": "STOCK_MOVEMENT_VIEW",
     "Inventaires": "INVENTORY_VIEW",
@@ -193,9 +196,12 @@ class MainWindow(QMainWindow):
             return ExitsPage(
                 self._services.exits, self._services.exit_reasons, self._services.articles, self._permissions
             )
+        if module_name == "Clients":
+            return ClientsPage(self._services.clients, self._services.sales, self._permissions)
         if module_name == "Ventes":
             return SalesPage(
-                self._services.sales, self._services.articles, self._services.documents, self._permissions
+                self._services.sales, self._services.articles, self._services.clients,
+                self._services.documents, self._permissions,
             )
         if module_name == "Mouvements":
             return MouvementsPage(self._services.movements, self._permissions)

@@ -1,15 +1,26 @@
-"""Formulaire de création/modification d'une vente (date + lignes dynamiques).
+"""Formulaire de création/modification d'une vente (date + client optionnel
++ lignes dynamiques).
 
-Le modèle ``Vente`` validé pour cette phase ne comporte volontairement aucun
-champ d'en-tête au-delà de la date (pas de client, pas de commentaire) : le
-formulaire reflète fidèlement ce modèle, sans ajouter de champ non prévu.
+Le client est optionnel — une vente comptant (sans client) reste
+parfaitement valide, voir ``SaleService``. Le sélecteur ne propose que les
+clients actifs transmis par l'appelant (``SalesPage``, qui filtre déjà via
+``ClientService.list_clients(include_inactive=False)``) ; ce formulaire ne
+connaît rien du service métier lui-même.
+
+Création de client « à la volée » (§5 du lot Clients) : le bouton « Nouveau
+client… » délègue entièrement la création à ``on_create_client`` (callback
+fourni par ``SalesPage``, qui appelle ``ClientService.create_client`` et gère
+la validation) — ce dialogue reste ouvert pendant l'opération, avec la date
+et les lignes déjà saisies intactes ; seul le résultat (id, nom) est ajouté
+au sélecteur et sélectionné.
 """
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Optional
+from typing import Callable, Optional
 
 from PySide6.QtWidgets import (
+    QComboBox,
     QDialog,
     QFormLayout,
     QHBoxLayout,
@@ -28,20 +39,27 @@ from app.views.common import parse_decimal
 from app.views.sale_line_form_dialog import SaleLineFormDialog
 
 _LINE_COLUMNS = ["Article", "Quantité", "Prix unitaire", "Montant"]
+_NO_CLIENT_LABEL = "(Aucun client / Vente comptant)"
 
 
 class SaleFormDialog(QDialog):
     def __init__(
         self,
         articles: list[tuple[int, str, str]],
+        clients: list[tuple[int, str]],
         initial: Optional[dict] = None,
+        on_create_client: Optional[Callable[[], Optional[tuple[int, str]]]] = None,
         parent: QWidget | None = None,
     ) -> None:
         """``articles`` : liste de tuples (id, libellé affiché, prix de vente actuel en texte).
-        ``initial['lignes']`` : liste de dicts {article_id, article_label, quantite, prix_unitaire}."""
+        ``clients`` : liste de tuples (id, nom) — clients actifs sélectionnables.
+        ``initial['lignes']`` : liste de dicts {article_id, article_label, quantite, prix_unitaire}.
+        ``initial['client_id']`` : identifiant du client présélectionné, ou None (vente comptant)."""
         super().__init__(parent)
         initial = initial or {}
         self._articles = articles
+        self._clients: list[tuple[int, str]] = list(clients)
+        self._on_create_client = on_create_client
         self._lines: list[dict] = list(initial.get("lignes", []))
 
         self.setWindowTitle("Vente")
@@ -55,6 +73,15 @@ class SaleFormDialog(QDialog):
         self.date_edit.setPlaceholderText("AAAA-MM-JJ")
         self.date_edit.setText(initial.get("date", "") or "")
         form.addRow("Date", self.date_edit)
+
+        client_row = QHBoxLayout()
+        self.client_combo = QComboBox(self)
+        client_row.addWidget(self.client_combo)
+        self.new_client_button = QPushButton("Nouveau client…", self)
+        self.new_client_button.setEnabled(on_create_client is not None)
+        client_row.addWidget(self.new_client_button)
+        form.addRow("Client", client_row)
+        self._refresh_client_combo(selected_id=initial.get("client_id"))
 
         layout.addLayout(form)
 
@@ -98,8 +125,33 @@ class SaleFormDialog(QDialog):
         self.save_button.clicked.connect(self.accept)
         self.add_line_button.clicked.connect(self._on_add_line_clicked)
         self.remove_line_button.clicked.connect(self._on_remove_line_clicked)
+        self.new_client_button.clicked.connect(self._on_new_client_clicked)
 
         self._refresh_lines_table()
+
+    # -- gestion du client ------------------------------------------------------
+
+    def _refresh_client_combo(self, selected_id: Optional[int] = None) -> None:
+        self.client_combo.blockSignals(True)
+        self.client_combo.clear()
+        self.client_combo.addItem(_NO_CLIENT_LABEL, None)
+        for client_id, nom in self._clients:
+            self.client_combo.addItem(nom, client_id)
+        self.client_combo.blockSignals(False)
+        if selected_id is not None:
+            index = self.client_combo.findData(selected_id)
+            if index != -1:
+                self.client_combo.setCurrentIndex(index)
+
+    def _on_new_client_clicked(self) -> None:
+        if self._on_create_client is None:
+            return
+        result = self._on_create_client()
+        if result is None:
+            return
+        client_id, client_nom = result
+        self._clients.append((client_id, client_nom))
+        self._refresh_client_combo(selected_id=client_id)
 
     # -- gestion des lignes ---------------------------------------------------
 
@@ -163,6 +215,7 @@ class SaleFormDialog(QDialog):
     def values(self) -> dict:
         return {
             "date": self.date_edit.text(),
+            "client_id": self.client_combo.currentData(),
             "lignes": list(self._lines),
         }
 

@@ -108,6 +108,9 @@ class Vente(TimestampMixin, Base):
     numero: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
     date: Mapped[date] = mapped_column(Date, nullable=False)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    # Nullable : une vente comptant (sans client identifié) est un cas
+    # d'usage courant et parfaitement valide — voir ClientService/SaleService.
+    client_id: Mapped[Optional[int]] = mapped_column(ForeignKey("clients.id"), nullable=True)
     statut: Mapped[StatutOperation] = mapped_column(
         _STATUT_OPERATION_TYPE, default=StatutOperation.BROUILLON, nullable=False
     )
@@ -117,6 +120,7 @@ class Vente(TimestampMixin, Base):
         "VenteLigne", back_populates="vente", cascade="all, delete-orphan"
     )
     user: Mapped["User"] = relationship("User")
+    client: Mapped[Optional["Client"]] = relationship("Client")
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"Vente(numero={self.numero!r}, statut={self.statut!r})"

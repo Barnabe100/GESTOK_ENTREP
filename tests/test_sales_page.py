@@ -16,7 +16,7 @@ def _no_blocking_dialogs(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _build_page(stack) -> SalesPage:
-    return SalesPage(stack.sales, stack.articles, stack.documents, stack.permissions)
+    return SalesPage(stack.sales, stack.articles, stack.clients, stack.documents, stack.permissions)
 
 
 def _make_article(stack, reference="ART-1", stock_initial=Decimal("50")):
@@ -298,6 +298,71 @@ def test_cancel_selected_denied_without_permission(qtbot, login_as) -> None:
 
     assert result is False
     assert stack.sales.get_sale(sale.id).statut == StatutOperation.VALIDEE
+
+
+def test_load_clients_for_form_excludes_inactive(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    active = stack.clients.create_client("Client actif")
+    inactive = stack.clients.create_client("Client inactif")
+    stack.clients.deactivate_client(inactive.id)
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    clients = page._load_clients_for_form()
+
+    ids = {client_id for client_id, _ in clients}
+    assert active.id in ids
+    assert inactive.id not in ids
+
+
+def test_create_client_from_values_persists_and_returns_tuple(qtbot, login_as) -> None:
+    """§5 : la création à la volée doit persister immédiatement le client et
+    retourner (id, nom) pour sélection dans le formulaire de vente."""
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    result = page._create_client_from_values(
+        {"nom": "Client à la volée", "telephone": "", "email": "", "adresse": "", "observations": ""}
+    )
+
+    assert result is not None
+    client_id, client_nom = result
+    assert client_nom == "Client à la volée"
+    assert stack.clients.get_client(client_id).nom == "Client à la volée"
+
+
+def test_create_client_from_values_shows_warning_on_invalid_data(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    result = page._create_client_from_values(
+        {"nom": "", "telephone": "", "email": "", "adresse": "", "observations": ""}
+    )
+
+    assert result is None
+
+
+def test_submit_form_with_client_id_associates_sale_to_client(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    client = stack.clients.create_client("Client")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    values = {
+        "date": "2026-01-01",
+        "client_id": client.id,
+        "lignes": [{"article_id": article.id, "article_label": "x", "quantite": Decimal("2"), "prix_unitaire": Decimal("150")}],
+    }
+
+    result = page._submit_form(None, values)
+
+    assert result is True
+    created = stack.sales.list_sales()[0]
+    assert created.client_id == client.id
 
 
 def test_confirmation_dialog_no_cancels_validate(qtbot, login_as, monkeypatch) -> None:

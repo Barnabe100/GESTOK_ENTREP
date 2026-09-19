@@ -31,11 +31,14 @@ class VenteRepository(SQLAlchemyRepository[Vente]):
         statut: Optional[StatutOperation] = None,
         date_from: Optional[date] = None,
         date_to: Optional[date] = None,
+        client_id: Optional[int] = None,
     ) -> list[Vente]:
-        # eager-load user/lignes(+article) : le rapport Ventes parcourt
+        # eager-load user/client/lignes(+article) : le rapport Ventes parcourt
         # potentiellement des centaines de documents, évite le N+1.
         query = self.session.query(Vente).options(
-            joinedload(Vente.user), selectinload(Vente.lignes).joinedload(VenteLigne.article)
+            joinedload(Vente.user),
+            joinedload(Vente.client),
+            selectinload(Vente.lignes).joinedload(VenteLigne.article),
         )
         if term:
             query = query.filter(Vente.numero.ilike(f"%{term}%"))
@@ -45,6 +48,8 @@ class VenteRepository(SQLAlchemyRepository[Vente]):
             query = query.filter(Vente.date >= date_from)
         if date_to is not None:
             query = query.filter(Vente.date <= date_to)
+        if client_id is not None:
+            query = query.filter(Vente.client_id == client_id)
         return query.order_by(Vente.date.desc(), Vente.id.desc()).all()
 
     def count_all(self) -> int:
