@@ -1,11 +1,17 @@
 """Page Dashboard (§10-12 du cahier des charges de cette phase) : rendu des
-KPI, visibilité des accès rapides selon les permissions, actualisation."""
+KPI, visibilité des accès rapides selon les permissions, actualisation.
+
+Complété par le Lot D (UX) : présence du QScrollArea, messages "aucune
+donnée" par section, et renommage du libellé KPI ventes -> chiffre
+d'affaires."""
 from datetime import date
 from decimal import Decimal
 
 import pytest
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QMessageBox, QScrollArea
 
+from app.services.entries.entry_service import EntreeLigneInput
+from app.services.sales.sale_service import VenteLigneInput
 from app.views.pages.dashboard_page import DashboardPage
 
 
@@ -168,3 +174,190 @@ def test_status_message_shown_when_license_blocks_dashboard(qtbot, login_as, lic
     qtbot.addWidget(page)
 
     assert page.status_label.isHidden() is False
+
+
+# -- Lot D : QScrollArea ---------------------------------------------------------------
+
+
+def test_dashboard_content_wrapped_in_scroll_area(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    scroll_areas = page.findChildren(QScrollArea)
+    assert len(scroll_areas) == 1
+    scroll_area = scroll_areas[0]
+    assert scroll_area.widgetResizable() is True
+    assert scroll_area.widget() is not None
+    # Le contenu existant (cartes KPI, etc.) a bien été déplacé dans le
+    # widget porté par le QScrollArea, pas perdu ni dupliqué.
+    assert scroll_area.widget().isAncestorOf(page.kpi_articles_card)
+
+
+def test_scroll_area_never_shows_horizontal_scrollbar_policy(qtbot, login_as) -> None:
+    from PySide6.QtCore import Qt as QtCore_Qt
+
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    scroll_area = page.findChildren(QScrollArea)[0]
+    assert scroll_area.horizontalScrollBarPolicy() == QtCore_Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+
+
+# -- Lot D : messages "aucune donnée" ----------------------------------------------------
+
+
+def test_sales_chart_shows_message_when_no_sales_in_period(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.sales_empty_label.isHidden() is False
+    assert page.sales_chart_view.isHidden() is True
+    assert page.sales_empty_label.text() == "Aucune vente sur cette période."
+
+
+def test_sales_chart_message_disappears_when_sale_exists(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    category = stack.categories.create_category("Boissons")
+    article = stack.articles.create_article(
+        "ART-1", "Eau", category.id, "u", Decimal("100"), Decimal("150"), Decimal("5"), stock_initial=Decimal("50")
+    )
+    sale = stack.sales.create_sale(date.today(), [VenteLigneInput(article.id, Decimal("2"), Decimal("150"))])
+    stack.sales.validate_sale(sale.id)
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.sales_empty_label.isHidden() is True
+    assert page.sales_chart_view.isHidden() is False
+
+
+def test_movement_chart_shows_message_when_no_movements(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.movement_empty_label.isHidden() is False
+    assert page.movement_chart_view.isHidden() is True
+    assert page.movement_empty_label.text() == "Aucun mouvement sur cette période."
+
+
+def test_movement_chart_message_disappears_when_movement_exists(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    supplier = stack.suppliers.create_supplier("Fournisseur A")
+    category = stack.categories.create_category("Boissons")
+    article = stack.articles.create_article(
+        "ART-1", "Eau", category.id, "u", Decimal("100"), Decimal("150"), Decimal("5")
+    )
+    entry = stack.entries.create_entry(
+        supplier.id, date.today(), [EntreeLigneInput(article.id, Decimal("10"), Decimal("100"))]
+    )
+    stack.entries.validate_entry(entry.id)
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.movement_empty_label.isHidden() is True
+    assert page.movement_chart_view.isHidden() is False
+
+
+def test_category_chart_shows_message_when_no_catalog(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.category_value_empty_label.isHidden() is False
+    assert page.category_value_chart_view.isHidden() is True
+    assert page.category_value_empty_label.text() == "Aucune donnée de stock par catégorie."
+
+
+def test_category_chart_message_disappears_when_article_exists(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    category = stack.categories.create_category("Boissons")
+    stack.articles.create_article(
+        "ART-1", "Eau", category.id, "u", Decimal("100"), Decimal("150"), Decimal("5"), stock_initial=Decimal("2")
+    )
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.category_value_empty_label.isHidden() is True
+    assert page.category_value_chart_view.isHidden() is False
+
+
+def test_low_stock_table_shows_message_when_empty(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.low_stock_empty_label.isHidden() is False
+    assert page.low_stock_table.isHidden() is True
+    assert page.low_stock_empty_label.text() == "Aucun article en stock faible."
+
+
+def test_low_stock_table_message_disappears_when_article_below_minimum(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    _setup_catalog(stack)
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.low_stock_empty_label.isHidden() is True
+    assert page.low_stock_table.isHidden() is False
+
+
+def test_recent_activity_shows_message_when_no_movements(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.recent_activity_empty_label.isHidden() is False
+    assert page.recent_activity_table.isHidden() is True
+    assert page.recent_activity_empty_label.text() == "Aucune activité récente."
+
+
+def test_recent_activity_message_disappears_when_movement_exists(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    supplier = stack.suppliers.create_supplier("Fournisseur A")
+    category = stack.categories.create_category("Boissons")
+    article = stack.articles.create_article(
+        "ART-1", "Eau", category.id, "u", Decimal("100"), Decimal("150"), Decimal("5")
+    )
+    entry = stack.entries.create_entry(
+        supplier.id, date.today(), [EntreeLigneInput(article.id, Decimal("10"), Decimal("100"))]
+    )
+    stack.entries.validate_entry(entry.id)
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.recent_activity_empty_label.isHidden() is True
+    assert page.recent_activity_table.isHidden() is False
+
+
+# -- Lot D : libellé KPI chiffre d'affaires -----------------------------------------------
+
+
+def test_kpi_sales_card_title_renamed_to_chiffre_affaires(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.kpi_sales_card.title() == "Chiffre d'affaires (période)"
+
+
+def test_kpi_sales_value_unchanged_after_rename(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    category = stack.categories.create_category("Boissons")
+    article = stack.articles.create_article(
+        "ART-1", "Eau", category.id, "u", Decimal("100"), Decimal("150"), Decimal("5"), stock_initial=Decimal("50")
+    )
+    sale = stack.sales.create_sale(date.today(), [VenteLigneInput(article.id, Decimal("2"), Decimal("150"))])
+    stack.sales.validate_sale(sale.id)
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert "300" in page.kpi_sales_label.text()  # 2 x 150 = 300, valeur/calcul inchangés

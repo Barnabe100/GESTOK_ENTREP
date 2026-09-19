@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -77,7 +78,23 @@ class DashboardPage(QWidget):
         self._on_navigate = on_navigate
         self._currency_code = get_effective_currency()
 
-        layout = QVBoxLayout(self)
+        # Le contenu (KPI + graphiques + tableaux) peut dépasser la hauteur
+        # disponible sur une petite fenêtre — enveloppé dans un QScrollArea
+        # pour rester accessible plutôt que d'être coupé. setWidgetResizable
+        # fait suivre la largeur du contenu à celle de la zone visible, donc
+        # aucun défilement horizontal parasite ; seul un défilement vertical
+        # apparaît si nécessaire.
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+
+        scroll_area = QScrollArea(self)
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        outer_layout.addWidget(scroll_area)
+
+        content = QWidget(scroll_area)
+        scroll_area.setWidget(content)
+        layout = QVBoxLayout(content)
 
         layout.addLayout(self._build_period_row())
         layout.addLayout(self._build_kpi_row())
@@ -90,7 +107,7 @@ class DashboardPage(QWidget):
         layout.addLayout(self._build_charts_grid())
         layout.addLayout(self._build_alerts_row())
         layout.addWidget(QLabel("Activité récente", self))
-        layout.addWidget(self._build_recent_activity_table())
+        layout.addLayout(self._build_recent_activity_box())
 
         period_from, period_to = default_period()
         self.date_from_edit.setText(period_from.isoformat())
@@ -131,7 +148,7 @@ class DashboardPage(QWidget):
         self.kpi_stock_value_card, self.kpi_stock_value_label = self._build_kpi_card("Valeur du stock")
         self.kpi_low_stock_card, self.kpi_low_stock_label = self._build_kpi_card("Stock faible")
         self.kpi_out_of_stock_card, self.kpi_out_of_stock_label = self._build_kpi_card("Ruptures")
-        self.kpi_sales_card, self.kpi_sales_label = self._build_kpi_card("Ventes (période)")
+        self.kpi_sales_card, self.kpi_sales_label = self._build_kpi_card("Chiffre d'affaires (période)")
         for card in (
             self.kpi_articles_card, self.kpi_stock_value_card, self.kpi_low_stock_card,
             self.kpi_out_of_stock_card, self.kpi_sales_card,
@@ -139,23 +156,59 @@ class DashboardPage(QWidget):
             row.addWidget(card)
         return row
 
+    def _build_empty_state_label(self, message: str) -> QLabel:
+        """Message affiché à la place d'un graphique/tableau sans donnée —
+        jamais un widget simplement vide, jamais un 0 trompeur (§2 de ce
+        lot). Masqué par défaut, sa visibilité est basculée par le
+        ``_apply_*`` correspondant selon que la période contient des
+        données ou non."""
+        label = QLabel(message, self)
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setWordWrap(True)
+        label.setStyleSheet("color: #666666;")
+        label.setVisible(False)
+        return label
+
+    def _build_chart_cell(self, chart_view: QChartView, empty_message: str) -> tuple[QWidget, QLabel]:
+        """Un graphique et son message « aucune donnée » partagent la même
+        cellule de la grille : seul l'un des deux est visible à la fois, le
+        conteneur garde donc la hauteur minimale du graphique (§1 : ne pas
+        changer les tailles minimales) que l'un ou l'autre soit affiché."""
+        container = QWidget(self)
+        container_layout = QVBoxLayout(container)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        empty_label = self._build_empty_state_label(empty_message)
+        empty_label.setMinimumHeight(chart_view.minimumHeight())
+        container_layout.addWidget(chart_view)
+        container_layout.addWidget(empty_label)
+        return container, empty_label
+
     def _build_charts_grid(self) -> QGridLayout:
         grid = QGridLayout()
 
         self.sales_chart_view = QChartView(self)
         self.sales_chart_view.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.sales_chart_view.setMinimumHeight(260)
-        grid.addWidget(self.sales_chart_view, 0, 0)
+        sales_cell, self.sales_empty_label = self._build_chart_cell(
+            self.sales_chart_view, "Aucune vente sur cette période."
+        )
+        grid.addWidget(sales_cell, 0, 0)
 
         self.movement_chart_view = QChartView(self)
         self.movement_chart_view.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.movement_chart_view.setMinimumHeight(260)
-        grid.addWidget(self.movement_chart_view, 0, 1)
+        movement_cell, self.movement_empty_label = self._build_chart_cell(
+            self.movement_chart_view, "Aucun mouvement sur cette période."
+        )
+        grid.addWidget(movement_cell, 0, 1)
 
         self.category_value_chart_view = QChartView(self)
         self.category_value_chart_view.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.category_value_chart_view.setMinimumHeight(260)
-        grid.addWidget(self.category_value_chart_view, 1, 0)
+        category_cell, self.category_value_empty_label = self._build_chart_cell(
+            self.category_value_chart_view, "Aucune donnée de stock par catégorie."
+        )
+        grid.addWidget(category_cell, 1, 0)
 
         low_stock_box = QVBoxLayout()
         low_stock_box.addWidget(QLabel("Articles en stock faible", self))
@@ -164,6 +217,8 @@ class DashboardPage(QWidget):
         self.low_stock_table.horizontalHeader().setStretchLastSection(True)
         self.low_stock_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         low_stock_box.addWidget(self.low_stock_table)
+        self.low_stock_empty_label = self._build_empty_state_label("Aucun article en stock faible.")
+        low_stock_box.addWidget(self.low_stock_empty_label)
         grid.addLayout(low_stock_box, 1, 1)
 
         return grid
@@ -200,14 +255,18 @@ class DashboardPage(QWidget):
 
         return row
 
-    def _build_recent_activity_table(self) -> QTableWidget:
+    def _build_recent_activity_box(self) -> QVBoxLayout:
+        box = QVBoxLayout()
         self.recent_activity_table = QTableWidget(0, 5, self)
         self.recent_activity_table.setHorizontalHeaderLabels(
             ["Date/heure", "Type", "Article", "Utilisateur", "Quantité"]
         )
         self.recent_activity_table.horizontalHeader().setStretchLastSection(True)
         self.recent_activity_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        return self.recent_activity_table
+        box.addWidget(self.recent_activity_table)
+        self.recent_activity_empty_label = self._build_empty_state_label("Aucune activité récente.")
+        box.addWidget(self.recent_activity_empty_label)
+        return box
 
     # -- navigation -------------------------------------------------------------------
 
@@ -280,6 +339,12 @@ class DashboardPage(QWidget):
         self._apply_recent_activity_table(overview.recent_activity or [])
 
     def _apply_sales_chart(self, points) -> None:
+        has_data = bool(points)
+        self.sales_chart_view.setVisible(has_data)
+        self.sales_empty_label.setVisible(not has_data)
+        if not has_data:
+            return
+
         chart = QChart()
         chart.setTitle("Évolution des ventes")
         bar_set = QBarSet("Montant des ventes")
@@ -304,6 +369,12 @@ class DashboardPage(QWidget):
         self.sales_chart_view.setChart(chart)
 
     def _apply_movement_chart(self, breakdown: dict[TypeMouvement, int]) -> None:
+        has_data = bool(breakdown)
+        self.movement_chart_view.setVisible(has_data)
+        self.movement_empty_label.setVisible(not has_data)
+        if not has_data:
+            return
+
         chart = QChart()
         chart.setTitle("Répartition des mouvements")
         series = QPieSeries()
@@ -313,6 +384,12 @@ class DashboardPage(QWidget):
         self.movement_chart_view.setChart(chart)
 
     def _apply_category_value_chart(self, category_values) -> None:
+        has_data = bool(category_values)
+        self.category_value_chart_view.setVisible(has_data)
+        self.category_value_empty_label.setVisible(not has_data)
+        if not has_data:
+            return
+
         chart = QChart()
         chart.setTitle("Valeur du stock par catégorie")
         bar_set = QBarSet("Valeur du stock")
@@ -337,6 +414,10 @@ class DashboardPage(QWidget):
         self.category_value_chart_view.setChart(chart)
 
     def _apply_low_stock_table(self, rows) -> None:
+        has_data = bool(rows)
+        self.low_stock_table.setVisible(has_data)
+        self.low_stock_empty_label.setVisible(not has_data)
+
         self.low_stock_table.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
             self.low_stock_table.setItem(row_index, 0, QTableWidgetItem(row.reference))
@@ -346,6 +427,10 @@ class DashboardPage(QWidget):
             )
 
     def _apply_recent_activity_table(self, rows) -> None:
+        has_data = bool(rows)
+        self.recent_activity_table.setVisible(has_data)
+        self.recent_activity_empty_label.setVisible(not has_data)
+
         self.recent_activity_table.setRowCount(len(rows))
         for row_index, movement in enumerate(rows):
             self.recent_activity_table.setItem(
