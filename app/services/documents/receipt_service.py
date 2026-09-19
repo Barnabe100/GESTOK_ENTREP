@@ -14,6 +14,11 @@ Le format du document (A4, ticket 80 mm, ...) n'est jamais une
 préoccupation de ce service : il produit toujours le même
 :class:`SaleReceiptData`, seul ``ReceiptDocumentBuilder`` (autre module)
 choisit le gabarit de rendu.
+
+Le client associé à la vente (``Vente.client``, optionnel) est lu de la
+même façon que l'utilisateur/les articles ci-dessus — par relation ORM,
+jamais via ``ClientService`` — pour ne dépendre, là aussi, que de
+``SALE_VIEW`` (voir ``build_sale_receipt``).
 """
 from __future__ import annotations
 
@@ -64,6 +69,14 @@ class SaleReceiptData:
     entreprise_telephone: Optional[str]
     entreprise_email: Optional[str]
     entreprise_logo_path: Optional[Path]
+    # Optionnels avec valeur par défaut : champs ajoutés après la première
+    # version de ce DTO (vente comptant = tous à None), ne cassent aucun
+    # appelant existant. Pas de client_id : ce DTO sert à afficher un
+    # document, jamais à agir sur le client.
+    client_nom: Optional[str] = None
+    client_telephone: Optional[str] = None
+    client_adresse: Optional[str] = None
+    client_email: Optional[str] = None
 
 
 class ReceiptService:
@@ -110,6 +123,23 @@ class ReceiptService:
             username = vente.user.username
             total = vente.total
 
+            # Lecture directe de la relation ORM (déjà chargée dans cette
+            # session, comme vente.user/ligne.article ci-dessus) : jamais via
+            # ClientService, pour ne dépendre que de SALE_VIEW (§ règle
+            # permissions de ce lot). Ne filtre jamais par statut ACTIF/
+            # INACTIF : un client désactivé associé à une vente historique
+            # reste normalement affiché. Si la ligne référencée n'existe
+            # plus (anomalie hors du fonctionnement normal de l'application
+            # — la FK ventes.client_id empêche ce cas en temps normal),
+            # SQLAlchemy résout simplement la relation à None : aucun crash,
+            # aucune invention de client, le reçu se comporte comme une
+            # vente sans client.
+            client = vente.client
+            client_nom = client.nom if client is not None else None
+            client_telephone = client.telephone if client is not None else None
+            client_adresse = client.adresse if client is not None else None
+            client_email = client.email if client is not None else None
+
         profile = get_company_profile(self._settings)
         devise = get_effective_currency(self._settings)
 
@@ -126,4 +156,8 @@ class ReceiptService:
             entreprise_telephone=profile.telephone,
             entreprise_email=profile.email,
             entreprise_logo_path=profile.logo_path,
+            client_nom=client_nom,
+            client_telephone=client_telephone,
+            client_adresse=client_adresse,
+            client_email=client_email,
         )

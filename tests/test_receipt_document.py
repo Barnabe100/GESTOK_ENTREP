@@ -185,3 +185,141 @@ def test_same_data_produces_consistent_totals_across_formats(qapp) -> None:
     # Le service ne dépend jamais du format : même total, dans les deux rendus.
     assert "100" in a4_text
     assert "100" in ticket_text
+
+
+# -- client (lot Intégration du client dans les reçus et PDF) --------------------------
+
+
+def _make_data_with_client(**overrides) -> SaleReceiptData:
+    client_defaults = dict(
+        client_nom="Jean Dupont", client_telephone="0102030405",
+        client_adresse="5 avenue des Fleurs", client_email="jean@example.com",
+    )
+    client_defaults.update(overrides)
+    return _make_data(**client_defaults)
+
+
+def test_a4_shows_client_section_with_full_info(qapp) -> None:
+    data = _make_data_with_client()
+    rendered = build_receipt_document(data, ReceiptFormat.A4)
+    text = rendered.document.toPlainText()
+
+    assert "CLIENT" in text
+    assert "Jean Dupont" in text
+    assert "0102030405" in text
+    assert "5 avenue des Fleurs" in text
+    assert "jean@example.com" in text
+
+
+def test_ticket_shows_client_block_with_full_info(qapp) -> None:
+    data = _make_data_with_client()
+    rendered = build_receipt_document(data, ReceiptFormat.TICKET_80MM)
+    text = rendered.document.toPlainText()
+
+    assert "Jean Dupont" in text
+    assert "0102030405" in text
+
+
+def test_a4_without_client_has_no_client_section(qapp) -> None:
+    """client_id = NULL -> aucune section Client, aucun espace inutile."""
+    data = _make_data()  # aucun champ client_* renseigné
+    rendered = build_receipt_document(data, ReceiptFormat.A4)
+    text = rendered.document.toPlainText()
+
+    assert "CLIENT" not in text
+
+
+def test_ticket_without_client_has_no_client_block(qapp) -> None:
+    data = _make_data()
+    rendered = build_receipt_document(data, ReceiptFormat.TICKET_80MM)
+    text = rendered.document.toPlainText()
+
+    assert "Client :" not in text
+
+
+def test_a4_client_section_omits_missing_optional_fields(qapp) -> None:
+    """Client renseigné mais sans téléphone/adresse/email : ces lignes ne
+    doivent jamais apparaître (jamais None/N/A)."""
+    data = _make_data_with_client(client_telephone=None, client_adresse=None, client_email=None)
+    rendered = build_receipt_document(data, ReceiptFormat.A4)
+    text = rendered.document.toPlainText()
+
+    assert "CLIENT" in text
+    assert "Jean Dupont" in text
+    assert "None" not in text
+    assert "N/A" not in text
+    assert "Téléphone" not in text
+    assert "Adresse" not in text
+    assert "Email" not in text
+
+
+def test_ticket_client_block_omits_missing_optional_fields(qapp) -> None:
+    data = _make_data_with_client(client_telephone=None, client_adresse=None, client_email=None)
+    rendered = build_receipt_document(data, ReceiptFormat.TICKET_80MM)
+    text = rendered.document.toPlainText()
+
+    assert "Jean Dupont" in text
+    assert "None" not in text
+    assert "N/A" not in text
+
+
+def test_a4_client_section_shows_only_telephone_when_only_field_set(qapp) -> None:
+    data = _make_data_with_client(client_adresse=None, client_email=None)
+    rendered = build_receipt_document(data, ReceiptFormat.A4)
+    text = rendered.document.toPlainText()
+
+    assert "0102030405" in text
+    assert "Adresse" not in text
+    assert "Email" not in text
+
+
+def test_client_accented_name_and_address_preserved(qapp) -> None:
+    data = _make_data_with_client(client_nom="Éric Ndiaye-Côté", client_adresse="Résidence Étoile")
+    a4_text = build_receipt_document(data, ReceiptFormat.A4).document.toPlainText()
+    ticket_text = build_receipt_document(data, ReceiptFormat.TICKET_80MM).document.toPlainText()
+
+    assert "Éric Ndiaye-Côté" in a4_text
+    assert "Résidence Étoile" in a4_text
+    assert "Éric Ndiaye-Côté" in ticket_text
+
+
+# -- hauteur dynamique du ticket avec/sans client ---------------------------------------
+
+
+def test_ticket_with_client_is_taller_than_without_for_same_lines(qapp) -> None:
+    data_without_client = _make_data()
+    data_with_client = _make_data_with_client()
+
+    height_without = build_receipt_document(data_without_client, ReceiptFormat.TICKET_80MM).page_size.size(
+        QPageSize.Unit.Millimeter
+    ).height()
+    height_with = build_receipt_document(data_with_client, ReceiptFormat.TICKET_80MM).page_size.size(
+        QPageSize.Unit.Millimeter
+    ).height()
+
+    assert height_with > height_without
+
+
+def test_ticket_height_still_grows_with_more_lines_when_client_present(qapp) -> None:
+    short_data = _make_data_with_client(lignes=[_make_line()])
+    long_data = _make_data_with_client(lignes=[_make_line(reference=f"ART-{i}") for i in range(30)])
+
+    short_height = build_receipt_document(short_data, ReceiptFormat.TICKET_80MM).page_size.size(
+        QPageSize.Unit.Millimeter
+    ).height()
+    long_height = build_receipt_document(long_data, ReceiptFormat.TICKET_80MM).page_size.size(
+        QPageSize.Unit.Millimeter
+    ).height()
+
+    assert long_height > short_height
+
+
+def test_a4_page_size_unaffected_by_client_presence(qapp) -> None:
+    """A4 gère la pagination automatiquement — la taille de page ne varie
+    jamais, avec ou sans client (comme avec ou sans lignes, déjà vérifié)."""
+    without_client = build_receipt_document(_make_data(), ReceiptFormat.A4)
+    with_client = build_receipt_document(_make_data_with_client(), ReceiptFormat.A4)
+
+    assert without_client.page_size.size(QPageSize.Unit.Millimeter) == with_client.page_size.size(
+        QPageSize.Unit.Millimeter
+    )

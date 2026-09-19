@@ -15,10 +15,12 @@ def _make_article(stack, reference="ART-1", stock_initial=Decimal("50")):
     )
 
 
-def _create_and_validate_sale(stack, article, quantite=Decimal("3"), prix=Decimal("150")):
+def _create_and_validate_sale(stack, article, quantite=Decimal("3"), prix=Decimal("150"), client_id=None):
     from app.services.sales.sale_service import VenteLigneInput
 
-    sale = stack.sales.create_sale(date(2026, 1, 15), [VenteLigneInput(article.id, quantite, prix)])
+    sale = stack.sales.create_sale(
+        date(2026, 1, 15), [VenteLigneInput(article.id, quantite, prix)], client_id=client_id
+    )
     return stack.sales.validate_sale(sale.id)
 
 
@@ -216,3 +218,126 @@ def test_generating_receipt_does_not_change_sale_statut(login_as) -> None:
     reloaded = stack.sales.get_sale(sale.id)
     assert reloaded.statut == sale.statut
     assert reloaded.total == sale.total
+
+
+# -- client (lot Intégration du client dans les reçus et PDF) --------------------------
+
+
+def test_receipt_includes_full_client_info(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    client = stack.clients.create_client(
+        "Jean Dupont", telephone="0102030405", email="jean@example.com", adresse="12 rue X"
+    )
+    sale = _create_and_validate_sale(stack, article, client_id=client.id)
+
+    receipt = stack.documents.build_sale_receipt(sale.id)
+
+    assert receipt.client_nom == "Jean Dupont"
+    assert receipt.client_telephone == "0102030405"
+    assert receipt.client_email == "jean@example.com"
+    assert receipt.client_adresse == "12 rue X"
+
+
+def test_receipt_without_client_has_no_client_fields(login_as) -> None:
+    """client_id = NULL -> reçu sans informations client (§ règle métier
+    principale de ce lot)."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    sale = _create_and_validate_sale(stack, article)  # pas de client_id
+
+    receipt = stack.documents.build_sale_receipt(sale.id)
+
+    assert receipt.client_nom is None
+    assert receipt.client_telephone is None
+    assert receipt.client_adresse is None
+    assert receipt.client_email is None
+
+
+def test_receipt_with_client_missing_optional_fields(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    client = stack.clients.create_client("Client minimal")  # aucun champ optionnel renseigné
+    sale = _create_and_validate_sale(stack, article, client_id=client.id)
+
+    receipt = stack.documents.build_sale_receipt(sale.id)
+
+    assert receipt.client_nom == "Client minimal"
+    assert receipt.client_telephone is None
+    assert receipt.client_adresse is None
+    assert receipt.client_email is None
+
+
+def test_receipt_client_accented_name_preserved(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    client = stack.clients.create_client("Éric Ndiaye-Côté")
+    sale = _create_and_validate_sale(stack, article, client_id=client.id)
+
+    receipt = stack.documents.build_sale_receipt(sale.id)
+
+    assert receipt.client_nom == "Éric Ndiaye-Côté"
+
+
+def test_receipt_still_available_for_deactivated_client(login_as) -> None:
+    """§8 : un client désactivé associé à une vente historique doit
+    continuer à fournir ses informations sur le reçu."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    client = stack.clients.create_client("Client historique", telephone="0102030405")
+    sale = _create_and_validate_sale(stack, article, client_id=client.id)
+
+    stack.clients.deactivate_client(client.id)
+
+    receipt = stack.documents.build_sale_receipt(sale.id)
+
+    assert receipt.client_nom == "Client historique"
+    assert receipt.client_telephone == "0102030405"
+
+
+def test_receipt_generation_does_not_mutate_client(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    client = stack.clients.create_client("Client")
+    sale = _create_and_validate_sale(stack, article, client_id=client.id)
+
+    stack.documents.build_sale_receipt(sale.id)
+
+    reloaded_client = stack.clients.get_client(client.id)
+    assert reloaded_client.nom == "Client"
+    assert reloaded_client.actif is True
+
+
+def test_receipt_handles_invalid_client_reference_without_crash(login_as) -> None:
+    """§9 : une référence client invalide ne peut normalement pas exister
+    (FK ventes.client_id + PRAGMA foreign_keys=ON + ClientService sans
+    suppression physique). Ce test simule malgré tout l'anomalie en cassant
+    volontairement la référence en base (foreign_keys désactivées le temps
+    de l'opération), pour prouver que ReceiptService ne plante jamais,
+    n'invente aucun client, et retombe simplement sur le comportement
+    « vente sans client »."""
+    from app.config.settings import get_settings
+    from app.db.session import session_scope
+    from sqlalchemy import text
+
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    client = stack.clients.create_client("Client éphémère")
+    sale = _create_and_validate_sale(stack, article, client_id=client.id)
+
+    settings = get_settings()
+    with session_scope(settings) as session:
+        session.execute(text("PRAGMA foreign_keys=OFF"))
+        session.execute(text("DELETE FROM clients WHERE id = :id"), {"id": client.id})
+        session.execute(text("PRAGMA foreign_keys=ON"))
+
+    receipt = stack.documents.build_sale_receipt(sale.id)
+
+    assert receipt.client_nom is None
+    assert receipt.client_telephone is None
+    assert receipt.client_adresse is None
+    assert receipt.client_email is None
+    # La vente elle-même reste intacte (référence orpheline, mais aucune
+    # donnée métier corrompue par la génération du reçu).
+    reloaded_sale = stack.sales.get_sale(sale.id)
+    assert reloaded_sale.total == sale.total

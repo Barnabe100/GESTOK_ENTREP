@@ -92,6 +92,20 @@ def _header_lines(data: SaleReceiptData) -> list[str]:
     return lines
 
 
+def _client_fields(data: SaleReceiptData) -> list[tuple[str, str]]:
+    """Paires (étiquette, valeur) des champs client optionnels réellement
+    renseignés — un client peut exister sans qu'aucun de ces champs ne soit
+    rempli. Même principe que ``_header_lines`` pour le profil entreprise."""
+    fields = []
+    if data.client_telephone:
+        fields.append(("Téléphone", _esc(data.client_telephone)))
+    if data.client_adresse:
+        fields.append(("Adresse", _esc(data.client_adresse)))
+    if data.client_email:
+        fields.append(("Email", _esc(data.client_email)))
+    return fields
+
+
 def _date_heure_text(data: SaleReceiptData) -> str:
     text = str(data.date)
     if data.heure is not None:
@@ -102,12 +116,28 @@ def _date_heure_text(data: SaleReceiptData) -> str:
 _FOOTER_MENTION = "Document généré par StockManager"
 
 
+def _client_section_html_a4(data: SaleReceiptData) -> str:
+    """Bloc CLIENT distinct (§4 de ce lot) — chaîne vide si aucun client
+    n'est associé à la vente : aucun titre, aucun espace réservé."""
+    if not data.client_nom:
+        return ""
+    extra_rows = "".join(
+        f"<p style='margin:0;'>{label} : {value}</p>" for label, value in _client_fields(data)
+    )
+    return f"""
+    <p style="margin:16px 0 4px 0; font-weight:600;">CLIENT</p>
+    <p style="margin:0;">Nom : {_esc(data.client_nom)}</p>
+    {extra_rows}
+    """
+
+
 def _build_a4_html(data: SaleReceiptData, has_logo: bool) -> str:
     logo_html = (
         f'<img src="{_LOGO_RESOURCE_URL.toString()}" width="120">' if has_logo else ""
     )
     entreprise_nom = _esc(data.entreprise_nom) or "(Entreprise non configurée — voir Paramètres)"
     header_lines = "<br/>".join(_header_lines(data)) or "&nbsp;"
+    client_section = _client_section_html_a4(data)
 
     rows = "".join(
         f"<tr>"
@@ -138,6 +168,7 @@ def _build_a4_html(data: SaleReceiptData, has_logo: bool) -> str:
       </tr>
     </table>
     <hr/>
+    {client_section}
     <table width="100%" border="1" cellspacing="0" cellpadding="6" style="border-collapse:collapse;">
       <tr style="background-color:#eeeeee;">
         <th align="left">Article</th>
@@ -152,12 +183,24 @@ def _build_a4_html(data: SaleReceiptData, has_logo: bool) -> str:
     """
 
 
+def _client_block_ticket(data: SaleReceiptData) -> str:
+    """Bloc client compact (§5 de ce lot) — chaîne vide si aucun client
+    n'est associé : le ticket reste plus court, sans ligne réservée."""
+    if not data.client_nom:
+        return ""
+    parts = [f"Client : {_esc(data.client_nom)}"]
+    for label, value in _client_fields(data):
+        parts.append(f"{label} : {value}")
+    return f"<p style='margin:2px 0;'>{'<br/>'.join(parts)}</p>"
+
+
 def _build_ticket_html(data: SaleReceiptData, has_logo: bool) -> str:
     logo_html = (
         f'<p align="center"><img src="{_LOGO_RESOURCE_URL.toString()}" width="60"></p>' if has_logo else ""
     )
     entreprise_nom = _esc(data.entreprise_nom) or "(Entreprise non configurée)"
     header_lines = "<br/>".join(_header_lines(data))
+    client_block = _client_block_ticket(data)
 
     lines_html = "".join(
         f"<p style='margin:2px 0;'>{_esc(l.article_reference)} — {_esc(l.article_designation)}</p>"
@@ -179,6 +222,7 @@ def _build_ticket_html(data: SaleReceiptData, has_logo: bool) -> str:
         {_esc(_date_heure_text(data))}<br/>
         Vendeur : {_esc(data.username)}
       </p>
+      {client_block}
       <p align="center">------------------------------</p>
       {lines_html}
       <p align="center">------------------------------</p>

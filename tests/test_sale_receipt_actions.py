@@ -31,9 +31,11 @@ def _make_article(stack, reference="ART-1", stock_initial=Decimal("50")):
     )
 
 
-def _build_dialog_for_validated_sale(qtbot, stack):
+def _build_dialog_for_validated_sale(qtbot, stack, client_id=None):
     article = _make_article(stack)
-    sale_draft = stack.sales.create_sale(date(2026, 1, 15), [VenteLigneInput(article.id, Decimal("2"), Decimal("150"))])
+    sale_draft = stack.sales.create_sale(
+        date(2026, 1, 15), [VenteLigneInput(article.id, Decimal("2"), Decimal("150"))], client_id=client_id
+    )
     validated = stack.sales.validate_sale(sale_draft.id)
     sale = stack.sales.get_sale(validated.id)
     movements = stack.sales.get_sale_movements(validated.id)
@@ -143,3 +145,65 @@ def test_print_cancelled_via_dialog_returns_false(qtbot, login_as, monkeypatch: 
     result = dialog._print_receipt(ReceiptFormat.A4)
 
     assert result is False
+
+
+# -- avec client (lot Intégration du client dans les reçus et PDF) ---------------------
+
+
+def test_export_a4_with_client_writes_pdf_file(qtbot, login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    client = stack.clients.create_client("Jean Dupont", telephone="0102030405")
+    dialog, _sale = _build_dialog_for_validated_sale(qtbot, stack, client_id=client.id)
+
+    out = tmp_path / "recu_client.pdf"
+    result = dialog._export_receipt_to(str(out), ReceiptFormat.A4)
+
+    assert result is True
+    assert out.exists()
+    assert out.read_bytes()[:5] == b"%PDF-"
+
+
+def test_export_ticket_with_client_writes_pdf_file(qtbot, login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    client = stack.clients.create_client("Jean Dupont", telephone="0102030405")
+    dialog, _sale = _build_dialog_for_validated_sale(qtbot, stack, client_id=client.id)
+
+    out = tmp_path / "recu_ticket_client.pdf"
+    result = dialog._export_receipt_to(str(out), ReceiptFormat.TICKET_80MM)
+
+    assert result is True
+    assert out.exists()
+
+
+def test_print_with_client_succeeds_when_printer_available(
+    qtbot, login_as, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stack, _ = login_as("Administrateur")
+    client = stack.clients.create_client("Jean Dupont")
+    dialog, _sale = _build_dialog_for_validated_sale(qtbot, stack, client_id=client.id)
+
+    monkeypatch.setattr(
+        "app.views.sale_detail_dialog.QPrinterInfo.availablePrinters", staticmethod(lambda: ["Imprimante factice"])
+    )
+    monkeypatch.setattr(
+        "app.views.sale_detail_dialog.QPrintDialog.exec", lambda self: QDialog.DialogCode.Accepted
+    )
+
+    result = dialog._print_receipt(ReceiptFormat.A4)
+
+    assert result is True
+
+
+def test_export_with_deactivated_client_still_succeeds(qtbot, login_as, tmp_path) -> None:
+    """§8 : un client désactivé associé à une vente historique ne doit
+    jamais empêcher l'export du reçu."""
+    stack, _ = login_as("Administrateur")
+    client = stack.clients.create_client("Client historique")
+    dialog, _sale = _build_dialog_for_validated_sale(qtbot, stack, client_id=client.id)
+    stack.clients.deactivate_client(client.id)
+
+    out = tmp_path / "recu_client_desactive.pdf"
+    result = dialog._export_receipt_to(str(out), ReceiptFormat.A4)
+
+    assert result is True
+    assert out.exists()
