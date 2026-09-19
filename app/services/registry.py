@@ -29,6 +29,7 @@ from app.services.licensing.feature_gate import FeatureGate
 from app.services.licensing.license_service import LicenseService
 from app.services.licensing.permission_map import PERMISSION_TO_FEATURE
 from app.services.licensing.public_key import PRODUCTION_PUBLIC_KEY_BYTES
+from app.services.onboarding.onboarding_service import OnboardingService
 from app.services.reports.report_service import ReportService
 from app.services.roles.role_service import RoleService
 from app.services.sales.sale_service import SaleService
@@ -61,6 +62,7 @@ class ServiceRegistry:
     documents: ReceiptService
     audit: AuditService
     roles: RoleService
+    onboarding: OnboardingService
 
 
 def build_service_registry(
@@ -102,4 +104,5 @@ def build_service_registry(
         documents=ReceiptService(permission_service, settings),
         audit=AuditService(permission_service, settings),
         roles=RoleService(permission_service, settings),
+        onboarding=OnboardingService(settings),
     )

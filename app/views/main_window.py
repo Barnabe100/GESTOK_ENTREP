@@ -26,12 +26,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.db.seed import INITIAL_ADMIN_USERNAME
 from app.resources import APP_ICON_PATH
 from app.services.registry import ServiceRegistry
 from app.utils.logging_config import get_logger
 from app.version import __version__
 from app.views.about_dialog import AboutDialog
 from app.views.change_password_dialog import ChangePasswordDialog
+from app.views.onboarding_dialog import OnboardingDialog
 from app.views.pages.articles_page import ArticlesPage
 from app.views.pages.audit_page import AuditPage
 from app.views.pages.backups_page import BackupsPage
@@ -155,6 +157,8 @@ class MainWindow(QMainWindow):
         self._backup_scheduler_timer.timeout.connect(self._check_scheduled_backup)
         self._backup_scheduler_timer.start(_BACKUP_SCHEDULER_CHECK_INTERVAL_MS)
 
+        self._maybe_show_onboarding_dialog()
+
     def _build_navigation_list(self) -> QListWidget:
         navigation_list = QListWidget(self)
         navigation_list.setObjectName("navigationList")
@@ -250,6 +254,11 @@ class MainWindow(QMainWindow):
         self.user_label = QLabel(user_text, top_bar)
         top_bar_layout.addWidget(self.user_label)
 
+        self.onboarding_button = QPushButton("Guide de démarrage", top_bar)
+        self.onboarding_button.setEnabled(self._permissions.has_permission("SETTINGS_VIEW"))
+        self.onboarding_button.clicked.connect(self._open_onboarding_dialog)
+        top_bar_layout.addWidget(self.onboarding_button)
+
         self.about_button = QPushButton("À propos", top_bar)
         self.about_button.clicked.connect(self._on_about_clicked)
         top_bar_layout.addWidget(self.about_button)
@@ -288,6 +297,34 @@ class MainWindow(QMainWindow):
             if isinstance(page, ReportsPage):
                 page.select_report_type(report_preset)
         return True
+
+    def _maybe_show_onboarding_dialog(self) -> None:
+        """Ouvre le guide de démarrage automatiquement, une seule fois, à la
+        première connexion réussie du compte administrateur initial (voir
+        ``OnboardingService.should_show_automatically``). N'importe quel
+        autre compte, y compris un second Administrateur, ne le déclenche
+        jamais automatiquement — il reste réouvrable via le bouton dédié."""
+        current_user = self._permissions.current_user
+        if current_user is None:
+            return
+        if not self._services.onboarding.should_show_automatically(
+            current_user.username, initial_admin_username=INITIAL_ADMIN_USERNAME
+        ):
+            return
+        self._open_onboarding_dialog()
+
+    def _open_onboarding_dialog(self) -> None:
+        dialog = OnboardingDialog(
+            company_settings_service=self._services.parameters,
+            user_service=self._services.users,
+            license_service=self._services.licenses,
+            backup_service=self._services.backups,
+            onboarding_service=self._services.onboarding,
+            permission_service=self._permissions,
+            on_navigate=self.switch_to_module,
+            parent=self,
+        )
+        dialog.exec()
 
     def _on_about_clicked(self) -> None:
         dialog = AboutDialog(self._services.licenses, self._permissions, parent=self)

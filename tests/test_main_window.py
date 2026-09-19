@@ -1,7 +1,9 @@
 import pytest
 
+from app.db.seed import INITIAL_ADMIN_USERNAME
 from app.views.about_dialog import AboutDialog
 from app.views.main_window import MainWindow
+from app.views.onboarding_dialog import OnboardingDialog
 from app.views.pages.dashboard_page import DashboardPage
 from app.views.pages.reports_page import ReportsPage
 
@@ -124,6 +126,126 @@ def test_about_button_does_not_regress_other_top_bar_buttons(qtbot, login_as, mo
     window.logout_requested.connect(lambda: signal_received.append(True))
     window.logout_button.click()
     assert signal_received == [True]
+
+
+# -- guide de démarrage (Lot O) ----------------------------------------------------------
+
+
+def test_onboarding_button_present_and_enabled_for_administrateur(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+
+    assert hasattr(window, "onboarding_button")
+    assert window.onboarding_button.isEnabled() is True
+
+
+@pytest.mark.parametrize("role_name", ["Gestionnaire de stock", "Vendeur", "Consultation"])
+def test_onboarding_button_disabled_without_settings_view(qtbot, login_as, role_name: str) -> None:
+    stack, _ = login_as(role_name)
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+
+    assert window.onboarding_button.isEnabled() is False
+
+
+def test_onboarding_button_click_opens_onboarding_dialog(qtbot, login_as, monkeypatch: pytest.MonkeyPatch) -> None:
+    stack, _ = login_as("Administrateur")
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+
+    opened: list[object] = []
+    monkeypatch.setattr(OnboardingDialog, "exec", lambda self: opened.append(self) or 0)
+
+    window.onboarding_button.click()
+
+    assert len(opened) == 1
+    assert isinstance(opened[0], OnboardingDialog)
+
+
+def test_onboarding_dialog_auto_shown_on_initial_admin_first_login(
+    qtbot, make_user, make_stack, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§Lot O : uniquement pour le compte administrateur initial (identifiant
+    exact ``admin``), jamais pour un compte créé via ``login_as``."""
+    make_user("Administrateur", INITIAL_ADMIN_USERNAME, "MotDePasse!23")
+    stack = make_stack()
+    stack.auth.login(INITIAL_ADMIN_USERNAME, "MotDePasse!23")
+
+    opened: list[object] = []
+    monkeypatch.setattr(OnboardingDialog, "exec", lambda self: opened.append(self) or 0)
+
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+
+    assert len(opened) == 1
+
+
+def test_onboarding_dialog_not_auto_shown_for_a_regular_administrateur_login(
+    qtbot, login_as, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stack, _ = login_as("Administrateur")
+
+    opened: list[object] = []
+    monkeypatch.setattr(OnboardingDialog, "exec", lambda self: opened.append(self) or 0)
+
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+
+    assert opened == []
+
+
+def test_onboarding_dialog_not_auto_shown_once_already_completed(
+    qtbot, make_user, make_stack, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    make_user("Administrateur", INITIAL_ADMIN_USERNAME, "MotDePasse!23")
+    stack = make_stack()
+    stack.auth.login(INITIAL_ADMIN_USERNAME, "MotDePasse!23")
+    stack.onboarding.mark_completed()
+
+    opened: list[object] = []
+    monkeypatch.setattr(OnboardingDialog, "exec", lambda self: opened.append(self) or 0)
+
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+
+    assert opened == []
+
+
+def test_onboarding_manual_reopen_works_even_after_automatic_dismissal(
+    qtbot, make_user, make_stack, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """La réouverture manuelle reste possible même une fois le guidage
+    automatique définitivement marqué terminé — ce n'est pas la même porte
+    d'entrée que le déclenchement automatique."""
+    make_user("Administrateur", INITIAL_ADMIN_USERNAME, "MotDePasse!23")
+    stack = make_stack()
+    stack.auth.login(INITIAL_ADMIN_USERNAME, "MotDePasse!23")
+    stack.onboarding.mark_completed()
+
+    opened: list[object] = []
+    monkeypatch.setattr(OnboardingDialog, "exec", lambda self: opened.append(self) or 0)
+
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+    assert opened == []  # non déclenché automatiquement
+
+    window.onboarding_button.click()
+
+    assert len(opened) == 1
+
+
+def test_onboarding_does_not_regress_other_top_bar_buttons(qtbot, login_as, monkeypatch: pytest.MonkeyPatch) -> None:
+    stack, _ = login_as("Administrateur")
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+
+    monkeypatch.setattr(OnboardingDialog, "exec", lambda self: 0)
+    window.onboarding_button.click()
+
+    assert window.about_button.isEnabled() is True
+    assert window.change_password_button.isEnabled() is True
+    assert window.logout_button.isEnabled() is True
 
 
 def test_dashboard_module_renders_a_real_dashboard_page(qtbot, login_as) -> None:
