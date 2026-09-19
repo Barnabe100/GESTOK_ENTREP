@@ -28,6 +28,7 @@ from app.services.licensing.permission_map import PERMISSION_TO_FEATURE
 from app.services.licensing.public_key import PRODUCTION_PUBLIC_KEY_BYTES
 from app.services.reports.report_service import ReportService
 from app.services.sales.sale_service import SaleService
+from app.services.settings.company_settings_service import CompanySettingsService
 from app.services.stock.movement_service import MovementService
 from app.services.suppliers.supplier_service import SupplierService
 from app.services.users.user_service import UserService
@@ -51,6 +52,7 @@ class ServiceRegistry:
     backups: BackupService
     licenses: LicenseService
     dashboard: DashboardService
+    parameters: CompanySettingsService
 
 
 def build_service_registry(
@@ -87,4 +89,5 @@ def build_service_registry(
         backups=BackupService(permission_service, settings),
         licenses=license_service,
         dashboard=DashboardService(permission_service, report_service, settings),
+        parameters=CompanySettingsService(permission_service, settings),
     )

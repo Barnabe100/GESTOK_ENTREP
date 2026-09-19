@@ -26,11 +26,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.config import get_settings
 from app.models.enums import StatutOperation
 from app.services.articles.article_service import ArticleService
 from app.services.auth.permission_service import PermissionService
 from app.services.entries.entry_service import EntreeLigneInput, EntryService
+from app.services.settings.company_settings_service import get_effective_currency
 from app.services.suppliers.supplier_service import SupplierService
 from app.utils.exceptions import AppError, ValidationError
 from app.utils.money import format_money
@@ -68,7 +68,7 @@ class EntriesPage(QWidget):
         self._supplier_service = supplier_service
         self._article_service = article_service
         self._permissions = permission_service
-        self._currency_code = get_settings().default_currency
+        self._currency_code = get_effective_currency()
 
         layout = QVBoxLayout(self)
 

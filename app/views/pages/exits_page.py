@@ -26,12 +26,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.config import get_settings
 from app.models.enums import StatutOperation
 from app.services.articles.article_service import ArticleService
 from app.services.auth.permission_service import PermissionService
 from app.services.exit_reasons.exit_reason_service import ExitReasonService
 from app.services.exits.exit_service import ExitService, SortieLigneInput
+from app.services.settings.company_settings_service import get_effective_currency
 from app.utils.exceptions import AppError, ValidationError
 from app.utils.money import format_money
 from app.views.common import confirm_action, parse_date, run_modal_form
@@ -68,7 +68,7 @@ class ExitsPage(QWidget):
         self._exit_reason_service = exit_reason_service
         self._article_service = article_service
         self._permissions = permission_service
-        self._currency_code = get_settings().default_currency
+        self._currency_code = get_effective_currency()
 
         layout = QVBoxLayout(self)
 

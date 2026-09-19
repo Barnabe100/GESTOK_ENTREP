@@ -38,13 +38,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.config import get_settings
 from app.models.enums import StatutInventaire, StatutOperation, TypeMouvement
 from app.services.articles.article_service import ArticleService
 from app.services.auth.permission_service import PermissionService
 from app.services.categories.category_service import CategoryService
 from app.services.exit_reasons.exit_reason_service import ExitReasonService
 from app.services.reports.report_service import ReportService
+from app.services.settings.company_settings_service import get_effective_currency
 from app.utils.exceptions import AppError, ValidationError
 from app.utils.money import format_money
 from app.views.common import parse_date
@@ -87,7 +87,7 @@ class ReportsPage(QWidget):
         self._article_service = article_service
         self._exit_reason_service = exit_reason_service
         self._permissions = permission_service
-        self._currency_code = get_settings().default_currency
+        self._currency_code = get_effective_currency()
 
         self._current_headers: list[str] = []
         self._current_rows_as_text: list[list[str]] = []

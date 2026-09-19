@@ -36,10 +36,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.config import get_settings
 from app.models.enums import TypeMouvement
 from app.services.auth.permission_service import PermissionService
 from app.services.dashboard.dashboard_service import DashboardOverview, DashboardService, default_period
+from app.services.settings.company_settings_service import get_effective_currency
 from app.utils.exceptions import AppError
 from app.utils.money import format_money
 from app.views.common import parse_date
@@ -75,7 +75,7 @@ class DashboardPage(QWidget):
         self._dashboard_service = dashboard_service
         self._permissions = permission_service
         self._on_navigate = on_navigate
-        self._currency_code = get_settings().default_currency
+        self._currency_code = get_effective_currency()
 
         layout = QVBoxLayout(self)
 

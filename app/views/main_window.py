@@ -44,6 +44,7 @@ from app.views.pages.mouvements_page import MouvementsPage
 from app.views.pages.placeholder_page import PlaceholderPage
 from app.views.pages.reports_page import ReportsPage
 from app.views.pages.sales_page import SalesPage
+from app.views.pages.settings_page import SettingsPage
 from app.views.pages.suppliers_page import SuppliersPage
 from app.views.pages.users_page import UsersPage
 
@@ -203,6 +204,8 @@ class MainWindow(QMainWindow):
                 self._services.reports, self._services.categories, self._services.articles,
                 self._services.exit_reasons, self._permissions,
             )
+        if module_name == "Paramètres":
+            return SettingsPage(self._services.parameters, self._permissions)
         if module_name == "Sauvegardes":
             return BackupsPage(self._services.backups, self._permissions)
         if module_name == "Licences":
