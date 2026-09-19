@@ -59,6 +59,15 @@ class MouvementStock(Base):
     mouvement_origine: Mapped[Optional["MouvementStock"]] = relationship(
         "MouvementStock", remote_side="MouvementStock.id"
     )
+    # Relations de lecture vers la ligne d'origine (une seule renseignée selon
+    # le type de mouvement) : permettent de remonter jusqu'au numéro du
+    # document parent (Entree/Sortie/Vente/Inventaire) pour la « référence de
+    # l'opération » affichée par la page Mouvements, sans dupliquer cette
+    # donnée sur MouvementStock lui-même.
+    entree_ligne: Mapped[Optional["EntreeLigne"]] = relationship("EntreeLigne")
+    sortie_ligne: Mapped[Optional["SortieLigne"]] = relationship("SortieLigne")
+    vente_ligne: Mapped[Optional["VenteLigne"]] = relationship("VenteLigne")
+    inventaire_ligne: Mapped[Optional["InventaireLigne"]] = relationship("InventaireLigne")
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"MouvementStock(type={self.type!r}, article_id={self.article_id!r}, quantite={self.quantite!r})"

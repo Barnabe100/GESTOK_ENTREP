@@ -40,6 +40,7 @@ from app.views.pages.exit_reasons_page import ExitReasonsPage
 from app.views.pages.exits_page import ExitsPage
 from app.views.pages.inventories_page import InventoriesPage
 from app.views.pages.licenses_page import LicensesPage
+from app.views.pages.mouvements_page import MouvementsPage
 from app.views.pages.placeholder_page import PlaceholderPage
 from app.views.pages.reports_page import ReportsPage
 from app.views.pages.sales_page import SalesPage
@@ -193,6 +194,8 @@ class MainWindow(QMainWindow):
             )
         if module_name == "Ventes":
             return SalesPage(self._services.sales, self._services.articles, self._permissions)
+        if module_name == "Mouvements":
+            return MouvementsPage(self._services.movements, self._permissions)
         if module_name == "Inventaires":
             return InventoriesPage(self._services.inventory, self._services.articles, self._permissions)
         if module_name == "Rapports":

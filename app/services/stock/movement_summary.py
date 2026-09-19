@@ -30,9 +30,25 @@ class MouvementSummary:
     user_id: int
     username: str
     commentaire: Optional[str]
+    # Numéro du document d'origine (Entree/Sortie/Vente/Inventaire), résolu
+    # via celle des quatre FK nullables de MouvementStock qui est renseignée.
+    # Optionnel avec valeur par défaut : champ ajouté après la première
+    # version de ce DTO, ne doit pas casser les appelants existants qui le
+    # construisent directement (voir tests/test_*_detail_dialog.py).
+    reference_operation: Optional[str] = None
 
     @classmethod
     def from_model(cls, mouvement: MouvementStock) -> "MouvementSummary":
+        reference_operation: Optional[str] = None
+        if mouvement.entree_ligne_id is not None:
+            reference_operation = mouvement.entree_ligne.entree.numero
+        elif mouvement.sortie_ligne_id is not None:
+            reference_operation = mouvement.sortie_ligne.sortie.numero
+        elif mouvement.vente_ligne_id is not None:
+            reference_operation = mouvement.vente_ligne.vente.numero
+        elif mouvement.inventaire_ligne_id is not None:
+            reference_operation = mouvement.inventaire_ligne.inventaire.numero
+
         return cls(
             id=mouvement.id,
             article_id=mouvement.article_id,
@@ -46,4 +62,5 @@ class MouvementSummary:
             user_id=mouvement.user_id,
             username=mouvement.user.username,
             commentaire=mouvement.commentaire,
+            reference_operation=reference_operation,
         )

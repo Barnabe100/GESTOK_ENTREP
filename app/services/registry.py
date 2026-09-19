@@ -28,6 +28,7 @@ from app.services.licensing.permission_map import PERMISSION_TO_FEATURE
 from app.services.licensing.public_key import PRODUCTION_PUBLIC_KEY_BYTES
 from app.services.reports.report_service import ReportService
 from app.services.sales.sale_service import SaleService
+from app.services.stock.movement_service import MovementService
 from app.services.suppliers.supplier_service import SupplierService
 from app.services.users.user_service import UserService
 
@@ -45,6 +46,7 @@ class ServiceRegistry:
     exits: ExitService
     sales: SaleService
     inventory: InventoryService
+    movements: MovementService
     reports: ReportService
     backups: BackupService
     licenses: LicenseService
@@ -80,6 +82,7 @@ def build_service_registry(
         exits=ExitService(permission_service, settings),
         sales=SaleService(permission_service, settings),
         inventory=InventoryService(permission_service, settings),
+        movements=MovementService(permission_service, settings),
         reports=report_service,
         backups=BackupService(permission_service, settings),
         licenses=license_service,
