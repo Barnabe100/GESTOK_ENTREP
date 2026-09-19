@@ -45,6 +45,7 @@ from app.views.pages.licenses_page import LicensesPage
 from app.views.pages.mouvements_page import MouvementsPage
 from app.views.pages.placeholder_page import PlaceholderPage
 from app.views.pages.reports_page import ReportsPage
+from app.views.pages.roles_page import RolesPage
 from app.views.pages.sales_page import SalesPage
 from app.views.pages.settings_page import SettingsPage
 from app.views.pages.suppliers_page import SuppliersPage
@@ -75,6 +76,7 @@ NAVIGATION_MODULES: list[str] = [
     "Inventaires",
     "Rapports",
     "Utilisateurs",
+    "Rôles",
     "Paramètres",
     "Sauvegardes",
     "Audit",
@@ -95,6 +97,7 @@ NAVIGATION_PERMISSIONS: dict[str, str] = {
     "Inventaires": "INVENTORY_VIEW",
     "Rapports": "REPORT_VIEW",
     "Utilisateurs": "USER_VIEW",
+    "Rôles": "ROLE_VIEW",
     "Paramètres": "SETTINGS_VIEW",
     "Sauvegardes": "BACKUP_VIEW",
     "Audit": "AUDIT_VIEW",
@@ -181,6 +184,8 @@ class MainWindow(QMainWindow):
             return DashboardPage(self._services.dashboard, self._permissions, on_navigate=self.switch_to_module)
         if module_name == "Utilisateurs":
             return UsersPage(self._services.users, self._permissions)
+        if module_name == "Rôles":
+            return RolesPage(self._services.roles, self._permissions)
         if module_name == "Catégories":
             return CategoriesPage(self._services.categories, self._permissions)
         if module_name == "Fournisseurs":
