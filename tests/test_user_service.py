@@ -403,3 +403,104 @@ def test_set_active_can_deactivate_administrateur_when_another_active_admin_exis
     updated = stack.users.set_active(other_admin.id, False)
 
     assert updated.actif is False
+
+
+# -- LOT F : la démotion d'un PAIR administrateur ne doit jamais faire passer ---------
+# -- le nombre d'administrateurs actifs de 1 à 0 (même garde-fou que set_active) ------
+
+
+def test_update_user_two_active_admins_peer_demotion_succeeds_and_actor_stays_admin(login_as) -> None:
+    """§A : deux administrateurs actifs, A modifie le rôle de B → succès,
+    A reste Administrateur actif (le nombre d'administrateurs actifs passe
+    de 2 à 1, jamais à 0)."""
+    stack, admin_a = login_as("Administrateur")
+    admin_role_id = _role_id("Administrateur")
+    vendeur_role_id = _role_id("Vendeur")
+    admin_b = stack.users.create_user("admin_b_peer", "MotDePasse!23", admin_role_id)
+
+    updated_b = stack.users.update_user(admin_b.id, vendeur_role_id)
+
+    assert updated_b.role_name == "Vendeur"
+    with session_scope(None) as session:
+        from app.models.user import User
+
+        admin_a_row = session.get(User, admin_a.id)
+        assert admin_a_row.role.nom == "Administrateur"
+        assert admin_a_row.actif is True
+
+
+def test_update_user_demoting_peer_admin_leaves_exactly_one_active_admin(login_as) -> None:
+    """§C : après démotion d'un administrateur pair, il reste exactement un
+    administrateur actif (jamais zéro) — vérifié directement en base."""
+    stack, admin_a = login_as("Administrateur")
+    admin_role_id = _role_id("Administrateur")
+    consultation_role_id = _role_id("Consultation")
+    admin_b = stack.users.create_user("admin_b_target", "MotDePasse!23", admin_role_id)
+
+    stack.users.update_user(admin_b.id, consultation_role_id)
+
+    with session_scope(None) as session:
+        from app.models.rbac import Role
+        from app.models.user import User
+
+        active_admin_count = (
+            session.query(User)
+            .join(Role)
+            .filter(Role.nom == "Administrateur", User.actif.is_(True))
+            .count()
+        )
+        assert active_admin_count == 1
+
+
+def test_update_user_non_admin_role_with_user_update_cannot_demote_last_active_admin(login_as) -> None:
+    """§D : le garde-fou porte sur le COMPTE ciblé, pas sur le rôle de
+    l'acteur. Un rôle non-Administrateur ayant reçu ``USER_UPDATE`` via
+    l'écran Rôles/Permissions (Lot C) ne doit pas pouvoir, via cette
+    permission déléguée, retirer le rôle Administrateur du dernier compte
+    Administrateur actif — c'était le seul chemin par lequel l'ancienne
+    garde (limitée à l'auto-démotion) pouvait être contournée."""
+    stack, admin_a = login_as("Administrateur")
+    vendeur_role_id = _role_id("Vendeur")
+    current_vendeur_codes = stack.roles.get_role_permissions(vendeur_role_id)
+    stack.roles.update_role_permissions(vendeur_role_id, current_vendeur_codes + ["USER_UPDATE"])
+
+    vendeur_stack, _ = login_as("Vendeur")
+    consultation_role_id = _role_id("Consultation")
+
+    try:
+        vendeur_stack.users.update_user(admin_a.id, consultation_role_id)
+        assert False, "devait lever ValidationError"
+    except ValidationError:
+        pass
+
+    with session_scope(None) as session:
+        from app.models.user import User
+
+        admin_a_row = session.get(User, admin_a.id)
+        assert admin_a_row.role.nom == "Administrateur"
+        assert admin_a_row.actif is True
+
+
+def test_set_active_non_admin_role_with_user_activate_cannot_deactivate_last_active_admin(login_as) -> None:
+    """Même invariant que le test précédent, appliqué à la désactivation
+    (``set_active``) : ce garde-fou existait déjà (compte des
+    administrateurs actifs, sans condition sur l'acteur) et n'a pas eu
+    besoin d'être modifié par le Lot F — ce test le documente/consolide."""
+    stack, admin_a = login_as("Administrateur")
+    vendeur_role_id = _role_id("Vendeur")
+    current_vendeur_codes = stack.roles.get_role_permissions(vendeur_role_id)
+    stack.roles.update_role_permissions(vendeur_role_id, current_vendeur_codes + ["USER_ACTIVATE"])
+
+    vendeur_stack, _ = login_as("Vendeur")
+
+    try:
+        vendeur_stack.users.set_active(admin_a.id, False)
+        assert False, "devait lever ValidationError"
+    except ValidationError:
+        pass
+
+    with session_scope(None) as session:
+        from app.models.user import User
+
+        admin_a_row = session.get(User, admin_a.id)
+        assert admin_a_row.actif is True

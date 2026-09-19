@@ -257,7 +257,13 @@ class UserService:
         retirer le rôle Administrateur de son propre compte (il resterait
         éventuellement d'autres administrateurs, mais s'auto-verrouiller
         n'est jamais une opération valide). Un autre Administrateur peut en
-        revanche légitimement rétrograder un pair."""
+        revanche légitimement rétrograder un pair, à condition qu'il reste
+        au moins un Administrateur actif après l'opération — même garde-fou
+        que ``set_active`` (compte des administrateurs actifs autres que la
+        cible), appliqué ici indépendamment du rôle de l'acteur : un rôle
+        non-Administrateur ayant reçu ``USER_UPDATE`` via l'écran
+        Rôles/Permissions ne doit pas non plus pouvoir supprimer le dernier
+        Administrateur actif."""
         self._permissions.require_permission("USER_UPDATE")
         acting_user_id = self._acting_user_id()
 
@@ -270,14 +276,33 @@ class UserService:
             if role is None:
                 raise NotFoundError(f"Rôle {role_id} introuvable.")
 
-            if (
+            demoting_active_administrateur = (
                 user.role.nom == _ROLE_ADMINISTRATEUR
                 and role.nom != _ROLE_ADMINISTRATEUR
-                and user_id == acting_user_id
-            ):
+                and user.actif
+            )
+
+            if demoting_active_administrateur and user_id == acting_user_id:
                 raise ValidationError(
                     "Vous ne pouvez pas retirer votre propre rôle Administrateur."
                 )
+
+            if demoting_active_administrateur:
+                other_active_admins = (
+                    session.query(User)
+                    .join(Role)
+                    .filter(
+                        Role.nom == _ROLE_ADMINISTRATEUR,
+                        User.actif.is_(True),
+                        User.id != user_id,
+                    )
+                    .count()
+                )
+                if other_active_admins == 0:
+                    raise ValidationError(
+                        "Impossible de retirer le rôle Administrateur du dernier compte "
+                        "Administrateur actif."
+                    )
 
             # Affecté via la relation ``role`` (et non le seul ``role_id``
             # scalaire) : l'objet ``user`` reste utilisé plus bas dans cette
