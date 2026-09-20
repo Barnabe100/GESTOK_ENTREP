@@ -47,6 +47,7 @@ from app.services.reports.report_service import ReportService
 from app.services.settings.company_settings_service import get_effective_currency
 from app.utils.exceptions import AppError, ValidationError
 from app.utils.money import format_money
+from app.utils.quantity import format_quantity
 from app.views.optional_date_edit import OptionalDateEdit
 
 _REPORTS = [
@@ -324,7 +325,8 @@ class ReportsPage(QWidget):
                    "Stock actuel", "Stock min", "Stock max", "CMUP", "Valeur stock", "Statut"]
         self._set_table(headers, [
             [r.reference, r.designation, r.category_nom, r.fournisseur_nom or "—", r.unite,
-             str(r.stock_actuel), str(r.stock_min), str(r.stock_max) if r.stock_max is not None else "—",
+             format_quantity(r.stock_actuel), format_quantity(r.stock_min),
+             format_quantity(r.stock_max) if r.stock_max is not None else "—",
              format_money(r.cout_moyen_pondere, self._currency_code),
              format_money(r.valeur_stock, self._currency_code),
              "Actif" if r.actif else "Inactif"]
@@ -339,7 +341,7 @@ class ReportsPage(QWidget):
         self._set_table(
             ["Référence", "Désignation", "Stock actuel", "Stock min", "CMUP", "Valeur stock"],
             [
-                [r.reference, r.designation, str(r.stock_actuel), str(r.stock_min),
+                [r.reference, r.designation, format_quantity(r.stock_actuel), format_quantity(r.stock_min),
                  format_money(r.cout_moyen_pondere, self._currency_code),
                  format_money(r.valeur_stock, self._currency_code)]
                 for r in rows
@@ -354,7 +356,7 @@ class ReportsPage(QWidget):
         self._set_table(
             ["Référence", "Désignation", "Stock actuel", "Stock min", "CMUP", "Valeur stock"],
             [
-                [r.reference, r.designation, str(r.stock_actuel), str(r.stock_min),
+                [r.reference, r.designation, format_quantity(r.stock_actuel), format_quantity(r.stock_min),
                  format_money(r.cout_moyen_pondere, self._currency_code),
                  format_money(r.valeur_stock, self._currency_code)]
                 for r in rows
@@ -371,7 +373,7 @@ class ReportsPage(QWidget):
         self._set_table(
             ["Référence", "Désignation", "Catégorie", "Stock actuel", "CMUP", "Valeur stock"],
             [
-                [r.reference, r.designation, r.category_nom, str(r.stock_actuel),
+                [r.reference, r.designation, r.category_nom, format_quantity(r.stock_actuel),
                  format_money(r.cout_moyen_pondere, self._currency_code),
                  format_money(r.valeur_stock, self._currency_code)]
                 for r in report.rows
@@ -390,8 +392,8 @@ class ReportsPage(QWidget):
             ["Date/heure", "Article", "Type", "Quantité", "Stock avant", "Stock après",
              "Coût unitaire", "Utilisateur", "Commentaire"],
             [
-                [m.date_heure.strftime("%Y-%m-%d %H:%M"), m.article_reference, m.type.value, str(m.quantite),
-                 str(m.stock_avant), str(m.stock_apres),
+                [m.date_heure.strftime("%Y-%m-%d %H:%M"), m.article_reference, m.type.value,
+                 format_quantity(m.quantite), format_quantity(m.stock_avant), format_quantity(m.stock_apres),
                  format_money(m.cout_unitaire, self._currency_code) if m.cout_unitaire is not None else "—",
                  m.username, m.commentaire or "—"]
                 for m in movements
@@ -455,7 +457,7 @@ class ReportsPage(QWidget):
             [
                 [i.numero, str(i.date), i.username, _STATUT_INVENTAIRE_LABELS.get(i.statut, str(i.statut)),
                  str(i.nombre_lignes), str(i.nombre_ecarts_positifs), str(i.nombre_ecarts_negatifs),
-                 str(i.quantite_totale_ajustee)]
+                 format_quantity(i.quantite_totale_ajustee)]
                 for i in inventories
             ],
         )

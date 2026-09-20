@@ -24,6 +24,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.utils.quantity import format_quantity, format_quantity_signed
+
 
 class InventoryLineFormDialog(QDialog):
     def __init__(
@@ -112,7 +114,7 @@ class InventoryLineFormDialog(QDialog):
         if data is None:
             return
         _article_id, stock_theorique = data
-        self.stock_theorique_label.setText(str(stock_theorique))
+        self.stock_theorique_label.setText(format_quantity(Decimal(str(stock_theorique))))
         self._refresh_ecart()
 
     def _refresh_ecart(self) -> None:
@@ -126,7 +128,7 @@ class InventoryLineFormDialog(QDialog):
             self.ecart_label.setText("—")
             return
         ecart = stock_physique - stock_theorique
-        self.ecart_label.setText(f"{ecart:+}")
+        self.ecart_label.setText(format_quantity_signed(ecart))
 
     def values(self) -> dict:
         data = self.article_combo.currentData()

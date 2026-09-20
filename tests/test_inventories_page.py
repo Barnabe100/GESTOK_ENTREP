@@ -89,7 +89,34 @@ def test_table_shows_line_count_and_global_ecart(qtbot, login_as) -> None:
     qtbot.addWidget(page)
 
     assert page.table.item(0, 3).text() == "2"
-    assert page.table.item(0, 4).text() == "+2.000"  # -3 + 5
+    assert page.table.item(0, 4).text() == "+2"  # -3 + 5, formatage des quantités : pas de décimales superflues
+
+
+def test_table_preserves_real_decimal_ecart(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("10"))
+    stack.inventory.create_inventory(date(2026, 1, 1), [InventaireLigneInput(article.id, Decimal("11.5"))])
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.table.item(0, 4).text() == "+1,5"
+
+
+def test_validation_confirmation_message_formats_quantities(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("10"))
+    inventory = stack.inventory.create_inventory(
+        date(2026, 1, 1), [InventaireLigneInput(article.id, Decimal("11.5"))]
+    )
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    full_inventory = stack.inventory.get_inventory(inventory.id)
+
+    message = page._build_validation_confirmation_message(full_inventory)
+
+    assert "théorique 10, compté 11,5, écart +1,5" in message  # "10" sans décimale superflue, "11,5" conservé
 
 
 def test_add_button_enabled_for_gestionnaire_de_stock(qtbot, login_as) -> None:

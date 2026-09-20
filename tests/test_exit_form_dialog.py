@@ -106,6 +106,18 @@ def test_dialog_prefills_lines_from_initial(qtbot) -> None:
     assert "5000" in dialog.total_label.text()
 
 
+def test_dialog_prefills_lines_preserve_real_decimal_quantity(qtbot) -> None:
+    initial = {
+        "lignes": [
+            {"article_id": 10, "article_label": "ART-1 — Eau", "quantite": Decimal("2.500"), "cout_unitaire": Decimal("500")},
+        ]
+    }
+    dialog = ExitFormDialog(_MOTIFS, _ARTICLES, initial)
+    qtbot.addWidget(dialog)
+
+    assert dialog.lines_table.item(0, 1).text() == "2,5"
+
+
 def test_add_line_appends_row_using_cmup_from_articles_list(qtbot, monkeypatch) -> None:
     monkeypatch.setattr("app.views.exit_form_dialog.ExitLineFormDialog", _FakeLineDialog)
     dialog = ExitFormDialog(_MOTIFS, _ARTICLES)

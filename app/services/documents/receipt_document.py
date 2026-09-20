@@ -28,6 +28,7 @@ from PySide6.QtGui import QImage, QPageSize, QTextDocument
 from app.models.enums import StatutPaiement
 from app.services.documents.receipt_service import PaymentReceiptData, SaleReceiptData
 from app.utils.money import format_money
+from app.utils.quantity import format_quantity
 
 _STATUT_PAIEMENT_LABELS = {
     StatutPaiement.NON_PAYEE: "Non payée",
@@ -172,7 +173,7 @@ def _build_a4_html(data: SaleReceiptData, has_logo: bool) -> str:
     rows = "".join(
         f"<tr>"
         f"<td>{_esc(l.article_reference)} — {_esc(l.article_designation)}</td>"
-        f"<td align='center'>{_esc(l.quantite)}</td>"
+        f"<td align='center'>{_esc(format_quantity(l.quantite))}</td>"
         f"<td align='right'>{_fmt_money(l.prix_unitaire, data.devise)}</td>"
         f"<td align='right'>{_fmt_money(l.sous_total, data.devise)}</td>"
         f"</tr>"
@@ -236,7 +237,7 @@ def _build_ticket_html(data: SaleReceiptData, has_logo: bool) -> str:
     lines_html = "".join(
         f"<p style='margin:2px 0;'>{_esc(l.article_reference)} — {_esc(l.article_designation)}</p>"
         f"<table width='100%' cellspacing='0' cellpadding='0'><tr>"
-        f"<td>{_esc(l.quantite)} x {_fmt_money(l.prix_unitaire, data.devise)}</td>"
+        f"<td>{_esc(format_quantity(l.quantite))} x {_fmt_money(l.prix_unitaire, data.devise)}</td>"
         f"<td align='right'>{_fmt_money(l.sous_total, data.devise)}</td>"
         f"</tr></table>"
         for l in data.lignes

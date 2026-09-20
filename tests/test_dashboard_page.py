@@ -504,7 +504,9 @@ def test_secondary_kpi_stock_quantity_matches_service(qtbot, login_as) -> None:
     page = _build_page(stack)
     qtbot.addWidget(page)
 
-    expected = str(stack.dashboard.get_stock_kpis().total_quantity)
+    from app.utils.quantity import format_quantity
+
+    expected = format_quantity(stack.dashboard.get_stock_kpis().total_quantity)
     assert page.kpi_stock_quantity_label.text() == expected
 
 

@@ -29,6 +29,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.utils.quantity import format_quantity
+
 UNIT_SUGGESTIONS = ["pièce", "unité", "carton", "paquet", "kg", "litre", "mètre"]
 
 
@@ -88,11 +90,15 @@ class ArticleFormDialog(QDialog):
         form.addRow("Prix de vente", self.prix_vente_edit)
 
         self.stock_min_edit = QLineEdit(self)
-        self.stock_min_edit.setText(_as_text(initial.get("stock_min"), default="0"))
+        self.stock_min_edit.setText(
+            format_quantity(initial["stock_min"]) if initial.get("stock_min") is not None else "0"
+        )
         form.addRow("Stock minimum", self.stock_min_edit)
 
         self.stock_max_edit = QLineEdit(self)
-        self.stock_max_edit.setText(_as_text(initial.get("stock_max"), default=""))
+        self.stock_max_edit.setText(
+            format_quantity(initial["stock_max"]) if initial.get("stock_max") is not None else ""
+        )
         form.addRow("Stock maximum (optionnel)", self.stock_max_edit)
 
         self.stock_initial_edit: Optional[QLineEdit] = None
@@ -100,7 +106,9 @@ class ArticleFormDialog(QDialog):
         self.cmup_label: Optional[QLabel] = None
 
         if is_edit:
-            self.stock_actuel_label = QLabel(_as_text(initial.get("stock_actuel"), default="0"), self)
+            self.stock_actuel_label = QLabel(
+                format_quantity(initial["stock_actuel"]) if initial.get("stock_actuel") is not None else "0", self
+            )
             self.stock_actuel_label.setStyleSheet("color: #6B7280;")
             form.addRow("Stock actuel (piloté par le système)", self.stock_actuel_label)
 

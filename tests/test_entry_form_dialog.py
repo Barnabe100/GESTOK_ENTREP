@@ -105,6 +105,18 @@ def test_dialog_prefills_lines_from_initial(qtbot) -> None:
     assert "5000" in dialog.total_label.text() or "5000.0" in dialog.total_label.text()
 
 
+def test_dialog_prefills_lines_preserve_real_decimal_quantity(qtbot) -> None:
+    initial = {
+        "lignes": [
+            {"article_id": 10, "article_label": "ART-1 — Eau", "quantite": Decimal("10.500"), "prix_unitaire": Decimal("500")},
+        ]
+    }
+    dialog = EntryFormDialog(_SUPPLIERS, _ARTICLES, initial)
+    qtbot.addWidget(dialog)
+
+    assert dialog.lines_table.item(0, 1).text() == "10,5"
+
+
 def test_add_line_appends_row_and_updates_total(qtbot, monkeypatch) -> None:
     monkeypatch.setattr("app.views.entry_form_dialog.EntryLineFormDialog", _FakeLineDialog)
     dialog = EntryFormDialog(_SUPPLIERS, _ARTICLES)

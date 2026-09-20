@@ -38,6 +38,29 @@ def test_page_lists_movements_on_load(qtbot, login_as) -> None:
     assert "1 mouvement" in page.summary_label.text()
 
 
+def test_quantity_and_stock_columns_format_without_unnecessary_decimals(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    _make_article(stack, stock_initial=Decimal("10"))
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.table.item(0, 3).text() == "10"  # quantité, jamais "10.000"
+    assert page.table.item(0, 4).text() == "0"  # stock avant, jamais "0.000"
+    assert page.table.item(0, 5).text() == "10"  # stock après, jamais "10.000"
+
+
+def test_quantity_and_stock_columns_preserve_real_decimal_precision(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    _make_article(stack, stock_initial=Decimal("10.5"))
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.table.item(0, 3).text() == "10,5"
+    assert page.table.item(0, 5).text() == "10,5"
+
+
 def test_columns_include_required_fields(qtbot, login_as) -> None:
     stack, _ = login_as("Administrateur")
     page = _build_page(stack)

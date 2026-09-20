@@ -26,6 +26,31 @@ def test_detail_dialog_shows_reference_in_title(qtbot) -> None:
     assert "ART-1" in dialog.windowTitle()
 
 
+def test_detail_dialog_strips_unnecessary_decimals_from_stock(qtbot) -> None:
+    from PySide6.QtWidgets import QLabel
+
+    dialog = ArticleDetailDialog(
+        _make_summary(stock_actuel=Decimal("50.000"), stock_min=Decimal("10.000"), stock_max=Decimal("200.000")),
+        "XOF",
+    )
+    qtbot.addWidget(dialog)
+
+    texts = [label.text() for label in dialog.findChildren(QLabel)]
+    assert "50.000" not in texts and "50" in texts
+    assert "10.000" not in texts and "10" in texts
+    assert "200.000" not in texts and "200" in texts
+
+
+def test_detail_dialog_preserves_real_decimal_stock(qtbot) -> None:
+    from PySide6.QtWidgets import QLabel
+
+    dialog = ArticleDetailDialog(_make_summary(stock_actuel=Decimal("10.500")), "XOF")
+    qtbot.addWidget(dialog)
+
+    texts = [label.text() for label in dialog.findChildren(QLabel)]
+    assert "10,5" in texts
+
+
 def test_detail_dialog_formats_money_with_currency(qtbot) -> None:
     dialog = ArticleDetailDialog(_make_summary(prix_achat=Decimal("15000")), "XOF")
     qtbot.addWidget(dialog)

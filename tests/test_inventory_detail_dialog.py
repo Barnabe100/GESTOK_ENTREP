@@ -45,6 +45,32 @@ def test_detail_dialog_does_not_crash_with_no_movements(qtbot) -> None:
     assert dialog is not None
 
 
+def test_detail_dialog_formats_ecart_global_with_sign_and_no_extra_decimals(qtbot) -> None:
+    from PySide6.QtWidgets import QLabel
+
+    dialog = InventoryDetailDialog(_make_inventory(), [])
+    qtbot.addWidget(dialog)
+
+    texts = [label.text() for label in dialog.findChildren(QLabel)]
+    assert "-3" in texts  # ecart_total = -3 (voir _make_inventory), jamais "-3.000"
+
+
+def test_detail_dialog_line_columns_preserve_decimal_ecart(qtbot) -> None:
+    from PySide6.QtWidgets import QTableWidget
+
+    ligne = InventaireLigneSummary(
+        id=1, article_id=10, article_reference="ART-1", article_designation="Eau",
+        stock_theorique=Decimal("10.000"), stock_physique=Decimal("11.500"), ecart=Decimal("1.500"),
+    )
+    dialog = InventoryDetailDialog(_make_inventory(lignes=[ligne]), [])
+    qtbot.addWidget(dialog)
+
+    lines_table = dialog.findChildren(QTableWidget)[0]
+    assert lines_table.item(0, 1).text() == "10"  # stock théorique, sans décimale superflue
+    assert lines_table.item(0, 2).text() == "11,5"  # stock compté, décimale réelle conservée
+    assert lines_table.item(0, 3).text() == "+1,5"  # écart signé
+
+
 def test_detail_dialog_shows_movements(qtbot) -> None:
     dialog = InventoryDetailDialog(_make_inventory(), [_make_movement()])
     qtbot.addWidget(dialog)

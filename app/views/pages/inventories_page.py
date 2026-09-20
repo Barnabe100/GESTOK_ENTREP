@@ -35,6 +35,7 @@ from app.services.articles.article_service import ArticleService
 from app.services.auth.permission_service import PermissionService
 from app.services.inventory.inventory_service import InventaireLigneInput, InventoryService
 from app.utils.exceptions import AppError, ValidationError
+from app.utils.quantity import format_quantity, format_quantity_signed
 from app.views.common import confirm_action, run_modal_form
 from app.views.inventory_detail_dialog import InventoryDetailDialog
 from app.views.inventory_form_dialog import InventoryFormDialog
@@ -133,7 +134,7 @@ class InventoriesPage(QWidget):
             self.table.setItem(row, 1, QTableWidgetItem(str(inventory.date)))
             self.table.setItem(row, 2, QTableWidgetItem(inventory.username))
             self.table.setItem(row, 3, QTableWidgetItem(str(len(inventory.lignes))))
-            self.table.setItem(row, 4, QTableWidgetItem(f"{inventory.ecart_total:+}"))
+            self.table.setItem(row, 4, QTableWidgetItem(format_quantity_signed(inventory.ecart_total)))
             self.table.setItem(row, 5, QTableWidgetItem(_STATUT_LABELS.get(inventory.statut, str(inventory.statut))))
 
         self._update_action_buttons()
@@ -168,6 +169,12 @@ class InventoriesPage(QWidget):
     # -- chargement des listes pour les formulaires -------------------------
 
     def _load_articles_for_form(self) -> list[tuple[int, str, str]]:
+        """Le 3e élément de chaque tuple (stock théorique) est réutilisé tel
+        quel par ``InventoryLineFormDialog``/``InventoryFormDialog`` via
+        ``Decimal(str(...))`` — volontairement **non** passé par
+        ``format_quantity`` (séparateur décimal « , » incompatible avec
+        ``Decimal``) : seul l'affichage final (``stock_theorique_label``)
+        est formaté, jamais cette donnée de transport."""
         try:
             articles = self._article_service.list_articles(include_inactive=False)
         except AppError:
@@ -316,8 +323,8 @@ class InventoriesPage(QWidget):
         stock compté, l'écart et l'impact attendu sur le stock (§13 du
         cahier des charges de cette phase)."""
         lines_text = "\n".join(
-            f"{ligne.article_reference} : théorique {ligne.stock_theorique}, "
-            f"compté {ligne.stock_physique}, écart {ligne.ecart:+}"
+            f"{ligne.article_reference} : théorique {format_quantity(ligne.stock_theorique)}, "
+            f"compté {format_quantity(ligne.stock_physique)}, écart {format_quantity_signed(ligne.ecart)}"
             for ligne in inventory.lignes
         )
         return (

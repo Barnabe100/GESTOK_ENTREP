@@ -40,6 +40,7 @@ from app.services.settings.company_settings_service import get_effective_currenc
 from app.services.suppliers.supplier_service import SupplierService
 from app.utils.exceptions import AppError, ValidationError
 from app.utils.money import format_money
+from app.utils.quantity import format_quantity
 from app.views.article_detail_dialog import ArticleDetailDialog
 from app.views.article_form_dialog import ArticleFormDialog
 from app.views.common import confirm_action, parse_decimal, parse_optional_decimal, run_modal_form
@@ -175,7 +176,7 @@ class ArticlesPage(QWidget):
             self.table.setItem(row, 1, QTableWidgetItem(article.designation))
             self.table.setItem(row, 2, QTableWidgetItem(article.category_nom))
 
-            stock_item = QTableWidgetItem(str(article.stock_actuel))
+            stock_item = QTableWidgetItem(format_quantity(article.stock_actuel))
             if article.en_rupture:
                 stock_item.setBackground(_RUPTURE_BG)
                 stock_item.setForeground(_RUPTURE_FG)
@@ -184,8 +185,10 @@ class ArticlesPage(QWidget):
                 stock_item.setForeground(_LOW_STOCK_FG)
             self.table.setItem(row, 3, stock_item)
 
-            self.table.setItem(row, 4, QTableWidgetItem(str(article.stock_min)))
-            self.table.setItem(row, 5, QTableWidgetItem(str(article.stock_max) if article.stock_max is not None else "—"))
+            self.table.setItem(row, 4, QTableWidgetItem(format_quantity(article.stock_min)))
+            self.table.setItem(
+                row, 5, QTableWidgetItem(format_quantity(article.stock_max) if article.stock_max is not None else "—")
+            )
             self.table.setItem(row, 6, QTableWidgetItem(format_money(article.prix_achat, self._currency_code)))
             self.table.setItem(row, 7, QTableWidgetItem(format_money(article.prix_vente, self._currency_code)))
             self.table.setItem(row, 8, QTableWidgetItem(format_money(article.cout_moyen_pondere, self._currency_code)))

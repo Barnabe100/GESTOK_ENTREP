@@ -45,6 +45,7 @@ from app.services.dashboard.dashboard_service import DashboardOverview, Dashboar
 from app.services.settings.company_settings_service import get_effective_currency
 from app.utils.exceptions import AppError
 from app.utils.money import format_money
+from app.utils.quantity import format_quantity
 from app.views.common import date_to_qdate
 
 # Permissions requises pour chaque accès rapide (§12) — jamais affiché si
@@ -348,7 +349,7 @@ class DashboardPage(QWidget):
             self.kpi_stock_value_label.setText(format_money(stock.total_value, self._currency_code))
             self.kpi_low_stock_label.setText(str(stock.low_stock_count))
             self.kpi_out_of_stock_label.setText(str(stock.out_of_stock_count))
-            self.kpi_stock_quantity_label.setText(str(stock.total_quantity))
+            self.kpi_stock_quantity_label.setText(format_quantity(stock.total_quantity))
             self.low_stock_alert_label.setText(f"{stock.low_stock_count} article(s) en stock faible")
             self.out_of_stock_alert_label.setText(f"{stock.out_of_stock_count} article(s) en rupture")
         else:
@@ -503,7 +504,8 @@ class DashboardPage(QWidget):
             self.low_stock_table.setItem(row_index, 0, QTableWidgetItem(row.reference))
             self.low_stock_table.setItem(row_index, 1, QTableWidgetItem(row.designation))
             self.low_stock_table.setItem(
-                row_index, 2, QTableWidgetItem(f"{row.stock_actuel} / {row.stock_min}")
+                row_index, 2,
+                QTableWidgetItem(f"{format_quantity(row.stock_actuel)} / {format_quantity(row.stock_min)}"),
             )
 
     def _apply_recent_activity_table(self, rows) -> None:
@@ -519,4 +521,4 @@ class DashboardPage(QWidget):
             self.recent_activity_table.setItem(row_index, 1, QTableWidgetItem(movement.type.value))
             self.recent_activity_table.setItem(row_index, 2, QTableWidgetItem(movement.article_reference))
             self.recent_activity_table.setItem(row_index, 3, QTableWidgetItem(movement.username))
-            self.recent_activity_table.setItem(row_index, 4, QTableWidgetItem(str(movement.quantite)))
+            self.recent_activity_table.setItem(row_index, 4, QTableWidgetItem(format_quantity(movement.quantite)))

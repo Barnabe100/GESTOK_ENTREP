@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.utils.exceptions import ValidationError
+from app.utils.quantity import format_quantity
 from app.views.common import date_to_qdate, parse_decimal
 from app.views.exit_line_form_dialog import ExitLineFormDialog
 
@@ -150,7 +151,7 @@ class ExitFormDialog(QDialog):
         total = Decimal("0")
         for row, line in enumerate(self._lines):
             self.lines_table.setItem(row, 0, QTableWidgetItem(line["article_label"]))
-            self.lines_table.setItem(row, 1, QTableWidgetItem(str(line["quantite"])))
+            self.lines_table.setItem(row, 1, QTableWidgetItem(format_quantity(line["quantite"])))
             self.lines_table.setItem(row, 2, QTableWidgetItem(str(line["cout_unitaire"])))
             try:
                 montant = Decimal(str(line["quantite"])) * Decimal(str(line["cout_unitaire"]))

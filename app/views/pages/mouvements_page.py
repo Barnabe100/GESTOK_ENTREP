@@ -34,6 +34,7 @@ from app.models.enums import TypeMouvement
 from app.services.auth.permission_service import PermissionService
 from app.services.stock.movement_service import MovementService
 from app.utils.exceptions import AppError
+from app.utils.quantity import format_quantity
 from app.views.optional_date_edit import OptionalDateEdit
 
 _COLUMNS = [
@@ -141,9 +142,9 @@ class MouvementsPage(QWidget):
             self.table.setItem(row, 0, QTableWidgetItem(mouvement.date_heure.strftime("%Y-%m-%d %H:%M")))
             self.table.setItem(row, 1, QTableWidgetItem(mouvement.article_reference))
             self.table.setItem(row, 2, QTableWidgetItem(_TYPE_LABELS.get(mouvement.type, mouvement.type.value)))
-            self.table.setItem(row, 3, QTableWidgetItem(str(mouvement.quantite)))
-            self.table.setItem(row, 4, QTableWidgetItem(str(mouvement.stock_avant)))
-            self.table.setItem(row, 5, QTableWidgetItem(str(mouvement.stock_apres)))
+            self.table.setItem(row, 3, QTableWidgetItem(format_quantity(mouvement.quantite)))
+            self.table.setItem(row, 4, QTableWidgetItem(format_quantity(mouvement.stock_avant)))
+            self.table.setItem(row, 5, QTableWidgetItem(format_quantity(mouvement.stock_apres)))
             self.table.setItem(row, 6, QTableWidgetItem(mouvement.reference_operation or "—"))
             self.table.setItem(row, 7, QTableWidgetItem(mouvement.username))
             self.table.setItem(row, 8, QTableWidgetItem(mouvement.commentaire or "—"))

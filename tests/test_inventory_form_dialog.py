@@ -99,6 +99,28 @@ def test_dialog_prefills_lines_from_initial_with_ecart_column(qtbot) -> None:
     assert dialog.lines_table.item(0, 3).text() == "-3"
 
 
+def test_dialog_prefills_lines_preserve_real_decimal_precision(qtbot) -> None:
+    initial = {
+        "lignes": [
+            {
+                "article_id": 10, "article_label": "ART-1 — Eau",
+                "stock_theorique": Decimal("10.500"), "stock_physique": Decimal("12.000"),
+            },
+        ]
+    }
+    dialog = InventoryFormDialog(_ARTICLES, initial)
+    qtbot.addWidget(dialog)
+
+    assert dialog.lines_table.item(0, 1).text() == "10,5"  # décimale réelle conservée
+    assert dialog.lines_table.item(0, 2).text() == "12"  # jamais "12.000"
+    assert dialog.lines_table.item(0, 3).text() == "+1,5"  # écart signé, décimale conservée
+
+    # non-régression : la valeur interne réellement soumise reste un Decimal exact,
+    # jamais la chaîne d'affichage formatée avec virgule.
+    assert dialog.values()["lignes"][0]["stock_theorique"] == Decimal("10.500")
+    assert dialog.values()["lignes"][0]["stock_physique"] == Decimal("12.000")
+
+
 def test_add_line_appends_row_using_stock_theorique_from_articles_list(qtbot, monkeypatch) -> None:
     monkeypatch.setattr("app.views.inventory_form_dialog.InventoryLineFormDialog", _FakeLineDialog)
     dialog = InventoryFormDialog(_ARTICLES)

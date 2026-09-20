@@ -40,6 +40,27 @@ def test_detail_dialog_shows_numero_in_title(qtbot) -> None:
     assert "SOR-000001" in dialog.windowTitle()
 
 
+def test_detail_dialog_formats_line_and_movement_quantities(qtbot) -> None:
+    from PySide6.QtWidgets import QTableWidget
+
+    ligne = SortieLigneSummary(
+        id=1, article_id=10, article_reference="ART-1", article_designation="Eau",
+        quantite=Decimal("2.500"), cout_unitaire=Decimal("500"), montant=Decimal("1250"),
+    )
+    movement = _make_movement(
+        quantite=Decimal("-2.500"), stock_avant=Decimal("50.000"), stock_apres=Decimal("47.500"),
+    )
+    dialog = ExitDetailDialog(_make_exit(lignes=[ligne]), [movement], "XOF")
+    qtbot.addWidget(dialog)
+
+    tables = dialog.findChildren(QTableWidget)
+    lines_table, movements_table = tables[0], tables[1]
+    assert lines_table.item(0, 1).text() == "2,5"
+    assert movements_table.item(0, 2).text() == "-2,5"
+    assert movements_table.item(0, 3).text() == "50"  # jamais "50.000"
+    assert movements_table.item(0, 4).text() == "47,5"
+
+
 def test_detail_dialog_does_not_crash_with_no_movements(qtbot) -> None:
     dialog = ExitDetailDialog(_make_exit(), [], "XOF")
     qtbot.addWidget(dialog)

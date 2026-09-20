@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 from app.models.enums import StatutInventaire
 from app.services.inventory.inventory_service import InventaireSummary
 from app.services.stock.movement_summary import MouvementSummary
+from app.utils.quantity import format_quantity, format_quantity_signed
 
 _LINE_COLUMNS = ["Article", "Stock théorique", "Stock compté", "Écart"]
 _MOVEMENT_COLUMNS = ["Date/heure", "Type", "Quantité", "Stock avant", "Stock après", "Utilisateur"]
@@ -50,7 +51,7 @@ class InventoryDetailDialog(QDialog):
         form.addRow("Date", QLabel(str(inventory.date), self))
         form.addRow("Créé par", QLabel(inventory.username, self))
         form.addRow("Statut", QLabel(_STATUT_LABELS.get(inventory.statut, str(inventory.statut)), self))
-        form.addRow("Écart global", QLabel(f"{inventory.ecart_total:+}", self))
+        form.addRow("Écart global", QLabel(format_quantity_signed(inventory.ecart_total), self))
         form.addRow("Créé le", QLabel(inventory.date_creation.strftime("%Y-%m-%d %H:%M"), self))
         form.addRow("Modifié le", QLabel(inventory.date_modification.strftime("%Y-%m-%d %H:%M"), self))
 
@@ -63,9 +64,9 @@ class InventoryDetailDialog(QDialog):
         lines_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         for row, ligne in enumerate(inventory.lignes):
             lines_table.setItem(row, 0, QTableWidgetItem(f"{ligne.article_reference} — {ligne.article_designation}"))
-            lines_table.setItem(row, 1, QTableWidgetItem(str(ligne.stock_theorique)))
-            lines_table.setItem(row, 2, QTableWidgetItem(str(ligne.stock_physique)))
-            lines_table.setItem(row, 3, QTableWidgetItem(f"{ligne.ecart:+}"))
+            lines_table.setItem(row, 1, QTableWidgetItem(format_quantity(ligne.stock_theorique)))
+            lines_table.setItem(row, 2, QTableWidgetItem(format_quantity(ligne.stock_physique)))
+            lines_table.setItem(row, 3, QTableWidgetItem(format_quantity_signed(ligne.ecart)))
         layout.addWidget(lines_table)
 
         layout.addWidget(QLabel("Mouvements de stock générés", self))
@@ -76,9 +77,9 @@ class InventoryDetailDialog(QDialog):
         for row, mouvement in enumerate(movements):
             movements_table.setItem(row, 0, QTableWidgetItem(mouvement.date_heure.strftime("%Y-%m-%d %H:%M")))
             movements_table.setItem(row, 1, QTableWidgetItem(mouvement.type.value))
-            movements_table.setItem(row, 2, QTableWidgetItem(str(mouvement.quantite)))
-            movements_table.setItem(row, 3, QTableWidgetItem(str(mouvement.stock_avant)))
-            movements_table.setItem(row, 4, QTableWidgetItem(str(mouvement.stock_apres)))
+            movements_table.setItem(row, 2, QTableWidgetItem(format_quantity(mouvement.quantite)))
+            movements_table.setItem(row, 3, QTableWidgetItem(format_quantity(mouvement.stock_avant)))
+            movements_table.setItem(row, 4, QTableWidgetItem(format_quantity(mouvement.stock_apres)))
             movements_table.setItem(row, 5, QTableWidgetItem(mouvement.username))
         layout.addWidget(movements_table)
 

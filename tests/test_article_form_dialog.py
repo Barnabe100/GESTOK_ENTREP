@@ -26,7 +26,7 @@ def test_edit_mode_shows_stock_actuel_and_cmup_as_readonly_labels(qtbot) -> None
 
     assert dialog.stock_initial_edit is None
     assert dialog.stock_actuel_label is not None
-    assert dialog.stock_actuel_label.text() == "42.000"
+    assert dialog.stock_actuel_label.text() == "42"  # formatage des quantités : pas de décimales superflues
     assert dialog.cmup_label is not None
     assert dialog.cmup_label.text() == "12.50"
 
@@ -48,10 +48,26 @@ def test_dialog_prefills_fields_from_initial(qtbot) -> None:
     assert values["fournisseur_principal_id"] == 20
     assert values["unite"] == "kg"
     assert values["prix_achat"] == "10.00"
-    assert values["stock_max"] == "50.000"
+    assert values["stock_max"] == "50"  # formatage des quantités : pas de décimales superflues
     assert values["emplacement"] == "Rayon A1"
     assert values["code_barres"] == "123"
     assert values["description"] == "Une description"
+
+
+def test_stock_fields_preserve_real_decimal_precision(qtbot) -> None:
+    """Une vraie valeur décimale (ex. 5,5) n'est jamais transformée en
+    entier par le formatage — seules les décimales superflues (ex. 42.000)
+    sont supprimées à l'affichage."""
+    initial = {
+        "reference": "ART-3", "designation": "Désignation", "category_id": 1,
+        "stock_min": "5.500", "stock_max": "50.750", "stock_actuel": "12.250", "cout_moyen_pondere": "1.00",
+    }
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, initial, is_edit=True)
+    qtbot.addWidget(dialog)
+
+    assert dialog.stock_min_edit.text() == "5,5"
+    assert dialog.stock_max_edit.text() == "50,75"
+    assert dialog.stock_actuel_label.text() == "12,25"
 
 
 def test_supplier_combo_defaults_to_none(qtbot) -> None:

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from app.services.articles.article_service import ArticleSummary
 from app.utils.money import format_money
+from app.utils.quantity import format_quantity
 from PySide6.QtWidgets import QDialog, QFormLayout, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 
@@ -32,18 +33,21 @@ class ArticleDetailDialog(QDialog):
         cmup_label.setToolTip("Coût Moyen Unitaire Pondéré — piloté par le système, non modifiable ici.")
         form.addRow("CMUP", cmup_label)
 
-        stock_label = QLabel(str(article.stock_actuel), self)
+        stock_label = QLabel(format_quantity(article.stock_actuel), self)
         if article.en_rupture:
             stock_label.setStyleSheet("color: #DC2626; font-weight: 600;")
-            stock_label.setText(f"{article.stock_actuel} (rupture)")
+            stock_label.setText(f"{format_quantity(article.stock_actuel)} (rupture)")
         elif article.stock_faible:
             stock_label.setStyleSheet("color: #B45309; font-weight: 600;")
-            stock_label.setText(f"{article.stock_actuel} (stock faible)")
+            stock_label.setText(f"{format_quantity(article.stock_actuel)} (stock faible)")
         stock_label.setToolTip("Piloté par le système de mouvements de stock, non modifiable ici.")
         form.addRow("Stock actuel", stock_label)
 
-        form.addRow("Stock minimum", QLabel(str(article.stock_min), self))
-        form.addRow("Stock maximum", QLabel(str(article.stock_max) if article.stock_max is not None else "—", self))
+        form.addRow("Stock minimum", QLabel(format_quantity(article.stock_min), self))
+        form.addRow(
+            "Stock maximum",
+            QLabel(format_quantity(article.stock_max) if article.stock_max is not None else "—", self),
+        )
         form.addRow("Emplacement", QLabel(article.emplacement or "—", self))
         form.addRow("Code-barres", QLabel(article.code_barres or "—", self))
         form.addRow("Description", QLabel(article.description or "—", self))

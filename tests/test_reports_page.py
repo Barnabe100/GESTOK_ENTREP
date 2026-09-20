@@ -52,6 +52,32 @@ def test_stock_state_shows_valeur_stock_column(qtbot, login_as) -> None:
     assert "Valeur stock" in headers
 
 
+def test_stock_state_formats_quantities_without_unnecessary_decimals(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    _make_article(stack, stock_initial=Decimal("10"), stock_min=Decimal("2"))
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    headers = [page.table.horizontalHeaderItem(i).text() for i in range(page.table.columnCount())]
+    stock_col = headers.index("Stock actuel")
+    stock_min_col = headers.index("Stock min")
+    assert page.table.item(0, stock_col).text() == "10"  # jamais "10.000"
+    assert page.table.item(0, stock_min_col).text() == "2"
+
+
+def test_stock_state_preserves_real_decimal_stock(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    _make_article(stack, stock_initial=Decimal("10.5"))
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    headers = [page.table.horizontalHeaderItem(i).text() for i in range(page.table.columnCount())]
+    stock_col = headers.index("Stock actuel")
+    assert page.table.item(0, stock_col).text() == "10,5"
+
+
 def test_switching_to_low_stock_report_updates_table(qtbot, login_as) -> None:
     stack, _ = login_as("Administrateur")
     _make_article(stack, reference="ART-LOW", stock_initial=Decimal("1"), stock_min=Decimal("10"))

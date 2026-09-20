@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 from app.models.enums import StatutOperation
 from app.services.entries.entry_service import EntreeSummary, MouvementSummary
 from app.utils.money import format_money
+from app.utils.quantity import format_quantity
 
 _LINE_COLUMNS = ["Article", "Quantité", "Prix unitaire", "Montant"]
 _MOVEMENT_COLUMNS = ["Date/heure", "Type", "Quantité", "Stock avant", "Stock après", "Utilisateur"]
@@ -67,7 +68,7 @@ class EntryDetailDialog(QDialog):
         lines_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         for row, ligne in enumerate(entry.lignes):
             lines_table.setItem(row, 0, QTableWidgetItem(f"{ligne.article_reference} — {ligne.article_designation}"))
-            lines_table.setItem(row, 1, QTableWidgetItem(str(ligne.quantite)))
+            lines_table.setItem(row, 1, QTableWidgetItem(format_quantity(ligne.quantite)))
             lines_table.setItem(row, 2, QTableWidgetItem(format_money(ligne.prix_unitaire, currency_code)))
             lines_table.setItem(row, 3, QTableWidgetItem(format_money(ligne.montant, currency_code)))
         layout.addWidget(lines_table)
@@ -84,9 +85,9 @@ class EntryDetailDialog(QDialog):
         for row, mouvement in enumerate(movements):
             movements_table.setItem(row, 0, QTableWidgetItem(mouvement.date_heure.strftime("%Y-%m-%d %H:%M")))
             movements_table.setItem(row, 1, QTableWidgetItem(mouvement.type.value))
-            movements_table.setItem(row, 2, QTableWidgetItem(str(mouvement.quantite)))
-            movements_table.setItem(row, 3, QTableWidgetItem(str(mouvement.stock_avant)))
-            movements_table.setItem(row, 4, QTableWidgetItem(str(mouvement.stock_apres)))
+            movements_table.setItem(row, 2, QTableWidgetItem(format_quantity(mouvement.quantite)))
+            movements_table.setItem(row, 3, QTableWidgetItem(format_quantity(mouvement.stock_avant)))
+            movements_table.setItem(row, 4, QTableWidgetItem(format_quantity(mouvement.stock_apres)))
             movements_table.setItem(row, 5, QTableWidgetItem(mouvement.username))
         layout.addWidget(movements_table)
 

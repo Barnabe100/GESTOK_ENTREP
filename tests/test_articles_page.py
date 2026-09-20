@@ -16,6 +16,36 @@ def _build_page(stack) -> ArticlesPage:
     return ArticlesPage(stack.articles, stack.categories, stack.suppliers, stack.permissions)
 
 
+def test_articles_page_formats_whole_stock_without_decimals(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    category = stack.categories.create_category("Boissons")
+    stack.articles.create_article(
+        "ART-INT", "Article", category.id, "unité", Decimal("100"), Decimal("150"), Decimal("0"),
+        stock_initial=Decimal("10"),
+    )
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    row = next(r for r in range(page.table.rowCount()) if page.table.item(r, 0).text() == "ART-INT")
+    assert page.table.item(row, 3).text() == "10"  # jamais "10.000"
+
+
+def test_articles_page_preserves_real_decimal_stock(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    category = stack.categories.create_category("Boissons")
+    stack.articles.create_article(
+        "ART-DEC", "Article", category.id, "unité", Decimal("100"), Decimal("150"), Decimal("0"),
+        stock_initial=Decimal("10.5"),
+    )
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    row = next(r for r in range(page.table.rowCount()) if page.table.item(r, 0).text() == "ART-DEC")
+    assert page.table.item(row, 3).text() == "10,5"
+
+
 def test_articles_page_lists_articles_for_administrateur(qtbot, login_as) -> None:
     stack, _ = login_as("Administrateur")
     category = stack.categories.create_category("Boissons")

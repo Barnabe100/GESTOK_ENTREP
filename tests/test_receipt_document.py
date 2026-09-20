@@ -92,6 +92,34 @@ def test_a4_page_size_unaffected_by_number_of_lines(qapp) -> None:
 # -- contenu ----------------------------------------------------------------------------
 
 
+def test_a4_line_quantity_has_no_unnecessary_decimals(qapp) -> None:
+    data = _make_data(lignes=[_make_line(qty="10.000", sous_total="1000")])
+    rendered = build_receipt_document(data, ReceiptFormat.A4)
+    text = rendered.document.toPlainText()
+
+    assert "10" in text
+    assert "10.000" not in text
+    assert "10,5" not in text
+
+
+def test_a4_line_quantity_preserves_real_decimal(qapp) -> None:
+    data = _make_data(lignes=[_make_line(qty="2.500", sous_total="250")])
+    rendered = build_receipt_document(data, ReceiptFormat.A4)
+    text = rendered.document.toPlainText()
+
+    assert "2,5" in text
+    assert "2.500" not in text
+
+
+def test_ticket_line_quantity_preserves_real_decimal(qapp) -> None:
+    data = _make_data(lignes=[_make_line(qty="2.500", sous_total="250")])
+    rendered = build_receipt_document(data, ReceiptFormat.TICKET_80MM)
+    text = rendered.document.toPlainText()
+
+    assert "2,5" in text
+    assert "2.500" not in text
+
+
 def test_a4_contains_company_and_sale_info(qapp) -> None:
     rendered = build_receipt_document(_make_data(), ReceiptFormat.A4)
     text = rendered.document.toPlainText()

@@ -40,6 +40,36 @@ def test_ecart_label_shows_positive_sign(qtbot) -> None:
     assert dialog.ecart_label.text() == "+5"
 
 
+def test_stock_theorique_label_strips_unnecessary_decimals(qtbot) -> None:
+    articles = [(1, "ART-1 — Eau", "100.000")]
+    dialog = InventoryLineFormDialog(articles)
+    qtbot.addWidget(dialog)
+
+    assert dialog.stock_theorique_label.text() == "100"  # jamais "100.000"
+
+
+def test_stock_theorique_label_preserves_real_decimal(qtbot) -> None:
+    articles = [(1, "ART-1 — Eau", "10.500")]
+    dialog = InventoryLineFormDialog(articles)
+    qtbot.addWidget(dialog)
+
+    assert dialog.stock_theorique_label.text() == "10,5"
+
+
+def test_ecart_computation_is_not_broken_by_decimal_display_formatting(qtbot) -> None:
+    """Non-régression : la chaîne transportée dans la donnée du combo reste
+    un nombre brut (jamais reformatée avec virgule), pour que le parsing
+    interne (``Decimal(str(data[1]))``) continue de fonctionner — seul
+    l'affichage final est formaté."""
+    articles = [(1, "ART-1 — Eau", "10.500")]
+    dialog = InventoryLineFormDialog(articles)
+    qtbot.addWidget(dialog)
+
+    dialog.stock_physique_edit.setText("12")
+
+    assert dialog.ecart_label.text() == "+1,5"
+
+
 def test_dialog_prefills_from_initial(qtbot) -> None:
     initial = {"article_id": 2, "stock_physique": "48"}
     dialog = InventoryLineFormDialog(_ARTICLES, initial)
