@@ -1,10 +1,15 @@
+from datetime import date
+from decimal import Decimal
+
 import pytest
 
 from app.db.seed import INITIAL_ADMIN_USERNAME
+from app.services.sales.sale_service import VenteLigneInput
 from app.views.about_dialog import AboutDialog
 from app.views.main_window import MainWindow
 from app.views.onboarding_dialog import OnboardingDialog
 from app.views.pages.dashboard_page import DashboardPage
+from app.views.pages.placeholder_page import PlaceholderPage
 from app.views.pages.reports_page import ReportsPage
 
 
@@ -41,6 +46,63 @@ def test_navigation_switches_page_and_title(qtbot, login_as) -> None:
 
     assert window.page_stack.currentIndex() == target_index
     assert window.page_title_label.text() == "Ventes"
+
+
+def test_navigating_to_receivables_refreshes_payment_made_on_another_page(qtbot, login_as) -> None:
+    """Reproduction du bug « Créances » (voir diagnostic) : un paiement
+    enregistré alors que la page Créances est déjà construite (comme dans
+    le QStackedWidget persistant de MainWindow) doit être visible dès qu'on
+    y navigue — sans qu'il soit nécessaire de recréer la fenêtre."""
+    stack, _ = login_as("Administrateur")
+    category = stack.categories.create_category("Boissons")
+    article = stack.articles.create_article(
+        "ART-1", "Eau", category.id, "unité", Decimal("100"), Decimal("150"), Decimal("0"),
+        stock_initial=Decimal("50"),
+    )
+    client = stack.clients.create_client("Client Test")
+    sale = stack.sales.create_sale(
+        date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("1"), Decimal("62500"))], client_id=client.id
+    )
+    validated = stack.sales.validate_sale(sale.id, Decimal("0"))  # validée, non payée
+
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+
+    receivables_index = window.visible_modules.index("Créances")
+    ventes_index = window.visible_modules.index("Ventes")
+    # Visite initiale de Créances : construit ET rafraîchit la page une
+    # première fois, avec la vente encore non payée à ce moment.
+    window.navigation_list.setCurrentRow(receivables_index)
+    receivables_page = window.page_stack.widget(receivables_index)
+    assert receivables_page.table.item(0, 6).text() == "Non payée"
+
+    # Le paiement est enregistré « ailleurs » (ex. depuis SaleDetailDialog
+    # sur la page Ventes) pendant que la page Créances reste construite en
+    # arrière-plan dans le QStackedWidget.
+    window.navigation_list.setCurrentRow(ventes_index)
+    stack.sales.record_payment(validated.id, Decimal("62500"))
+
+    # Retour sur Créances : doit refléter le paiement, pas l'état figé.
+    window.navigation_list.setCurrentRow(receivables_index)
+
+    assert receivables_page.table.item(0, 4).text() == "62 500 FCFA"
+    assert receivables_page.table.item(0, 5).text() == "0 FCFA"
+    assert receivables_page.table.item(0, 6).text() == "Payée"
+
+
+def test_navigation_changed_does_not_crash_for_page_without_refresh(qtbot, login_as, monkeypatch) -> None:
+    """Certaines pages (ex. PlaceholderPage, modules pas encore
+    implémentés) n'exposent pas de refresh() — la navigation ne doit
+    jamais planter dans ce cas."""
+    stack, _ = login_as("Administrateur")
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+
+    placeholder = PlaceholderPage("Module de test")
+    assert not hasattr(placeholder, "refresh")
+    monkeypatch.setattr(window.page_stack, "widget", lambda index: placeholder)
+
+    window._on_navigation_changed(0)  # ne doit lever aucune exception
 
 
 def test_window_has_expected_title(qtbot, login_as) -> None:

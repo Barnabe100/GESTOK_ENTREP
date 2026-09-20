@@ -285,6 +285,15 @@ class MainWindow(QMainWindow):
             return
         self.page_stack.setCurrentIndex(index)
         self.page_title_label.setText(self.visible_modules[index])
+        # Chaque page n'est construite qu'une seule fois (voir
+        # _build_content_area) et ne se rafraîchit sinon que sur ses propres
+        # actions/filtres internes : sans cet appel, une page déjà ouverte
+        # peut afficher des données obsolètes si elles ont changé depuis un
+        # autre écran (ex. Créances après un paiement enregistré depuis
+        # Ventes). PlaceholderPage n'expose pas de refresh() -> hasattr.
+        page = self.page_stack.widget(index)
+        if hasattr(page, "refresh"):
+            page.refresh()
 
     def switch_to_module(self, module_name: str, report_preset: Optional[str] = None) -> bool:
         """Bascule vers un autre module de la navigation — utilisé par les

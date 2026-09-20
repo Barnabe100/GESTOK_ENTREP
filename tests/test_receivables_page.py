@@ -39,6 +39,47 @@ def test_receivables_page_lists_validated_sales_with_payment_columns(qtbot, logi
     assert page.table.item(0, 6).text() == "Partiellement payée"
 
 
+def test_receivables_page_reflects_payment_made_after_page_was_built(qtbot, login_as) -> None:
+    """Scénario exact du bug diagnostiqué : la page est construite (donc
+    rafraîchie une première fois) AVANT le paiement — reproduit le
+    QStackedWidget persistant de MainWindow, où une page déjà ouverte ne se
+    met pas à jour toute seule. Un appel explicite à refresh() doit alors
+    afficher les valeurs correctes, exactement comme le détail de la
+    vente."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    client = stack.clients.create_client("Client Test")
+    sale = stack.sales.create_sale(
+        date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("1"), Decimal("62500"))], client_id=client.id
+    )
+    validated = stack.sales.validate_sale(sale.id, Decimal("0"))  # validée, non payée
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    assert page.table.item(0, 4).text() == "0 FCFA"
+    assert page.table.item(0, 6).text() == "Non payée"
+
+    # Paiement enregistré APRÈS la construction de la page (ailleurs, ex.
+    # SaleDetailDialog) — la page elle-même n'est pas notifiée automatiquement.
+    stack.sales.record_payment(validated.id, Decimal("62500"))
+
+    # Toujours figée sur l'état d'avant paiement tant que refresh() n'a pas
+    # été appelé (comportement attendu de ce composant, purement passif).
+    assert page.table.item(0, 4).text() == "0 FCFA"
+
+    page.refresh()
+
+    assert page.table.item(0, 4).text() == "62 500 FCFA"
+    assert page.table.item(0, 5).text() == "0 FCFA"
+    assert page.table.item(0, 6).text() == "Payée"
+
+    # Cohérence avec le détail de la vente (même source, même service).
+    detail = stack.sales.get_sale(validated.id)
+    assert detail.montant_paye == Decimal("62500")
+    assert detail.reste_a_payer == Decimal("0")
+    assert detail.statut_paiement == StatutPaiement.PAYEE
+
+
 def test_receivables_page_excludes_draft_and_cancelled_sales(qtbot, login_as) -> None:
     stack, _ = login_as("Administrateur")
     article = _make_article(stack)
