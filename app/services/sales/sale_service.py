@@ -62,6 +62,7 @@ from app.repositories.vente_repository import VenteRepository
 from app.services.auth.permission_service import PermissionService
 from app.services.stock.movement_summary import MouvementSummary
 from app.services.stock.stock_service import StockService
+from app.utils.dates import validate_not_future_date
 from app.utils.exceptions import ConflictError, NotFoundError, ValidationError
 from app.utils.logging_config import get_logger
 from app.utils.money import round_money
@@ -358,8 +359,11 @@ class SaleService:
         client_id: Optional[int] = None,
     ) -> VenteSummary:
         """Crée une vente en BROUILLON : n'a aucun impact sur le stock.
-        ``client_id`` est optionnel (``None`` = vente comptant)."""
+        ``client_id`` est optionnel (``None`` = vente comptant).
+        ``date_vente`` ne peut jamais être postérieure à la date du jour, y
+        compris en brouillon (voir ``app.utils.dates``)."""
         self._permissions.require_permission("SALE_CREATE")
+        date_vente = validate_not_future_date(date_vente)
         acting_user_id = self._acting_user_id()
 
         with session_scope(self._settings) as session:
@@ -401,8 +405,10 @@ class SaleService:
         lignes, et le client — ``client_id=None`` efface l'association
         existante, exactement comme pour toute autre modification de
         brouillon). Refuse toute modification d'une vente déjà validée ou
-        annulée."""
+        annulée. Même règle de date que ``create_sale`` : jamais postérieure
+        à aujourd'hui."""
         self._permissions.require_permission("SALE_UPDATE")
+        date_vente = validate_not_future_date(date_vente)
 
         with session_scope(self._settings) as session:
             vente_repo = VenteRepository(session)

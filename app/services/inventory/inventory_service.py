@@ -59,6 +59,7 @@ from app.repositories.mouvement_repository import MouvementRepository
 from app.services.auth.permission_service import PermissionService
 from app.services.stock.movement_summary import MouvementSummary
 from app.services.stock.stock_service import StockService
+from app.utils.dates import validate_not_future_date
 from app.utils.exceptions import ConflictError, NotFoundError, ValidationError
 from app.utils.logging_config import get_logger
 
@@ -236,8 +237,11 @@ class InventoryService:
         date_inventaire: date,
         lines: Sequence[InventaireLigneInput] = (),
     ) -> InventaireSummary:
-        """Crée un inventaire en BROUILLON : n'a aucun impact sur le stock."""
+        """Crée un inventaire en BROUILLON : n'a aucun impact sur le stock.
+        ``date_inventaire`` ne peut jamais être postérieure à la date du
+        jour, y compris en brouillon (voir ``app.utils.dates``)."""
         self._permissions.require_permission("INVENTORY_CREATE")
+        date_inventaire = validate_not_future_date(date_inventaire)
         acting_user_id = self._acting_user_id()
 
         with session_scope(self._settings) as session:
@@ -273,8 +277,10 @@ class InventoryService:
         """Modifie un inventaire en BROUILLON (remplace intégralement les
         lignes ; chaque ligne recapture un stock théorique à jour au moment
         de cette modification). Refuse toute modification d'un inventaire
-        déjà validé."""
+        déjà validé. Même règle de date que ``create_inventory`` : jamais
+        postérieure à aujourd'hui."""
         self._permissions.require_permission("INVENTORY_UPDATE")
+        date_inventaire = validate_not_future_date(date_inventaire)
 
         with session_scope(self._settings) as session:
             inventaire_repo = InventaireRepository(session)

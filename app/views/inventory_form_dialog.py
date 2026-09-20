@@ -13,6 +13,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Callable, Optional
 
+from PySide6.QtCore import QDate
 from PySide6.QtWidgets import (
     QDateEdit,
     QDialog,
@@ -65,6 +66,10 @@ class InventoryFormDialog(QDialog):
         self.date_edit = QDateEdit(self)
         self.date_edit.setCalendarPopup(True)
         self.date_edit.setDisplayFormat("yyyy-MM-dd")
+        # Confort d'interface uniquement (§ dates futures) : le calendrier
+        # ne propose pas de date future, mais la garantie réelle est
+        # appliquée côté service (InventoryService.create_inventory/update_inventory).
+        self.date_edit.setMaximumDate(QDate.currentDate())
         self.date_edit.setDate(date_to_qdate(initial.get("date") or date.today()))
         form.addRow("Date", self.date_edit)
 

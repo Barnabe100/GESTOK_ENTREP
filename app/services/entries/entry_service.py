@@ -41,6 +41,7 @@ from app.repositories.supplier_repository import SupplierRepository
 from app.services.auth.permission_service import PermissionService
 from app.services.stock.movement_summary import MouvementSummary
 from app.services.stock.stock_service import StockService
+from app.utils.dates import validate_not_future_date
 from app.utils.exceptions import ConflictError, NotFoundError, ValidationError
 from app.utils.logging_config import get_logger
 from app.utils.money import round_money
@@ -253,9 +254,12 @@ class EntryService:
         commentaire: Optional[str] = None,
     ) -> EntreeSummary:
         """Crée une entrée en BROUILLON : n'a aucun impact sur le stock
-        (§7 du cahier des charges de cette phase)."""
+        (§7 du cahier des charges de cette phase). ``date_entree`` ne peut
+        jamais être postérieure à la date du jour, y compris en brouillon
+        (voir ``app.utils.dates``)."""
         self._permissions.require_permission("STOCK_ENTRY_CREATE")
 
+        date_entree = validate_not_future_date(date_entree)
         reference_document = _validate_optional_text(
             reference_document, "référence document", MAX_REFERENCE_DOCUMENT_LENGTH
         )
@@ -308,9 +312,11 @@ class EntryService:
     ) -> EntreeSummary:
         """Modifie une entrée en BROUILLON (remplace intégralement les
         lignes). Refuse toute modification d'une entrée déjà validée ou
-        annulée (§7 : une entrée validée devient non modifiable)."""
+        annulée (§7 : une entrée validée devient non modifiable). Même règle
+        de date que ``create_entry`` : jamais postérieure à aujourd'hui."""
         self._permissions.require_permission("STOCK_ENTRY_UPDATE")
 
+        date_entree = validate_not_future_date(date_entree)
         if reference_document is not _UNSET:
             reference_document = _validate_optional_text(
                 reference_document, "référence document", MAX_REFERENCE_DOCUMENT_LENGTH

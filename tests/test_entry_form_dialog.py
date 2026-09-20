@@ -50,6 +50,19 @@ def test_dialog_defaults_date_to_today_on_creation(qtbot) -> None:
     assert dialog.values()["date"] == date.today()
 
 
+def test_dialog_date_edit_cannot_be_set_beyond_today(qtbot) -> None:
+    """Confort d'interface (§ dates futures) : le calendrier ne doit pas
+    permettre de sélectionner une date future — la garantie réelle reste
+    portée par EntryService (voir tests/test_business_date_validation.py)."""
+    dialog = EntryFormDialog(_SUPPLIERS, _ARTICLES)
+    qtbot.addWidget(dialog)
+
+    assert dialog.date_edit.maximumDate() == QDate.currentDate()
+
+    dialog.date_edit.setDate(QDate.currentDate().addDays(5))
+    assert dialog.date_edit.date() == QDate.currentDate()  # clampé par Qt, jamais une date future
+
+
 def test_dialog_date_change_is_reflected_in_values(qtbot) -> None:
     initial = {"date": date(2026, 1, 15)}
     dialog = EntryFormDialog(_SUPPLIERS, _ARTICLES, initial)

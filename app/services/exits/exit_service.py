@@ -46,6 +46,7 @@ from app.repositories.sortie_repository import SortieRepository
 from app.services.auth.permission_service import PermissionService
 from app.services.stock.movement_summary import MouvementSummary
 from app.services.stock.stock_service import StockService
+from app.utils.dates import validate_not_future_date
 from app.utils.exceptions import ConflictError, NotFoundError, ValidationError
 from app.utils.logging_config import get_logger
 from app.utils.money import round_money
@@ -263,9 +264,12 @@ class ExitService:
         reference: Optional[str] = None,
         commentaire: Optional[str] = None,
     ) -> SortieSummary:
-        """Crée une sortie en BROUILLON : n'a aucun impact sur le stock."""
+        """Crée une sortie en BROUILLON : n'a aucun impact sur le stock.
+        ``date_sortie`` ne peut jamais être postérieure à la date du jour,
+        y compris en brouillon (voir ``app.utils.dates``)."""
         self._permissions.require_permission("STOCK_EXIT_CREATE")
 
+        date_sortie = validate_not_future_date(date_sortie)
         beneficiaire = _validate_optional_text(beneficiaire, "bénéficiaire/service", MAX_BENEFICIAIRE_LENGTH)
         reference = _validate_optional_text(reference, "référence document", MAX_REFERENCE_LENGTH)
         commentaire = _validate_optional_text(commentaire, "commentaire", MAX_COMMENTAIRE_LENGTH)
@@ -319,9 +323,11 @@ class ExitService:
     ) -> SortieSummary:
         """Modifie une sortie en BROUILLON (remplace intégralement les
         lignes). Refuse toute modification d'une sortie déjà validée ou
-        annulée."""
+        annulée. Même règle de date que ``create_exit`` : jamais postérieure
+        à aujourd'hui."""
         self._permissions.require_permission("STOCK_EXIT_UPDATE")
 
+        date_sortie = validate_not_future_date(date_sortie)
         if beneficiaire is not _UNSET:
             beneficiaire = _validate_optional_text(beneficiaire, "bénéficiaire/service", MAX_BENEFICIAIRE_LENGTH)
         if reference is not _UNSET:
