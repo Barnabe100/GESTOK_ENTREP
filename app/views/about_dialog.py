@@ -14,15 +14,16 @@ utilisateur et les fichiers de diagnostic/log, sans rien inventer.
 """
 from __future__ import annotations
 
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QDialog, QFormLayout, QGroupBox, QLabel, QVBoxLayout, QWidget
 
-from app.resources import APP_ICON_PATH
+from app.resources import APP_LOGO_FULL_PATH
 from app.services.auth.permission_service import PermissionService
 from app.services.licensing.license_service import LicenseService, LicenseState
-from app.version import APP_NAME, __version__
+from app.version import APP_NAME, PUBLISHER_NAME, __version__
 
-_PUBLISHER_NAME = "StockManager"
+_LOGO_MAX_WIDTH_PX = 280
 
 _STATE_LABELS = {
     LicenseState.VALID: "Valide",
@@ -52,15 +53,26 @@ class AboutDialog(QDialog):
 
         layout = QVBoxLayout(self)
 
-        if APP_ICON_PATH.exists():
-            icon_label = QLabel(self)
-            icon_label.setPixmap(QIcon(str(APP_ICON_PATH)).pixmap(64, 64))
-            layout.addWidget(icon_label)
+        if APP_LOGO_FULL_PATH.exists():
+            logo_pixmap = QPixmap(str(APP_LOGO_FULL_PATH))
+            if not logo_pixmap.isNull():
+                logo_label = QLabel(self)
+                # Proportions jamais déformées : mise à l'échelle par largeur
+                # maximale avec KeepAspectRatio, jamais un redimensionnement
+                # forcé en largeur ET hauteur.
+                logo_label.setPixmap(
+                    logo_pixmap.scaledToWidth(
+                        min(_LOGO_MAX_WIDTH_PX, logo_pixmap.width()),
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                )
+                logo_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+                layout.addWidget(logo_label)
 
         identity_form = QFormLayout()
         identity_form.addRow("Nom", QLabel(APP_NAME, self))
         identity_form.addRow("Version", QLabel(__version__, self))
-        identity_form.addRow("Éditeur", QLabel(_PUBLISHER_NAME, self))
+        identity_form.addRow("Éditeur", QLabel(PUBLISHER_NAME, self))
         layout.addLayout(identity_form)
 
         if permission_service.has_permission("LICENSE_VIEW"):

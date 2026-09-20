@@ -42,15 +42,45 @@ def test_shows_icon(qtbot, login_as) -> None:
     assert len(icon_labels) == 1
 
 
+def test_logo_is_displayed_without_distorting_proportions(qtbot, login_as) -> None:
+    """§ Identité visuelle : le logo officiel complet (symbole + texte +
+    slogan) doit être affiché sans jamais déformer ses proportions — la
+    mise à l'échelle est faite par largeur (scaledToWidth), donc le ratio
+    largeur/hauteur affiché doit rester celui du fichier source."""
+    from PIL import Image
+    from PySide6.QtWidgets import QLabel
+
+    from app.resources import APP_LOGO_FULL_PATH
+
+    stack, _ = login_as("Administrateur")
+    dialog = _build_dialog(stack)
+    qtbot.addWidget(dialog)
+
+    icon_labels = [label for label in dialog.findChildren(QLabel) if not label.pixmap().isNull()]
+    assert len(icon_labels) == 1
+    displayed_pixmap = icon_labels[0].pixmap()
+
+    with Image.open(APP_LOGO_FULL_PATH) as source_image:
+        source_ratio = source_image.width / source_image.height
+    displayed_ratio = displayed_pixmap.width() / displayed_pixmap.height()
+
+    assert abs(displayed_ratio - source_ratio) < 0.01
+
+
 def test_shows_publisher(qtbot, login_as) -> None:
     from PySide6.QtWidgets import QLabel
+
+    from app.version import PUBLISHER_NAME
 
     stack, _ = login_as("Administrateur")
     dialog = _build_dialog(stack)
     qtbot.addWidget(dialog)
 
     all_text = " ".join(label.text() for label in dialog.findChildren(QLabel))
-    assert "StockManager" in all_text
+    assert PUBLISHER_NAME in all_text
+    assert "TechNova" in all_text
+    # Le produit reste StockManager, distinct de l'éditeur.
+    assert APP_NAME in all_text
 
 
 def test_shows_generic_support_text_without_fabricated_contact_details(qtbot, login_as) -> None:

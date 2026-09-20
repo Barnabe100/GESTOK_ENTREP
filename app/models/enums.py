@@ -22,6 +22,18 @@ class StatutInventaire(str, enum.Enum):
     VALIDE = "VALIDE"
 
 
+class StatutPaiement(str, enum.Enum):
+    """Statut de paiement d'une vente, dérivé de ``total`` et de la somme des
+    ``Paiement`` rattachés (voir ``SaleService``) : NON_PAYEE tant qu'aucun
+    paiement n'a été enregistré, PARTIELLEMENT_PAYEE tant que le reste à
+    payer est strictement positif, PAYEE dès que le reste atteint zéro (y
+    compris une vente au total nul, payée par construction)."""
+
+    NON_PAYEE = "NON_PAYEE"
+    PARTIELLEMENT_PAYEE = "PARTIELLEMENT_PAYEE"
+    PAYEE = "PAYEE"
+
+
 class TypeMouvement(str, enum.Enum):
     ENTREE = "ENTREE"
     SORTIE = "SORTIE"

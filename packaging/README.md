@@ -43,7 +43,8 @@ dossier `onedir` et ne présente à l'utilisateur qu'un raccourci.
 3. Installer les dépendances de build (inclut requirements.txt) :
        pip install -r requirements-build.txt
 4. Régénérer l'icône Windows et les métadonnées de version
-   (uniquement si app/version.py ou l'icône SVG source ont changé) :
+   (uniquement si app/version.py ou le symbole source ont changé,
+   voir app/resources/branding/README.md) :
        python packaging\generate_icon.py
        python packaging\generate_version_info.py
 5. Construire l'exécutable :
@@ -73,7 +74,8 @@ Déclarés explicitement dans `stockmanager.spec` (`datas`) :
 
 - `alembic.ini` et `migrations/` (schéma de base — nécessaire à chaque
   démarrage, voir `app/db/init_db.py`) ;
-- `app/resources/` (feuille de style Qt, icône SVG de la fenêtre) ;
+- `app/resources/` (feuille de style Qt, identité visuelle officielle —
+  voir `app/resources/branding/README.md`) ;
 - clé publique de licence : embarquée par construction, c'est du code Python
   (`app/services/licensing/public_key.py`), pas un fichier de données —
   collectée automatiquement par l'analyse PyInstaller comme tout le reste du

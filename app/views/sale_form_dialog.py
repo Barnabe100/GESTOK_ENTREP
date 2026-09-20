@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPushButton,
     QTableWidget,
@@ -50,17 +51,24 @@ class SaleFormDialog(QDialog):
         clients: list[tuple[int, str]],
         initial: Optional[dict] = None,
         on_create_client: Optional[Callable[[], Optional[tuple[int, str]]]] = None,
+        on_lookup_barcode: Optional[Callable[[str], Optional[tuple[int, str, str]]]] = None,
         parent: QWidget | None = None,
     ) -> None:
         """``articles`` : liste de tuples (id, libellé affiché, prix de vente actuel en texte).
         ``clients`` : liste de tuples (id, nom) — clients actifs sélectionnables.
         ``initial['lignes']`` : liste de dicts {article_id, article_label, quantite, prix_unitaire}.
-        ``initial['client_id']`` : identifiant du client présélectionné, ou None (vente comptant)."""
+        ``initial['client_id']`` : identifiant du client présélectionné, ou None (vente comptant).
+        ``on_lookup_barcode`` : callback recevant un code-barres scanné et
+        renvoyant ``(article_id, libellé, prix_vente)`` si un article actif
+        correspond, ``None`` sinon (lecteur USB « keyboard wedge » : le champ
+        de scan se comporte comme un champ de texte classique, terminé par
+        Entrée — voir ``_on_scan_entered``)."""
         super().__init__(parent)
         initial = initial or {}
         self._articles = articles
         self._clients: list[tuple[int, str]] = list(clients)
         self._on_create_client = on_create_client
+        self._on_lookup_barcode = on_lookup_barcode
         self._lines: list[dict] = list(initial.get("lignes", []))
 
         self.setWindowTitle("Vente")
@@ -86,6 +94,14 @@ class SaleFormDialog(QDialog):
         self._refresh_client_combo(selected_id=initial.get("client_id"))
 
         layout.addLayout(form)
+
+        scan_row = QHBoxLayout()
+        scan_row.addWidget(QLabel("Scanner / code-barres", self))
+        self.scan_edit = QLineEdit(self)
+        self.scan_edit.setPlaceholderText("Scanner un article ou saisir son code-barres puis Entrée…")
+        self.scan_edit.setEnabled(on_lookup_barcode is not None)
+        scan_row.addWidget(self.scan_edit)
+        layout.addLayout(scan_row)
 
         layout.addWidget(QLabel("Lignes", self))
 
@@ -128,7 +144,42 @@ class SaleFormDialog(QDialog):
         self.add_line_button.clicked.connect(self._on_add_line_clicked)
         self.remove_line_button.clicked.connect(self._on_remove_line_clicked)
         self.new_client_button.clicked.connect(self._on_new_client_clicked)
+        self.scan_edit.returnPressed.connect(self._on_scan_entered)
 
+        self._refresh_lines_table()
+
+    # -- scan code-barres (lecteur USB « keyboard wedge ») ---------------------
+
+    def _on_scan_entered(self) -> None:
+        """Le lecteur de code-barres se comporte comme un clavier : il tape
+        le code puis Entrée. Article actif trouvé -> ajout immédiat d'une
+        ligne (quantité 1, prix de vente actuel), sans ouvrir de dialogue —
+        c'est le moyen rapide demandé, en complément de la sélection
+        manuelle. Article introuvable -> message clair, aucune ligne
+        ajoutée, aucun impact sur le stock (une ligne en brouillon ne
+        modifie jamais le stock, seule la validation de la vente le fait)."""
+        code = self.scan_edit.text().strip()
+        self.scan_edit.clear()
+        if not code or self._on_lookup_barcode is None:
+            return
+
+        result = self._on_lookup_barcode(code)
+        if result is None:
+            QMessageBox.warning(
+                self, "Article introuvable",
+                f"Aucun article actif ne correspond au code-barres « {code} ».",
+            )
+            return
+
+        article_id, article_label, prix_vente = result
+        self._lines.append(
+            {
+                "article_id": article_id,
+                "article_label": article_label,
+                "quantite": Decimal("1"),
+                "prix_unitaire": Decimal(str(prix_vente)),
+            }
+        )
         self._refresh_lines_table()
 
     # -- gestion du client ------------------------------------------------------

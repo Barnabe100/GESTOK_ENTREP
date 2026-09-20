@@ -31,6 +31,13 @@ from app.services.licensing.license_payload import (
     FEATURE_SUPPLIERS,
 )
 
+# Rattachée à FEATURE_BACKUPS (audit final avant commit, validé) : la
+# réinitialisation des données métier réutilise techniquement BackupService
+# (sauvegarde de sécurité obligatoire avant toute suppression) et relève de
+# la même famille fonctionnelle "maintenance avancée de la base" que
+# BACKUP_CREATE/BACKUP_RESTORE, plutôt que de rester disponible sans aucune
+# licence valide.
+
 PERMISSION_TO_FEATURE: dict[str, str] = {
     "DASHBOARD_VIEW": FEATURE_REPORTS,
     "ARTICLE_VIEW": FEATURE_ARTICLES,
@@ -68,6 +75,7 @@ PERMISSION_TO_FEATURE: dict[str, str] = {
     "SALE_UPDATE": FEATURE_SALES,
     "SALE_VALIDATE": FEATURE_SALES,
     "SALE_CANCEL": FEATURE_SALES,
+    "SALE_PAYMENT_CREATE": FEATURE_SALES,
     "STOCK_MOVEMENT_VIEW": FEATURE_STOCK_MOVEMENTS,
     "INVENTORY_VIEW": FEATURE_INVENTORY,
     "INVENTORY_CREATE": FEATURE_INVENTORY,
@@ -79,6 +87,7 @@ PERMISSION_TO_FEATURE: dict[str, str] = {
     "BACKUP_CREATE": FEATURE_BACKUPS,
     "BACKUP_RESTORE": FEATURE_BACKUPS,
     "AUDIT_VIEW": FEATURE_AUDIT,
+    "SYSTEM_RESET_BUSINESS_DATA": FEATURE_BACKUPS,
     "USER_CREATE": FEATURE_MULTI_USER,
     "USER_UPDATE": FEATURE_MULTI_USER,
     "USER_ACTIVATE": FEATURE_MULTI_USER,

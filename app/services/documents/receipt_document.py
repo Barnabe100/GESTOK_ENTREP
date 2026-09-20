@@ -25,8 +25,15 @@ from decimal import Decimal
 from PySide6.QtCore import QSizeF, QUrl
 from PySide6.QtGui import QImage, QPageSize, QTextDocument
 
-from app.services.documents.receipt_service import SaleReceiptData
+from app.models.enums import StatutPaiement
+from app.services.documents.receipt_service import PaymentReceiptData, SaleReceiptData
 from app.utils.money import format_money
+
+_STATUT_PAIEMENT_LABELS = {
+    StatutPaiement.NON_PAYEE: "Non payée",
+    StatutPaiement.PARTIELLEMENT_PAYEE: "Partiellement payée",
+    StatutPaiement.PAYEE: "Payée",
+}
 
 # 1 mm en points (unité interne de QTextDocument) : 72 pt/pouce, 25.4 mm/pouce.
 _MM_TO_POINTS = 72.0 / 25.4
@@ -113,6 +120,29 @@ def _date_heure_text(data: SaleReceiptData) -> str:
     return text
 
 
+def _payment_rows_a4(data: SaleReceiptData) -> str:
+    """Bloc Payé/Reste/Statut (§5.8), toujours affiché — une vente comptant
+    affiche « Reste : 0 » au même titre qu'une vente partiellement payée,
+    sans distinction de traitement."""
+    statut_label = _STATUT_PAIEMENT_LABELS.get(data.statut_paiement, str(data.statut_paiement))
+    return f"""
+    <p align="right" style="margin:2px 0;">Payé : {_fmt_money(data.montant_paye, data.devise)}</p>
+    <p align="right" style="margin:2px 0;">Reste à payer : {_fmt_money(data.reste_a_payer, data.devise)}</p>
+    <p align="right" style="margin:2px 0; font-weight:600;">Statut : {_esc(statut_label)}</p>
+    """
+
+
+def _payment_rows_ticket(data: SaleReceiptData) -> str:
+    statut_label = _STATUT_PAIEMENT_LABELS.get(data.statut_paiement, str(data.statut_paiement))
+    return f"""
+    <table width="100%" cellspacing="0" cellpadding="0">
+      <tr><td>Payé</td><td align="right">{_fmt_money(data.montant_paye, data.devise)}</td></tr>
+      <tr><td>Reste à payer</td><td align="right">{_fmt_money(data.reste_a_payer, data.devise)}</td></tr>
+      <tr><td><b>Statut</b></td><td align="right"><b>{_esc(statut_label)}</b></td></tr>
+    </table>
+    """
+
+
 _FOOTER_MENTION = "Document généré par StockManager"
 
 
@@ -179,6 +209,7 @@ def _build_a4_html(data: SaleReceiptData, has_logo: bool) -> str:
       {rows}
     </table>
     <h2 align="right" style="margin-top:16px;">Total : {_fmt_money(data.total, data.devise)}</h2>
+    {_payment_rows_a4(data)}
     <p align="center" style="color:#999999; font-size:8pt; margin-top:40px;">{_FOOTER_MENTION}</p>
     """
 
@@ -230,6 +261,7 @@ def _build_ticket_html(data: SaleReceiptData, has_logo: bool) -> str:
         <td><b>TOTAL</b></td>
         <td align="right"><b>{_fmt_money(data.total, data.devise)}</b></td>
       </tr></table>
+      {_payment_rows_ticket(data)}
       <p align="center" style="margin-top:10px;">Merci de votre visite</p>
       <p align="center" style="color:#999999; font-size:7pt; margin-top:10px;">{_FOOTER_MENTION}</p>
     </div>
@@ -247,6 +279,51 @@ def _measure_ticket_height_mm(document: QTextDocument, content_width_mm: float) 
     height_points = document.size().height()
     height_mm = height_points / _MM_TO_POINTS
     return max(height_mm + _TICKET_HEIGHT_BUFFER_MM, _TICKET_MIN_HEIGHT_MM)
+
+
+def _build_payment_receipt_html(data: PaymentReceiptData) -> str:
+    """Reçu d'un paiement ultérieur (§5.8) — document A4 volontairement
+    compact : pas de lignes d'articles, seulement la trace du règlement."""
+    entreprise_nom = _esc(data.entreprise_nom) or "(Entreprise non configurée — voir Paramètres)"
+    header_lines = "<br/>".join(
+        line for line in (
+            _esc(data.entreprise_adresse), f"Tél. {_esc(data.entreprise_telephone)}" if data.entreprise_telephone else "",
+            _esc(data.entreprise_email),
+        ) if line
+    ) or "&nbsp;"
+    client_line = f"<p style='margin:4px 0;'>Client : {_esc(data.client_nom)}</p>" if data.client_nom else ""
+
+    return f"""
+    <h2 style="margin:4px 0;">{entreprise_nom}</h2>
+    <p style="margin:0;">{header_lines}</p>
+    <hr/>
+    <h1 style="margin:16px 0;">REÇU DE PAIEMENT</h1>
+    <p style="margin:4px 0;">
+      Vente concernée : {_esc(data.vente_numero)}<br/>
+      Date du paiement : {_esc(data.date_heure.strftime('%Y-%m-%d à %H:%M'))}<br/>
+      Enregistré par : {_esc(data.username)}
+    </p>
+    {client_line}
+    <hr/>
+    <p style="margin:4px 0; font-size:14pt; font-weight:600;">
+      Montant payé : {_fmt_money(data.montant, data.devise)}
+    </p>
+    <p style="margin:4px 0;">Total de la vente : {_fmt_money(data.total_vente, data.devise)}</p>
+    <p style="margin:4px 0;">Total payé après ce paiement : {_fmt_money(data.total_paye_apres, data.devise)}</p>
+    <p style="margin:4px 0; font-weight:600;">Reste à payer : {_fmt_money(data.reste_a_payer, data.devise)}</p>
+    <p align="center" style="color:#999999; font-size:8pt; margin-top:40px;">{_FOOTER_MENTION}</p>
+    """
+
+
+def build_payment_receipt_document(data: PaymentReceiptData) -> RenderedReceipt:
+    """Construit le document (format A4 uniquement — §5.8 ne demande pas de
+    variante ticket thermique pour un reçu de paiement) du reçu d'un
+    paiement ultérieur. Pure fonction de rendu, comme
+    ``build_receipt_document``."""
+    document = QTextDocument()
+    document.setHtml(_build_payment_receipt_html(data))
+    page_size = QPageSize(QPageSize.PageSizeId.A4)
+    return RenderedReceipt(document=document, page_size=page_size, margin_mm=_A4_MARGIN_MM)
 
 
 def build_receipt_document(data: SaleReceiptData, receipt_format: ReceiptFormat) -> RenderedReceipt:

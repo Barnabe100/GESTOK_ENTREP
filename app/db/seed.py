@@ -59,6 +59,7 @@ PERMISSIONS: list[tuple[str, str, str]] = [
     ("SALE_UPDATE", "Modifier une vente en brouillon", "ventes"),
     ("SALE_VALIDATE", "Valider une vente", "ventes"),
     ("SALE_CANCEL", "Annuler une vente validée", "ventes"),
+    ("SALE_PAYMENT_CREATE", "Enregistrer un paiement sur une vente", "ventes"),
     ("CLIENT_VIEW", "Consulter les clients", "clients"),
     ("CLIENT_CREATE", "Créer un client", "clients"),
     ("CLIENT_UPDATE", "Modifier un client", "clients"),
@@ -86,6 +87,11 @@ PERMISSIONS: list[tuple[str, str, str]] = [
     ("AUDIT_VIEW", "Consulter le journal d'audit", "audit"),
     ("LICENSE_VIEW", "Consulter la licence", "licences"),
     ("LICENSE_ACTIVATE", "Activer une licence", "licences"),
+    (
+        "SYSTEM_RESET_BUSINESS_DATA",
+        "Réinitialiser les données métier (après une période de test)",
+        "systeme",
+    ),
 ]
 
 _ALL_CODES = [code for code, _, _ in PERMISSIONS]
@@ -109,7 +115,7 @@ _GESTIONNAIRE_STOCK_CODES = [
 _VENDEUR_CODES = [
     "DASHBOARD_VIEW",
     "ARTICLE_VIEW",
-    "SALE_VIEW", "SALE_CREATE", "SALE_UPDATE", "SALE_VALIDATE",
+    "SALE_VIEW", "SALE_CREATE", "SALE_UPDATE", "SALE_VALIDATE", "SALE_PAYMENT_CREATE",
     # Le Vendeur peut rechercher/sélectionner et créer un client à la volée
     # au moment de la vente, mais jamais activer/désactiver un compte client
     # (décision métier explicite de ce lot).

@@ -29,10 +29,18 @@ class ArticleRepository(SQLAlchemyRepository[Article]):
             query = query.filter(Article.id != exclude_id)
         return query.one_or_none()
 
-    def find_by_barcode(self, code_barres: str, exclude_id: Optional[int] = None) -> Optional[Article]:
+    def find_by_barcode(
+        self, code_barres: str, exclude_id: Optional[int] = None, active_only: bool = False
+    ) -> Optional[Article]:
+        """``active_only`` restreint la recherche aux articles actifs — seule
+        la contrainte d'unicité porte sur ce périmètre (voir migration 0008 :
+        un article désactivé peut conserver un code-barres repris par un
+        nouvel article actif, sans jamais entrer en conflit)."""
         query = self.session.query(Article).filter(Article.code_barres == code_barres)
         if exclude_id is not None:
             query = query.filter(Article.id != exclude_id)
+        if active_only:
+            query = query.filter(Article.statut == StatutActifInactif.ACTIF)
         return query.one_or_none()
 
     def search(
@@ -58,6 +66,7 @@ class ArticleRepository(SQLAlchemyRepository[Article]):
                     Article.reference.ilike(like_term),
                     Article.designation.ilike(like_term),
                     Category.nom.ilike(like_term),
+                    Article.code_barres.ilike(like_term),
                 )
             )
         if category_id is not None:

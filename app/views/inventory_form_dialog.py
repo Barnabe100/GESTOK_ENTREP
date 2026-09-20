@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal
-from typing import Optional
+from typing import Callable, Optional
 
 from PySide6.QtWidgets import (
     QDateEdit,
@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPushButton,
     QTableWidget,
@@ -39,13 +40,19 @@ class InventoryFormDialog(QDialog):
         self,
         articles: list[tuple[int, str, str]],
         initial: Optional[dict] = None,
+        on_lookup_barcode: Optional[Callable[[str], Optional[tuple[int, str, str]]]] = None,
         parent: QWidget | None = None,
     ) -> None:
         """``articles`` : liste de tuples (id, libellé affiché, stock théorique actuel en texte).
-        ``initial['lignes']`` : liste de dicts {article_id, article_label, stock_theorique, stock_physique}."""
+        ``initial['lignes']`` : liste de dicts {article_id, article_label, stock_theorique, stock_physique}.
+        ``on_lookup_barcode`` : callback de scan (voir ``SaleFormDialog``,
+        même contrat) — ici, l'article trouvé pré-sélectionne le formulaire
+        d'ajout de ligne habituel plutôt que d'ajouter directement une ligne,
+        le stock compté restant une saisie manuelle obligatoire."""
         super().__init__(parent)
         initial = initial or {}
         self._articles = articles
+        self._on_lookup_barcode = on_lookup_barcode
         self._lines: list[dict] = list(initial.get("lignes", []))
 
         self.setWindowTitle("Inventaire")
@@ -62,6 +69,14 @@ class InventoryFormDialog(QDialog):
         form.addRow("Date", self.date_edit)
 
         layout.addLayout(form)
+
+        scan_row = QHBoxLayout()
+        scan_row.addWidget(QLabel("Scanner / code-barres", self))
+        self.scan_edit = QLineEdit(self)
+        self.scan_edit.setPlaceholderText("Scanner un article ou saisir son code-barres puis Entrée…")
+        self.scan_edit.setEnabled(on_lookup_barcode is not None)
+        scan_row.addWidget(self.scan_edit)
+        layout.addLayout(scan_row)
 
         layout.addWidget(QLabel("Lignes", self))
 
@@ -97,10 +112,34 @@ class InventoryFormDialog(QDialog):
 
         self.cancel_button.clicked.connect(self.reject)
         self.save_button.clicked.connect(self.accept)
-        self.add_line_button.clicked.connect(self._on_add_line_clicked)
+        self.add_line_button.clicked.connect(lambda: self._on_add_line_clicked())
         self.remove_line_button.clicked.connect(self._on_remove_line_clicked)
+        self.scan_edit.returnPressed.connect(self._on_scan_entered)
 
         self._refresh_lines_table()
+
+    # -- scan code-barres (lecteur USB « keyboard wedge ») ---------------------
+
+    def _on_scan_entered(self) -> None:
+        """Article actif trouvé -> ouvre le formulaire d'ajout de ligne
+        habituel avec cet article pré-sélectionné (le stock compté reste une
+        saisie manuelle, jamais devinée). Introuvable -> message clair,
+        aucune ligne ajoutée."""
+        code = self.scan_edit.text().strip()
+        self.scan_edit.clear()
+        if not code or self._on_lookup_barcode is None:
+            return
+
+        result = self._on_lookup_barcode(code)
+        if result is None:
+            QMessageBox.warning(
+                self, "Article introuvable",
+                f"Aucun article actif ne correspond au code-barres « {code} ».",
+            )
+            return
+
+        article_id, _label, _stock_theorique = result
+        self._on_add_line_clicked(initial={"article_id": article_id})
 
     # -- gestion des lignes ---------------------------------------------------
 
@@ -117,9 +156,9 @@ class InventoryFormDialog(QDialog):
                 ecart_text = "—"
             self.lines_table.setItem(row, 3, QTableWidgetItem(ecart_text))
 
-    def _on_add_line_clicked(self) -> None:
+    def _on_add_line_clicked(self, initial: Optional[dict] = None) -> None:
         while True:
-            dialog = InventoryLineFormDialog(self._articles, parent=self)
+            dialog = InventoryLineFormDialog(self._articles, initial, parent=self)
             if dialog.exec() != QDialog.DialogCode.Accepted:
                 return
             values = dialog.values()

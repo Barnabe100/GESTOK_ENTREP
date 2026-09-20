@@ -46,8 +46,15 @@ from app.config.settings import Settings
 from app.db.session import session_scope
 from app.models.audit import AuditLog
 from app.models.documents import Vente, VenteLigne
-from app.models.enums import ResultatAudit, StatutActifInactif, StatutOperation, TypeMouvement
+from app.models.enums import (
+    ResultatAudit,
+    StatutActifInactif,
+    StatutOperation,
+    StatutPaiement,
+    TypeMouvement,
+)
 from app.models.movement import MouvementStock
+from app.models.payment import Paiement
 from app.repositories.article_repository import ArticleRepository
 from app.repositories.client_repository import ClientRepository
 from app.repositories.mouvement_repository import MouvementRepository
@@ -103,6 +110,35 @@ class VenteLigneSummary:
 
 
 @dataclass(frozen=True)
+class PaiementSummary:
+    """Vue en lecture seule d'un paiement enregistré sur une vente."""
+
+    id: int
+    vente_id: int
+    montant: Decimal
+    date_heure: datetime
+    mode_paiement: Optional[str]
+    reference: Optional[str]
+    user_id: int
+    username: str
+    commentaire: Optional[str]
+
+    @classmethod
+    def from_model(cls, paiement: Paiement) -> "PaiementSummary":
+        return cls(
+            id=paiement.id,
+            vente_id=paiement.vente_id,
+            montant=paiement.montant,
+            date_heure=paiement.date_heure,
+            mode_paiement=paiement.mode_paiement,
+            reference=paiement.reference,
+            user_id=paiement.user_id,
+            username=paiement.user.username,
+            commentaire=paiement.commentaire,
+        )
+
+
+@dataclass(frozen=True)
 class VenteSummary:
     """Vue en lecture seule d'une vente, avec ses lignes."""
 
@@ -121,6 +157,15 @@ class VenteSummary:
     # cassent aucun appelant existant.
     client_id: Optional[int] = None
     client_nom: Optional[str] = None
+    # Ventes à crédit / paiements partiels : montant_paye est le total
+    # courant dénormalisé (voir Vente.montant_paye), reste_a_payer est
+    # calculé ici (jamais stocké), jamais négatif par construction.
+    montant_paye: Decimal = Decimal("0")
+    statut_paiement: StatutPaiement = StatutPaiement.NON_PAYEE
+
+    @property
+    def reste_a_payer(self) -> Decimal:
+        return max(self.total - self.montant_paye, Decimal("0"))
 
     @classmethod
     def from_model(cls, vente: Vente) -> "VenteSummary":
@@ -137,7 +182,25 @@ class VenteSummary:
             date_modification=vente.date_modification,
             client_id=vente.client_id,
             client_nom=vente.client.nom if vente.client is not None else None,
+            montant_paye=vente.montant_paye,
+            statut_paiement=vente.statut_paiement,
         )
+
+
+@dataclass(frozen=True)
+class ClientReceivableSummary:
+    """Agrégat des créances d'un client (§5.6) : total facturé/payé/restant
+    sur ses ventes VALIDEE (une vente ANNULEE ne représente plus une
+    créance active). Ne prétend pas à un tableau de bord financier complet
+    — seulement les trois totaux demandés."""
+
+    client_id: int
+    total_ventes: Decimal
+    total_paye: Decimal
+
+    @property
+    def total_reste_a_payer(self) -> Decimal:
+        return max(self.total_ventes - self.total_paye, Decimal("0"))
 
 
 def _validate_positive_quantity(value: Decimal, field_label: str) -> Decimal:
@@ -150,6 +213,20 @@ def _validate_money(value: Decimal, field_label: str) -> Decimal:
     if value < 0:
         raise ValidationError(f"Le champ « {field_label} » ne peut pas être négatif.")
     return value
+
+
+def _compute_statut_paiement(total: Decimal, montant_paye: Decimal) -> StatutPaiement:
+    """Règle unique de dérivation du statut de paiement (§5.3) : PAYEE dès
+    que le reste à payer atteint zéro (y compris une vente au total nul,
+    payée par construction sans qu'aucun paiement n'ait été nécessaire),
+    PARTIELLEMENT_PAYEE tant qu'un montant a été réglé sans solder le
+    reste, NON_PAYEE sinon."""
+    reste = total - montant_paye
+    if reste <= 0:
+        return StatutPaiement.PAYEE
+    if montant_paye > 0:
+        return StatutPaiement.PARTIELLEMENT_PAYEE
+    return StatutPaiement.NON_PAYEE
 
 
 class SaleService:
@@ -225,12 +302,24 @@ class SaleService:
     # -- consultation -----------------------------------------------------------
 
     def list_sales(
-        self, search: str = "", statut: Optional[StatutOperation] = None, client_id: Optional[int] = None
+        self,
+        search: str = "",
+        statut: Optional[StatutOperation] = None,
+        client_id: Optional[int] = None,
+        statut_paiement: Optional[StatutPaiement] = None,
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
     ) -> list[VenteSummary]:
+        """Liste générale des ventes, également réutilisée pour l'écran
+        Créances clients (§5.7) via les filtres ``statut_paiement``/période —
+        pas d'architecture parallèle, la même méthode sert les deux écrans."""
         self._permissions.require_permission("SALE_VIEW")
         with session_scope(self._settings) as session:
             repo = VenteRepository(session)
-            ventes = repo.search(search, statut=statut, client_id=client_id)
+            ventes = repo.search(
+                search, statut=statut, client_id=client_id, statut_paiement=statut_paiement,
+                date_from=date_from, date_to=date_to,
+            )
             return [VenteSummary.from_model(v) for v in ventes]
 
     def get_sale(self, sale_id: int) -> VenteSummary:
@@ -362,7 +451,15 @@ class SaleService:
 
     # -- cycle de vie -------------------------------------------------------------
 
-    def validate_sale(self, sale_id: int) -> VenteSummary:
+    def validate_sale(
+        self,
+        sale_id: int,
+        paiement_initial: Decimal = Decimal("0"),
+        *,
+        mode_paiement: Optional[str] = None,
+        reference: Optional[str] = None,
+        commentaire: Optional[str] = None,
+    ) -> VenteSummary:
         """BROUILLON -> VALIDEE : seul point de la vie d'une vente où le
         stock est modifié. Revérifie que chaque article est actif (l'état a
         pu changer depuis la création du brouillon) et que le stock
@@ -370,9 +467,20 @@ class SaleService:
         dans la même transaction que le changement de statut. Le prix de
         vente facturé (``ligne.prix_unitaire``) n'est jamais recalculé ici :
         c'est la valeur historisée à la création/modification du brouillon
-        qui fait foi."""
+        qui fait foi.
+
+        ``paiement_initial`` (§5.4) : une vente comptant passe le total
+        (statut PAYEE dès la validation) ; une vente à crédit passe 0 (par
+        défaut) ou un acompte partiel — dans tous les cas un véritable
+        ``Paiement`` est créé dans la même transaction, jamais un simple
+        champ écrasé. Un paiement ne peut jamais être enregistré sur un
+        brouillon (voir docstring de module et de ``Paiement``) : c'est
+        pourquoi cette possibilité n'existe qu'ici et dans
+        ``record_payment`` (ventes déjà validées), jamais dans
+        ``create_sale``/``update_sale``."""
         self._permissions.require_permission("SALE_VALIDATE")
         acting_user_id = self._acting_user_id()
+        paiement_initial = _validate_money(paiement_initial, "paiement initial")
 
         with session_scope(self._settings) as session:
             vente_repo = VenteRepository(session)
@@ -385,6 +493,13 @@ class SaleService:
                 raise ConflictError("Seule une vente en brouillon peut être validée.")
             if not vente.lignes:
                 raise ValidationError("Une vente doit contenir au moins une ligne pour être validée.")
+            if paiement_initial > vente.total:
+                raise ValidationError(
+                    "Le paiement initial ne peut pas dépasser le total de la vente "
+                    f"({paiement_initial} > {vente.total})."
+                )
+            if paiement_initial > 0:
+                self._permissions.require_permission("SALE_PAYMENT_CREATE")
 
             for ligne in vente.lignes:
                 article = article_repo.get_by_id(ligne.article_id)
@@ -404,6 +519,16 @@ class SaleService:
                 )
 
             vente.statut = StatutOperation.VALIDEE
+            if paiement_initial > 0:
+                session.add(
+                    Paiement(
+                        vente_id=vente.id, montant=paiement_initial, mode_paiement=mode_paiement,
+                        reference=reference, user_id=acting_user_id, commentaire=commentaire,
+                    )
+                )
+                vente.montant_paye = round_money(vente.montant_paye + paiement_initial)
+            vente.statut_paiement = _compute_statut_paiement(vente.total, vente.montant_paye)
+
             self._audit(session, "SALE_VALIDATE", vente.id)
             summary = VenteSummary.from_model(vente)
 
@@ -416,7 +541,21 @@ class SaleService:
         l'opération originale (jamais de suppression), refuse toute
         double annulation, et refuse l'opération dans son intégralité —
         sans aucune modification, grâce au rollback de ``session_scope`` —
-        si elle s'avérait incohérente."""
+        si elle s'avérait incohérente.
+
+        Choix retenu pour une vente déjà partiellement/totalement payée
+        (§5.9, point volontairement laissé à l'appréciation de
+        l'implémentation par le cahier des charges de ce lot) : l'annulation
+        reste possible dans les mêmes conditions qu'avant l'introduction des
+        paiements, et les ``Paiement`` déjà enregistrés ne sont **jamais**
+        modifiés, supprimés, ni compensés par un remboursement automatique —
+        ``montant_paye``/``statut_paiement`` restent figés à leur valeur au
+        moment de l'annulation, comme trace historique de ce qui a
+        réellement été perçu. Aucune écriture de remboursement n'est créée
+        (aucune logique comptable de remboursement n'est demandée par ce
+        lot) : un remboursement éventuel reste un processus métier externe à
+        gérer manuellement par le client de l'application. Voir le rapport
+        de ce lot pour la justification complète de ce choix."""
         self._permissions.require_permission("SALE_CANCEL")
         acting_user_id = self._acting_user_id()
 
@@ -456,3 +595,85 @@ class SaleService:
 
         logger.info("Vente annulée : %s", summary.numero)
         return summary
+
+    # -- paiements (ventes à crédit et paiements partiels, §5) -----------------------
+
+    def record_payment(
+        self,
+        sale_id: int,
+        montant: Decimal,
+        *,
+        mode_paiement: Optional[str] = None,
+        reference: Optional[str] = None,
+        commentaire: Optional[str] = None,
+    ) -> VenteSummary:
+        """Enregistre un paiement ultérieur (§5.5) sur une vente déjà
+        validée. Jamais de modification du stock (une opération purement
+        financière) ; refuse tout montant qui dépasserait le reste à payer,
+        toute vente déjà intégralement payée, et toute vente non validée
+        (brouillon jamais payé, vente annulée qui n'est plus une créance
+        active)."""
+        self._permissions.require_permission("SALE_PAYMENT_CREATE")
+        acting_user_id = self._acting_user_id()
+        montant = _validate_money(montant, "montant du paiement")
+        if montant <= 0:
+            raise ValidationError("Le montant du paiement doit être strictement positif.")
+
+        with session_scope(self._settings) as session:
+            vente_repo = VenteRepository(session)
+            vente = vente_repo.get_by_id(sale_id)
+            if vente is None:
+                raise NotFoundError(f"Vente {sale_id} introuvable.")
+            if vente.statut != StatutOperation.VALIDEE:
+                raise ConflictError("Seule une vente validée peut recevoir un paiement.")
+
+            reste = vente.total - vente.montant_paye
+            if vente.statut_paiement == StatutPaiement.PAYEE or reste <= 0:
+                raise ConflictError("Cette vente est déjà intégralement payée.")
+            if montant > reste:
+                raise ValidationError(
+                    f"Le paiement ({montant}) dépasse le reste à payer ({reste})."
+                )
+
+            session.add(
+                Paiement(
+                    vente_id=vente.id, montant=montant, mode_paiement=mode_paiement,
+                    reference=reference, user_id=acting_user_id, commentaire=commentaire,
+                )
+            )
+            vente.montant_paye = round_money(vente.montant_paye + montant)
+            vente.statut_paiement = _compute_statut_paiement(vente.total, vente.montant_paye)
+
+            self._audit(session, "SALE_PAYMENT_CREATE", vente.id)
+            summary = VenteSummary.from_model(vente)
+
+        logger.info(
+            "Paiement enregistré sur la vente %s : %s (reste désormais %s)",
+            summary.numero, montant, summary.reste_a_payer,
+        )
+        return summary
+
+    def list_payments(self, sale_id: int) -> list[PaiementSummary]:
+        """Historique des paiements d'une vente (§5.2/§5.6), du plus ancien
+        au plus récent."""
+        self._permissions.require_permission("SALE_VIEW")
+        with session_scope(self._settings) as session:
+            vente_repo = VenteRepository(session)
+            vente = vente_repo.get_by_id(sale_id)
+            if vente is None:
+                raise NotFoundError(f"Vente {sale_id} introuvable.")
+            return [PaiementSummary.from_model(p) for p in vente.paiements]
+
+    def get_client_receivable_summary(self, client_id: int) -> ClientReceivableSummary:
+        """Créance d'un client (§5.6) : total facturé/payé sur ses ventes
+        VALIDEE uniquement — une vente ANNULEE ne compte plus dans les
+        totaux (voir ``cancel_sale``)."""
+        self._permissions.require_permission("SALE_VIEW")
+        with session_scope(self._settings) as session:
+            repo = VenteRepository(session)
+            ventes = repo.search(client_id=client_id, statut=StatutOperation.VALIDEE)
+            total_ventes = round_money(sum((v.total for v in ventes), Decimal("0")))
+            total_paye = round_money(sum((v.montant_paye for v in ventes), Decimal("0")))
+            return ClientReceivableSummary(
+                client_id=client_id, total_ventes=total_ventes, total_paye=total_paye
+            )

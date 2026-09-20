@@ -76,6 +76,19 @@ def test_license_gated_permissions_still_work_without_feature_gate_attached() ->
     assert service.has_permission(_PERMISSION_CODE) is False  # pas d'utilisateur connecté
 
 
+def test_sale_payment_create_is_feature_gated_like_other_sale_permissions(login_as, license_envelope_factory) -> None:
+    """SALE_PAYMENT_CREATE (ventes à crédit/paiements partiels) doit être
+    soumise au même contrôle de licence FEATURE_SALES que le reste du
+    module Ventes — jamais un point d'accès non licencié échappant au
+    contrôle appliqué à SALE_VALIDATE/SALE_CANCEL."""
+    stack, _ = login_as("Administrateur")
+    _activate_demo_license(stack, license_envelope_factory)  # DEMO n'inclut pas FEATURE_SALES
+
+    assert stack.permissions.has_permission("SALE_PAYMENT_CREATE") is False
+    with pytest.raises(LicenseError):
+        stack.permissions.require_permission("SALE_PAYMENT_CREATE")
+
+
 def test_license_view_and_activate_are_never_feature_gated(login_as, license_envelope_factory) -> None:
     """LICENSE_VIEW/LICENSE_ACTIVATE doivent rester accessibles même sans
     fonctionnalité couverte par la licence active, sous peine de rendre
@@ -85,3 +98,52 @@ def test_license_view_and_activate_are_never_feature_gated(login_as, license_env
 
     assert stack.permissions.has_permission("LICENSE_VIEW") is True
     assert stack.permissions.has_permission("LICENSE_ACTIVATE") is True
+
+
+def test_system_reset_business_data_is_feature_gated_to_backups(login_as, license_envelope_factory) -> None:
+    """Audit final avant commit : SYSTEM_RESET_BUSINESS_DATA doit être
+    rattachée à FEATURE_BACKUPS (réutilise techniquement BackupService) —
+    jamais disponible sans aucune licence valide, même pour
+    l'Administrateur."""
+    stack, _ = login_as("Administrateur")
+    _activate_demo_license(stack, license_envelope_factory)  # DEMO n'inclut pas FEATURE_BACKUPS
+
+    assert stack.permissions.has_permission("SYSTEM_RESET_BUSINESS_DATA") is False
+    with pytest.raises(LicenseError):
+        stack.permissions.require_permission("SYSTEM_RESET_BUSINESS_DATA")
+
+
+# -- CAS 4/5 : licence expirée / corrompue bloque une fonctionnalité protégée ---------
+
+
+def test_expired_license_blocks_a_feature_gated_permission_end_to_end(login_as, license_envelope_factory) -> None:
+    """CAS 4 : une licence expirée doit refuser toute permission soumise au
+    contrôle de licence, de bout en bout via require_permission — pas
+    seulement au niveau de LicenseService.evaluate()."""
+    from datetime import date, timedelta
+
+    stack, _ = login_as("Administrateur")
+    past_date = (date.today() - timedelta(days=10)).isoformat()
+    envelope = license_envelope_factory(expires_at=past_date)
+    stack.licenses.activate_license(envelope)
+
+    assert stack.permissions.has_permission("SYSTEM_RESET_BUSINESS_DATA") is False
+    with pytest.raises(LicenseError):
+        stack.permissions.require_permission("SYSTEM_RESET_BUSINESS_DATA")
+
+
+def test_corrupted_license_blocks_a_feature_gated_permission_end_to_end(login_as) -> None:
+    """CAS 5 : une licence corrompue (payload illisible) doit refuser toute
+    permission soumise au contrôle de licence, de bout en bout via
+    require_permission."""
+    from app.db.session import session_scope
+    from app.repositories.licence_repository import LicenceRepository
+
+    stack, _ = login_as("Administrateur")
+    with session_scope(None) as session:
+        row = LicenceRepository(session).get_current()
+        row.payload_json = "{ceci n'est pas du JSON valide"
+
+    assert stack.permissions.has_permission("SYSTEM_RESET_BUSINESS_DATA") is False
+    with pytest.raises(LicenseError):
+        stack.permissions.require_permission("SYSTEM_RESET_BUSINESS_DATA")

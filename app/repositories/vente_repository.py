@@ -14,7 +14,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.models.documents import Vente, VenteLigne
-from app.models.enums import StatutOperation
+from app.models.enums import StatutOperation, StatutPaiement
 from app.repositories.base import SQLAlchemyRepository
 
 
@@ -32,6 +32,7 @@ class VenteRepository(SQLAlchemyRepository[Vente]):
         date_from: Optional[date] = None,
         date_to: Optional[date] = None,
         client_id: Optional[int] = None,
+        statut_paiement: Optional[StatutPaiement] = None,
     ) -> list[Vente]:
         # eager-load user/client/lignes(+article) : le rapport Ventes parcourt
         # potentiellement des centaines de documents, évite le N+1.
@@ -50,6 +51,8 @@ class VenteRepository(SQLAlchemyRepository[Vente]):
             query = query.filter(Vente.date <= date_to)
         if client_id is not None:
             query = query.filter(Vente.client_id == client_id)
+        if statut_paiement is not None:
+            query = query.filter(Vente.statut_paiement == statut_paiement)
         return query.order_by(Vente.date.desc(), Vente.id.desc()).all()
 
     def count_all(self) -> int:

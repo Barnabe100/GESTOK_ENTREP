@@ -213,11 +213,25 @@ class InventoriesPage(QWidget):
             ],
         }
 
+    def _lookup_article_by_barcode(self, code: str) -> Optional[tuple[int, str, str]]:
+        """Callback transmis à ``InventoryFormDialog`` pour le scan (§ code-barres) :
+        ne renvoie qu'un article actif, au même format que
+        ``_load_articles_for_form`` pour rester directement exploitable."""
+        try:
+            article = self._article_service.find_by_barcode(code)
+        except AppError:
+            return None
+        if article is None:
+            return None
+        return article.id, f"{article.reference} — {article.designation}", str(article.stock_actuel)
+
     def _open_form(self, inventory_id: Optional[int], articles: list[tuple[int, str, str]], initial: dict) -> None:
         state = {"values": initial}
 
         def factory() -> InventoryFormDialog:
-            return InventoryFormDialog(articles, state["values"], parent=self)
+            return InventoryFormDialog(
+                articles, state["values"], on_lookup_barcode=self._lookup_article_by_barcode, parent=self
+            )
 
         def submit(dialog: InventoryFormDialog) -> bool:
             state["values"] = dialog.values()

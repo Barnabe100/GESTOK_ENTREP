@@ -65,10 +65,13 @@ a = Analysis(
     # (aucun navigateur embarqué, aucune scène QML/3D, aucun média, aucune
     # base QtSql — l'application persiste exclusivement via SQLAlchemy) :
     # exclus pour ne pas embarquer inutilement des fichiers (§2/§23). Liste
-    # volontairement prudente (jamais QtSvg, requis par l'icône de
-    # l'application, ni QtNetwork/QtOpenGL, dont dépendent parfois
-    # QtWidgets/QtCharts selon la plateforme) — à revalider lors du premier
-    # build réel sur Windows (voir packaging/README.md, section limitations).
+    # volontairement prudente (jamais QtNetwork/QtOpenGL, dont dépendent
+    # parfois QtWidgets/QtCharts selon la plateforme). QtSvg n'est plus
+    # requis par l'icône de l'application depuis le lot Identité visuelle
+    # (symbole officiel intégré en PNG, voir app/resources/branding/) mais
+    # reste volontairement non exclu, par prudence — à revalider lors du
+    # premier build réel sur Windows (voir packaging/README.md, section
+    # limitations).
     excludes=[
         "PySide6.QtWebEngineWidgets", "PySide6.QtWebEngineCore", "PySide6.QtWebEngineQuick",
         "PySide6.QtQml", "PySide6.QtQuick", "PySide6.QtQuickWidgets", "PySide6.QtQuick3D",

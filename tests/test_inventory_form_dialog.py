@@ -135,6 +135,65 @@ def test_add_line_accepts_zero_stock_physique(qtbot, monkeypatch) -> None:
     assert dialog.values()["lignes"][0]["stock_physique"] == Decimal("0")
 
 
+# -- scan code-barres (lecteur USB « keyboard wedge ») -----------------------------
+#
+# Le matériel physique n'est jamais disponible en test : ces cas simulent
+# l'entrée clavier produite par un scanner (texte tapé puis Entrée), sans
+# jamais prétendre tester un vrai lecteur USB.
+
+
+def test_scan_disabled_without_lookup_callback(qtbot) -> None:
+    dialog = InventoryFormDialog(_ARTICLES)
+    qtbot.addWidget(dialog)
+
+    assert dialog.scan_edit.isEnabled() is False
+
+
+def test_scan_known_barcode_preselects_article_in_line_dialog(qtbot, monkeypatch) -> None:
+    captured_initial = {}
+
+    class _CapturingLineDialog(_FakeLineDialog):
+        def __init__(self, articles, initial=None, parent=None) -> None:
+            captured_initial.update(initial or {})
+            super().__init__(articles, initial, parent)
+
+    monkeypatch.setattr("app.views.inventory_form_dialog.InventoryLineFormDialog", _CapturingLineDialog)
+    dialog = InventoryFormDialog(_ARTICLES, on_lookup_barcode=lambda code: (10, "ART-1 — Eau", "100"))
+    qtbot.addWidget(dialog)
+
+    qtbot.keyClicks(dialog.scan_edit, "1234567890123")
+    qtbot.keyClick(dialog.scan_edit, Qt.Key.Key_Return)
+
+    assert captured_initial.get("article_id") == 10
+    assert dialog.lines_table.rowCount() == 1
+    assert dialog.scan_edit.text() == ""
+
+
+def test_scan_unknown_barcode_opens_no_line_dialog_and_warns(qtbot, monkeypatch) -> None:
+    warnings: list[tuple] = []
+    monkeypatch.setattr(
+        "app.views.inventory_form_dialog.QMessageBox.warning",
+        lambda *args, **kwargs: warnings.append(args),
+    )
+    line_dialog_calls = {"n": 0}
+
+    class _ShouldNotOpen(_FakeLineDialog):
+        def __init__(self, articles, initial=None, parent=None) -> None:
+            line_dialog_calls["n"] += 1
+            super().__init__(articles, initial, parent)
+
+    monkeypatch.setattr("app.views.inventory_form_dialog.InventoryLineFormDialog", _ShouldNotOpen)
+    dialog = InventoryFormDialog(_ARTICLES, on_lookup_barcode=lambda code: None)
+    qtbot.addWidget(dialog)
+
+    qtbot.keyClicks(dialog.scan_edit, "0000000000000")
+    qtbot.keyClick(dialog.scan_edit, Qt.Key.Key_Return)
+
+    assert line_dialog_calls["n"] == 0
+    assert dialog.lines_table.rowCount() == 0
+    assert len(warnings) == 1
+
+
 def test_remove_line_deletes_selected_row(qtbot) -> None:
     initial = {
         "lignes": [

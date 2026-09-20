@@ -448,3 +448,342 @@ def test_administrateur_has_full_access(login_as) -> None:
     stack.sales.validate_sale(sale.id)
     cancelled = stack.sales.cancel_sale(sale.id)
     assert cancelled.statut == StatutOperation.ANNULEE
+
+
+# -- ventes à crédit et paiements partiels (§5) ---------------------------------------
+
+
+from app.models.enums import StatutPaiement  # noqa: E402
+
+
+def _create_validated_sale(stack, article, quantite=Decimal("2"), prix=Decimal("150"), client_id=None, paiement_initial=Decimal("0")):
+    sale = stack.sales.create_sale(date(2026, 1, 1), [VenteLigneInput(article.id, quantite, prix)], client_id=client_id)
+    return stack.sales.validate_sale(sale.id, paiement_initial)
+
+
+def test_comptant_sale_is_paid_in_full_at_validation(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("50"))
+
+    validated = _create_validated_sale(stack, article, paiement_initial=Decimal("300"))
+
+    assert validated.total == Decimal("300")
+    assert validated.montant_paye == Decimal("300")
+    assert validated.reste_a_payer == Decimal("0")
+    assert validated.statut_paiement == StatutPaiement.PAYEE
+
+
+def test_sale_without_payment_is_non_payee(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("50"))
+
+    validated = _create_validated_sale(stack, article)
+
+    assert validated.montant_paye == Decimal("0")
+    assert validated.reste_a_payer == Decimal("300")
+    assert validated.statut_paiement == StatutPaiement.NON_PAYEE
+
+
+def test_credit_sale_with_partial_initial_payment(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("50"))
+
+    validated = _create_validated_sale(stack, article, paiement_initial=Decimal("100"))
+
+    assert validated.montant_paye == Decimal("100")
+    assert validated.reste_a_payer == Decimal("200")
+    assert validated.statut_paiement == StatutPaiement.PARTIELLEMENT_PAYEE
+
+
+def test_initial_payment_exceeding_total_is_rejected(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("50"))
+    sale = stack.sales.create_sale(date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("2"), Decimal("150"))])
+
+    with pytest.raises(ValidationError):
+        stack.sales.validate_sale(sale.id, Decimal("301"))
+
+
+def test_record_payment_after_validation(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("50"))
+    validated = _create_validated_sale(stack, article)
+
+    updated = stack.sales.record_payment(validated.id, Decimal("120"))
+
+    assert updated.montant_paye == Decimal("120")
+    assert updated.reste_a_payer == Decimal("180")
+    assert updated.statut_paiement == StatutPaiement.PARTIELLEMENT_PAYEE
+
+
+def test_multiple_successive_payments_accumulate(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("50"))
+    validated = _create_validated_sale(stack, article)  # total = 300
+
+    stack.sales.record_payment(validated.id, Decimal("40"))
+    stack.sales.record_payment(validated.id, Decimal("30"))
+    final = stack.sales.record_payment(validated.id, Decimal("30"))
+
+    assert final.montant_paye == Decimal("100")
+    assert final.reste_a_payer == Decimal("200")
+    assert final.statut_paiement == StatutPaiement.PARTIELLEMENT_PAYEE
+
+
+def test_final_payment_transitions_to_payee(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("50"))
+    validated = _create_validated_sale(stack, article, paiement_initial=Decimal("40"))  # total 300
+
+    stack.sales.record_payment(validated.id, Decimal("60"))
+    final = stack.sales.record_payment(validated.id, Decimal("200"))
+
+    assert final.montant_paye == Decimal("300")
+    assert final.reste_a_payer == Decimal("0")
+    assert final.statut_paiement == StatutPaiement.PAYEE
+
+
+def test_payment_exceeding_remaining_balance_is_rejected(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("50"))
+    validated = _create_validated_sale(stack, article, paiement_initial=Decimal("100"))  # reste 200
+
+    with pytest.raises(ValidationError):
+        stack.sales.record_payment(validated.id, Decimal("201"))
+
+    # Rien n'a été enregistré : aucune modification malgré le refus.
+    reloaded = stack.sales.get_sale(validated.id)
+    assert reloaded.montant_paye == Decimal("100")
+
+
+def test_remaining_balance_never_negative(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("50"))
+    validated = _create_validated_sale(stack, article, paiement_initial=Decimal("300"))
+
+    assert validated.reste_a_payer == Decimal("0")
+    assert validated.reste_a_payer >= Decimal("0")
+
+
+def test_payment_amounts_are_decimal(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("50"), prix_vente=Decimal("33.33"))
+    sale = stack.sales.create_sale(date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("3"), Decimal("33.33"))])
+    validated = stack.sales.validate_sale(sale.id)  # total = 99.99
+
+    updated = stack.sales.record_payment(validated.id, Decimal("33.33"))
+
+    assert isinstance(updated.montant_paye, Decimal)
+    assert isinstance(updated.reste_a_payer, Decimal)
+    assert updated.montant_paye == Decimal("33.33")
+    assert updated.reste_a_payer == Decimal("66.66")
+
+
+def test_client_receivable_summary_aggregates_validated_sales(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("50"))
+    client = stack.clients.create_client("Client Créance")
+
+    _create_validated_sale(stack, article, quantite=Decimal("2"), client_id=client.id, paiement_initial=Decimal("100"))
+    v2 = _create_validated_sale(stack, article, quantite=Decimal("1"), client_id=client.id)
+    stack.sales.record_payment(v2.id, Decimal("50"))
+
+    summary = stack.sales.get_client_receivable_summary(client.id)
+
+    assert summary.total_ventes == Decimal("450")  # 300 + 150
+    assert summary.total_paye == Decimal("150")  # 100 + 50
+    assert summary.total_reste_a_payer == Decimal("300")
+
+
+def test_client_receivable_summary_excludes_cancelled_sales(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("50"))
+    client = stack.clients.create_client("Client Créance 2")
+
+    validated = _create_validated_sale(stack, article, client_id=client.id)
+    stack.sales.cancel_sale(validated.id)
+
+    summary = stack.sales.get_client_receivable_summary(client.id)
+
+    assert summary.total_ventes == Decimal("0")
+    assert summary.total_paye == Decimal("0")
+
+
+def test_payment_history_preserves_each_payment_separately(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("50"))
+    validated = _create_validated_sale(stack, article)
+
+    stack.sales.record_payment(validated.id, Decimal("40"), mode_paiement="Espèces")
+    stack.sales.record_payment(validated.id, Decimal("30"), mode_paiement="Mobile Money", reference="MM-123")
+
+    history = stack.sales.list_payments(validated.id)
+
+    assert len(history) == 2
+    assert history[0].montant == Decimal("40")
+    assert history[0].mode_paiement == "Espèces"
+    assert history[1].montant == Decimal("30")
+    assert history[1].reference == "MM-123"
+
+
+def test_payment_creates_audit_entry(login_as) -> None:
+    from app.config.settings import get_settings
+    from app.db.session import session_scope
+    from app.models.audit import AuditLog
+
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("50"))
+    validated = _create_validated_sale(stack, article)
+
+    stack.sales.record_payment(validated.id, Decimal("50"))
+
+    with session_scope(get_settings()) as session:
+        entries = session.query(AuditLog).filter_by(action="SALE_PAYMENT_CREATE", entite_id=validated.id).all()
+    assert len(entries) == 1
+    assert entries[0].resultat.value == "SUCCES"
+
+
+def test_receipt_of_partially_paid_sale_still_available(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("50"))
+    validated = _create_validated_sale(stack, article, paiement_initial=Decimal("100"))
+
+    receipt = stack.documents.build_sale_receipt(validated.id)
+
+    assert receipt.montant_paye == Decimal("100")
+    assert receipt.reste_a_payer == Decimal("200")
+
+
+def test_payment_on_fully_paid_sale_is_rejected(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("50"))
+    validated = _create_validated_sale(stack, article, paiement_initial=Decimal("300"))
+
+    with pytest.raises(ConflictError):
+        stack.sales.record_payment(validated.id, Decimal("1"))
+
+
+def test_recording_payment_does_not_change_stock(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("50"))
+    validated = _create_validated_sale(stack, article, quantite=Decimal("2"))  # stock -> 48 à la validation
+    stock_after_validation = stack.articles.get_article(article.id).stock_actuel
+
+    stack.sales.record_payment(validated.id, Decimal("100"))
+
+    assert stack.articles.get_article(article.id).stock_actuel == stock_after_validation
+
+
+def test_vendeur_can_record_payment(login_as) -> None:
+    admin_stack, _ = login_as("Administrateur")
+    article = _make_article(admin_stack, stock_initial=Decimal("50"))
+
+    stack, _ = login_as("Vendeur")
+    validated = _create_validated_sale(stack, article)
+
+    updated = stack.sales.record_payment(validated.id, Decimal("50"))
+    assert updated.montant_paye == Decimal("50")
+
+
+def test_gestionnaire_stock_cannot_record_payment(login_as) -> None:
+    admin_stack, _ = login_as("Administrateur")
+    article = _make_article(admin_stack, stock_initial=Decimal("50"))
+    validated = _create_validated_sale(admin_stack, article)
+
+    stack, _ = login_as("Gestionnaire de stock")
+    with pytest.raises(PermissionDeniedError):
+        stack.sales.record_payment(validated.id, Decimal("50"))
+
+
+def test_consultation_cannot_record_payment(login_as) -> None:
+    admin_stack, _ = login_as("Administrateur")
+    article = _make_article(admin_stack, stock_initial=Decimal("50"))
+    validated = _create_validated_sale(admin_stack, article)
+
+    stack, _ = login_as("Consultation")
+    with pytest.raises(PermissionDeniedError):
+        stack.sales.record_payment(validated.id, Decimal("50"))
+
+
+def test_payment_history_survives_cancellation(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("50"))
+    validated = _create_validated_sale(stack, article, paiement_initial=Decimal("100"))
+
+    stack.sales.cancel_sale(validated.id)
+
+    history = stack.sales.list_payments(validated.id)
+    assert len(history) == 1
+    assert history[0].montant == Decimal("100")
+    reloaded = stack.sales.get_sale(validated.id)
+    assert reloaded.montant_paye == Decimal("100")  # figé, jamais effacé par l'annulation
+    assert reloaded.statut == StatutOperation.ANNULEE
+
+
+# -- cas limites -----------------------------------------------------------------------
+
+
+def test_zero_total_sale_is_payee_by_construction(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("50"))
+    sale = stack.sales.create_sale(date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("1"), Decimal("0"))])
+
+    validated = stack.sales.validate_sale(sale.id)
+
+    assert validated.total == Decimal("0")
+    assert validated.montant_paye == Decimal("0")
+    assert validated.reste_a_payer == Decimal("0")
+    assert validated.statut_paiement == StatutPaiement.PAYEE
+
+
+def test_minimal_payment_amount_accepted(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("50"))
+    validated = _create_validated_sale(stack, article)
+
+    updated = stack.sales.record_payment(validated.id, Decimal("0.01"))
+
+    assert updated.montant_paye == Decimal("0.01")
+    assert updated.statut_paiement == StatutPaiement.PARTIELLEMENT_PAYEE
+
+
+def test_payment_exactly_matching_remaining_balance(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("50"))
+    validated = _create_validated_sale(stack, article, paiement_initial=Decimal("100"))  # reste 200
+
+    final = stack.sales.record_payment(validated.id, Decimal("200"))
+
+    assert final.montant_paye == Decimal("300")
+    assert final.reste_a_payer == Decimal("0")
+    assert final.statut_paiement == StatutPaiement.PAYEE
+
+
+def test_zero_or_negative_payment_amount_is_rejected(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("50"))
+    validated = _create_validated_sale(stack, article)
+
+    with pytest.raises(ValidationError):
+        stack.sales.record_payment(validated.id, Decimal("0"))
+    with pytest.raises(ValidationError):
+        stack.sales.record_payment(validated.id, Decimal("-10"))
+
+
+def test_payment_on_draft_sale_is_rejected(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("50"))
+    sale = stack.sales.create_sale(date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("2"), Decimal("150"))])
+
+    with pytest.raises(ConflictError):
+        stack.sales.record_payment(sale.id, Decimal("10"))
+
+
+def test_payment_on_cancelled_sale_is_rejected(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("50"))
+    validated = _create_validated_sale(stack, article)
+    stack.sales.cancel_sale(validated.id)
+
+    with pytest.raises(ConflictError):
+        stack.sales.record_payment(validated.id, Decimal("10"))

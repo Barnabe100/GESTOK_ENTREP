@@ -1,12 +1,17 @@
-from datetime import date, time
+from datetime import date, datetime, time
 from decimal import Decimal
 from pathlib import Path
 
 from PySide6.QtGui import QImage
 from PySide6.QtGui import QPageSize
 
-from app.services.documents.receipt_document import ReceiptFormat, build_receipt_document
-from app.services.documents.receipt_service import SaleReceiptData, SaleReceiptLine
+from app.models.enums import StatutPaiement
+from app.services.documents.receipt_document import (
+    ReceiptFormat,
+    build_payment_receipt_document,
+    build_receipt_document,
+)
+from app.services.documents.receipt_service import PaymentReceiptData, SaleReceiptData, SaleReceiptLine
 
 
 def _make_line(reference="ART-1", designation="Article", qty="1", prix="100", sous_total="100") -> SaleReceiptLine:
@@ -323,3 +328,73 @@ def test_a4_page_size_unaffected_by_client_presence(qapp) -> None:
     assert without_client.page_size.size(QPageSize.Unit.Millimeter) == with_client.page_size.size(
         QPageSize.Unit.Millimeter
     )
+
+
+# -- ventes à crédit / paiements partiels (§5.8) --------------------------------------
+
+
+def test_a4_shows_paid_and_remaining_for_partial_payment(qapp) -> None:
+    data = _make_data(
+        total=Decimal("300"), montant_paye=Decimal("100"), statut_paiement=StatutPaiement.PARTIELLEMENT_PAYEE
+    )
+    rendered = build_receipt_document(data, ReceiptFormat.A4)
+
+    text = rendered.document.toPlainText()
+    assert "200" in text  # reste à payer
+    assert "Partiellement payée" in text
+
+
+def test_ticket_shows_paid_and_remaining_for_partial_payment(qapp) -> None:
+    data = _make_data(
+        total=Decimal("300"), montant_paye=Decimal("100"), statut_paiement=StatutPaiement.PARTIELLEMENT_PAYEE
+    )
+    rendered = build_receipt_document(data, ReceiptFormat.TICKET_80MM)
+
+    text = rendered.document.toPlainText()
+    assert "200" in text
+    assert "Partiellement payée" in text
+
+
+def test_a4_shows_zero_remaining_for_fully_paid_sale(qapp) -> None:
+    data = _make_data(total=Decimal("100"), montant_paye=Decimal("100"), statut_paiement=StatutPaiement.PAYEE)
+    rendered = build_receipt_document(data, ReceiptFormat.A4)
+
+    text = rendered.document.toPlainText()
+    assert "Payée" in text
+
+
+def _make_payment_receipt_data(**overrides) -> PaymentReceiptData:
+    defaults = dict(
+        vente_numero="VNT-000042", client_nom="Client Crédit", montant=Decimal("100"),
+        total_vente=Decimal("300"), total_paye_apres=Decimal("100"),
+        date_heure=datetime(2026, 1, 20, 10, 30), username="vendeur1", devise="XOF",
+        entreprise_nom="Boutique Étoile SARL", entreprise_adresse="12 rue du Commerce, Abidjan",
+        entreprise_telephone="+225 01 02 03 04", entreprise_email="contact@etoile.ci",
+    )
+    defaults.update(overrides)
+    return PaymentReceiptData(**defaults)
+
+
+def test_payment_receipt_shows_amount_and_remaining(qapp) -> None:
+    rendered = build_payment_receipt_document(_make_payment_receipt_data())
+
+    text = rendered.document.toPlainText()
+    assert "VNT-000042" in text
+    assert "Client Crédit" in text
+    assert "vendeur1" in text
+    assert "200" in text  # reste à payer (300 - 100)
+
+
+def test_payment_receipt_page_size_is_a4(qapp) -> None:
+    rendered = build_payment_receipt_document(_make_payment_receipt_data())
+
+    size_mm = rendered.page_size.size(QPageSize.Unit.Millimeter)
+    assert round(size_mm.width()) == 210
+    assert round(size_mm.height()) == 297
+
+
+def test_payment_receipt_without_client_has_no_client_line(qapp) -> None:
+    rendered = build_payment_receipt_document(_make_payment_receipt_data(client_nom=None))
+
+    text = rendered.document.toPlainText()
+    assert "Client Crédit" not in text

@@ -325,6 +325,105 @@ def test_two_articles_without_barcode_do_not_conflict(login_as) -> None:
     assert a2.code_barres is None
 
 
+def test_find_by_barcode_returns_matching_active_article(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    category = _make_category(stack)
+    created = stack.articles.create_article(
+        "ART-BC5", "Article scanné", category.id, "unité", Decimal("1"), Decimal("2"), Decimal("0"),
+        code_barres="1112223330000",
+    )
+
+    found = stack.articles.find_by_barcode("1112223330000")
+
+    assert found is not None
+    assert found.id == created.id
+
+
+def test_find_by_barcode_unknown_returns_none(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+
+    assert stack.articles.find_by_barcode("0000000000001") is None
+
+
+def test_find_by_barcode_ignores_deactivated_article(login_as) -> None:
+    """Un scan doit toujours retomber sur l'article vendable actuel, jamais
+    sur un article désactivé conservé pour son historique."""
+    stack, _ = login_as("Administrateur")
+    category = _make_category(stack)
+    created = stack.articles.create_article(
+        "ART-BC6", "Article désactivé", category.id, "unité", Decimal("1"), Decimal("2"), Decimal("0"),
+        code_barres="2223334440000",
+    )
+    stack.articles.deactivate_article(created.id)
+
+    assert stack.articles.find_by_barcode("2223334440000") is None
+
+
+def test_deactivated_article_barcode_can_be_reused_by_new_active_article(login_as) -> None:
+    """La contrainte d'unicité (migration 0008) ne porte que sur les
+    articles actifs : un code-barres libéré par désactivation doit pouvoir
+    être repris par un nouvel article actif, sans jamais effacer
+    l'historique de l'article désactivé."""
+    stack, _ = login_as("Administrateur")
+    category = _make_category(stack)
+    old_article = stack.articles.create_article(
+        "ART-BC7", "Ancien article", category.id, "unité", Decimal("1"), Decimal("2"), Decimal("0"),
+        code_barres="3334445550000",
+    )
+    stack.articles.deactivate_article(old_article.id)
+
+    new_article = stack.articles.create_article(
+        "ART-BC8", "Nouvel article", category.id, "unité", Decimal("1"), Decimal("2"), Decimal("0"),
+        code_barres="3334445550000",
+    )
+
+    assert new_article.code_barres == "3334445550000"
+    # L'historique de l'article désactivé reste intact (code-barres conservé).
+    old_reloaded = stack.articles.get_article(old_article.id)
+    assert old_reloaded.code_barres == "3334445550000"
+    assert old_reloaded.actif is False
+    # Le scan retrouve désormais le nouvel article actif, jamais l'ancien.
+    found = stack.articles.find_by_barcode("3334445550000")
+    assert found is not None
+    assert found.id == new_article.id
+
+
+def test_two_active_articles_cannot_share_barcode_on_update(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    category = _make_category(stack)
+    stack.articles.create_article(
+        "ART-BC9", "Article 1", category.id, "unité", Decimal("1"), Decimal("2"), Decimal("0"),
+        code_barres="4445556660000",
+    )
+    other = stack.articles.create_article(
+        "ART-BC10", "Article 2", category.id, "unité", Decimal("1"), Decimal("2"), Decimal("0"),
+    )
+
+    try:
+        stack.articles.update_article(
+            other.id, other.reference, other.designation, category.id, other.unite,
+            other.prix_achat, other.prix_vente, other.stock_min, code_barres="4445556660000",
+        )
+        assert False, "devait lever ConflictError"
+    except ConflictError:
+        pass
+
+
+def test_search_by_barcode_finds_article(login_as) -> None:
+    """Le champ de recherche libre du catalogue doit aussi matcher sur le
+    code-barres, pas seulement référence/désignation/catégorie."""
+    stack, _ = login_as("Administrateur")
+    category = _make_category(stack)
+    created = stack.articles.create_article(
+        "ART-BC11", "Article recherché", category.id, "unité", Decimal("1"), Decimal("2"), Decimal("0"),
+        code_barres="5556667770000",
+    )
+
+    results = stack.articles.list_articles(search="5556667770000")
+
+    assert [a.id for a in results] == [created.id]
+
+
 # -- stock initial et traçabilité ------------------------------------------------
 
 

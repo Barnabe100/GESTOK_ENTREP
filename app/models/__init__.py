@@ -18,6 +18,7 @@ from app.models.documents import (
     VenteLigne,
 )
 from app.models.movement import MouvementStock
+from app.models.payment import Paiement
 from app.models.inventory import Inventaire, InventaireLigne
 from app.models.audit import AuditLog
 from app.models.parameter import Parametre
@@ -40,6 +41,7 @@ __all__ = [
     "SortieLigne",
     "Vente",
     "VenteLigne",
+    "Paiement",
     "MouvementStock",
     "Inventaire",
     "InventaireLigne",

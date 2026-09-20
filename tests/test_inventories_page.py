@@ -288,3 +288,34 @@ def test_confirmation_dialog_no_cancels_validate(qtbot, login_as, monkeypatch) -
     page._on_validate_clicked()
 
     assert stack.inventory.get_inventory(inv.id).statut == StatutInventaire.BROUILLON
+
+
+# -- scan code-barres : callback de recherche transmis au formulaire ---------------
+
+
+def test_lookup_article_by_barcode_finds_active_article(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    category = stack.categories.create_category("Cat-scan")
+    article = stack.articles.create_article(
+        "ART-SCAN", "Article scanné", category.id, "unité",
+        Decimal("100"), Decimal("150"), Decimal("0"),
+        code_barres="1234567890000", stock_initial=Decimal("42"),
+    )
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    result = page._lookup_article_by_barcode("1234567890000")
+
+    assert result is not None
+    assert result[0] == article.id
+    assert result[1] == "ART-SCAN — Article scanné"
+    assert Decimal(result[2]) == Decimal("42")
+
+
+def test_lookup_article_by_barcode_unknown_returns_none(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page._lookup_article_by_barcode("0000000000000") is None

@@ -65,6 +65,24 @@ def test_find_by_barcode(initialized_db: Settings) -> None:
         assert repo.find_by_barcode("0000000000000") is None
 
 
+def test_find_by_barcode_active_only_ignores_inactive_article(initialized_db: Settings) -> None:
+    with session_scope(initialized_db) as session:
+        category = Category(nom="Boissons")
+        session.add(category)
+        session.flush()
+        _make_article(
+            session, category, "ART-003B", code_barres="9990001112223",
+            statut=StatutActifInactif.INACTIF,
+        )
+        session.flush()
+
+        repo = ArticleRepository(session)
+        # Sans filtre : trouvé (utilisé par les vérifications d'historique).
+        assert repo.find_by_barcode("9990001112223") is not None
+        # Avec active_only=True (scan/recherche opérationnelle) : ignoré.
+        assert repo.find_by_barcode("9990001112223", active_only=True) is None
+
+
 def test_search_matches_reference_designation_or_category(initialized_db: Settings) -> None:
     with session_scope(initialized_db) as session:
         boissons = Category(nom="Boissons")
@@ -81,6 +99,19 @@ def test_search_matches_reference_designation_or_category(initialized_db: Settin
         # NB : SQLite ne replie que les caractères ASCII pour LIKE/ILIKE (pas
         # d'extension ICU) ; on garde donc la casse du caractère accentué.
         assert {a.reference for a in repo.search("Épic")} == {"ART-RIZ"}
+
+
+def test_search_matches_barcode(initialized_db: Settings) -> None:
+    with session_scope(initialized_db) as session:
+        category = Category(nom="Boissons")
+        session.add(category)
+        session.flush()
+        _make_article(session, category, "ART-BAR", code_barres="7778889990001")
+        _make_article(session, category, "ART-AUTRE", code_barres="1112223330009")
+        session.flush()
+
+        repo = ArticleRepository(session)
+        assert {a.reference for a in repo.search("7778889990001")} == {"ART-BAR"}
 
 
 def test_search_filters_by_category_id(initialized_db: Settings) -> None:

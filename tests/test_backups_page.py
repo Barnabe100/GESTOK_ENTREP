@@ -188,3 +188,59 @@ def test_confirmation_dialog_no_cancels_restore(qtbot, login_as, tmp_path, monke
     # L'article créé après la sauvegarde initiale doit toujours exister
     # (aucune restauration n'a eu lieu, l'utilisateur a annulé).
     assert stack.articles.get_article(article.id).stock_actuel == Decimal("10")
+
+
+# -- réinitialisation des données métier (§3 du lot) ----------------------------------
+
+
+def _build_page_with_reset(stack) -> BackupsPage:
+    return BackupsPage(stack.backups, stack.permissions, stack.data_reset)
+
+
+def test_reset_button_disabled_without_data_reset_service(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)  # sans data_reset_service (signature historique)
+    qtbot.addWidget(page)
+
+    assert page.reset_business_data_button.isEnabled() is False
+
+
+def test_reset_button_enabled_for_administrateur(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page_with_reset(stack)
+    qtbot.addWidget(page)
+
+    assert page.reset_business_data_button.isEnabled() is True
+
+
+def test_reset_button_disabled_for_non_administrateur_roles(qtbot, login_as) -> None:
+    for role_name in ("Gestionnaire de stock", "Vendeur", "Consultation"):
+        stack, _ = login_as(role_name)
+        page = _build_page_with_reset(stack)
+        qtbot.addWidget(page)
+        assert page.reset_business_data_button.isEnabled() is False
+
+
+def test_run_reset_business_data_succeeds_and_refreshes_history(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page_with_reset(stack)
+    qtbot.addWidget(page)
+
+    result = page._run_reset_business_data()
+
+    assert result is True
+
+
+def test_run_reset_business_data_shows_error_on_backup_failure(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page_with_reset(stack)
+    qtbot.addWidget(page)
+
+    monkeypatch.setattr(
+        "app.services.backups.backup_engine.create_backup_file",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("disque plein (simulé)")),
+    )
+
+    result = page._run_reset_business_data()
+
+    assert result is False

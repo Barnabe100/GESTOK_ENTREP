@@ -13,7 +13,7 @@
 ; les métadonnées de l'exécutable.
 #define MyAppName "StockManager Desktop"
 #define MyAppVersion "1.0.0"
-#define MyAppPublisher "StockManager"
+#define MyAppPublisher "TechNova"
 #define MyAppExeName "StockManager.exe"
 
 [Setup]

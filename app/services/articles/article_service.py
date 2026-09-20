@@ -202,6 +202,21 @@ class ArticleService:
                 raise NotFoundError(f"Article {article_id} introuvable.")
             return ArticleSummary.from_model(article)
 
+    def find_by_barcode(self, code_barres: str) -> Optional[ArticleSummary]:
+        """Identifie un article actif à partir d'un code-barres scanné
+        (lecteur USB en mode « keyboard wedge ») — utilisé par les écrans
+        Ventes/Inventaires pour l'ajout rapide. Ne renvoie jamais un article
+        désactivé : un scan doit toujours retomber sur l'article
+        actuellement vendable/comptable, jamais sur un historique."""
+        self._permissions.require_permission("ARTICLE_VIEW")
+        code_barres = (code_barres or "").strip()
+        if not code_barres:
+            return None
+        with session_scope(self._settings) as session:
+            repo = ArticleRepository(session)
+            article = repo.find_by_barcode(code_barres, active_only=True)
+            return ArticleSummary.from_model(article) if article is not None else None
+
     def create_article(
         self,
         reference: str,
@@ -249,8 +264,13 @@ class ArticleService:
 
             if article_repo.find_by_reference(reference) is not None:
                 raise ConflictError(f"La référence « {reference} » est déjà utilisée.")
-            if code_barres is not None and article_repo.find_by_barcode(code_barres) is not None:
-                raise ConflictError(f"Le code-barres « {code_barres} » est déjà utilisé.")
+            if (
+                code_barres is not None
+                and article_repo.find_by_barcode(code_barres, active_only=True) is not None
+            ):
+                raise ConflictError(
+                    f"Le code-barres « {code_barres} » est déjà utilisé par un article actif."
+                )
 
             category = category_repo.get_by_id(category_id)
             if category is None:
@@ -358,12 +378,20 @@ class ArticleService:
 
             if article_repo.find_by_reference(reference, exclude_id=article_id) is not None:
                 raise ConflictError(f"La référence « {reference} » est déjà utilisée.")
+            # La contrainte d'unicité (migration 0008) ne porte que sur les
+            # articles ACTIFS : un article désactivé peut librement conserver
+            # ou modifier son code-barres même s'il coïncide avec celui d'un
+            # article actif — seul un conflit ACTIF <-> ACTIF est refusé.
             if (
                 code_barres is not _UNSET
                 and code_barres is not None
-                and article_repo.find_by_barcode(code_barres, exclude_id=article_id) is not None
+                and article.statut == StatutActifInactif.ACTIF
+                and article_repo.find_by_barcode(code_barres, exclude_id=article_id, active_only=True)
+                is not None
             ):
-                raise ConflictError(f"Le code-barres « {code_barres} » est déjà utilisé.")
+                raise ConflictError(
+                    f"Le code-barres « {code_barres} » est déjà utilisé par un article actif."
+                )
 
             # Une catégorie/un fournisseur inactif reste autorisé s'il s'agit de
             # l'association déjà en place (préserve l'historique) ; toute

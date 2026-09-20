@@ -23,7 +23,7 @@ Toutes les informations de ce document ont été vérifiées dans le code actuel
 12. Ventes et clients
 13. Inventaires
 14. Rapports
-15. Sauvegardes et restauration
+15. Sauvegardes, restauration et réinitialisation des données métier
 16. Journal d'audit
 17. Licence
 18. À propos et support
@@ -40,6 +40,7 @@ Toutes les informations de ce document ont été vérifiées dans le code actuel
 **StockManager Desktop**
 Manuel utilisateur
 
+Éditeur : TechNova
 Client : [NOM DE L'ENTREPRISE]
 Version du document : 1.0 — brouillon de travail
 Version de l'application couverte : voir écran « À propos » (`app/version.py`)
@@ -357,6 +358,8 @@ StockManager propose quatre rôles fixes. Il n'est pas possible d'en créer de n
 | Inventaires | ✓ | ✓ | — | — |
 | Ventes | ✓ | — | ✓ | — |
 | Annulation d'une vente validée | ✓ | — | — | — |
+| Ventes — Enregistrer un paiement (crédit/paiement partiel) | ✓ | — | ✓ | — |
+| Créances clients (consultation) | ✓ | — | ✓ | — |
 | Clients | ✓ | ✓ | Création/modification (pas activer/désactiver) | — |
 | Mouvements (consultation) | ✓ | ✓ | — | ✓ |
 | Rapports (consulter) | ✓ | ✓ | — | ✓ |
@@ -364,10 +367,11 @@ StockManager propose quatre rôles fixes. Il n'est pas possible d'en créer de n
 | Utilisateurs / Rôles | ✓ | — | — | — |
 | Paramètres | ✓ | — | — | — |
 | Sauvegardes | ✓ | — | — | — |
+| Réinitialiser les données métier | ✓ | — | — | — |
 | Journal d'audit | ✓ | — | — | — |
 | Licence | ✓ | — | — | — |
 
-> Cette matrice est une **présentation simplifiée**. Le détail complet des permissions (63 permissions réelles) figure en annexe (chapitre 22) — c'est ce détail qui fait foi en cas de doute.
+> Cette matrice est une **présentation simplifiée**. Le détail complet des permissions (65 permissions réelles) figure en annexe (chapitre 22) — c'est ce détail qui fait foi en cas de doute.
 
 > **Important** — Les droits d'accès sont vérifiés à deux niveaux : au niveau de l'écran (un bouton non autorisé n'est pas affiché ou est désactivé) **et** au niveau du programme lui-même. Un utilisateur ne peut donc jamais contourner ses droits, même en essayant d'accéder à une fonctionnalité par un autre moyen.
 
@@ -492,7 +496,7 @@ Consultation : tous les rôles. Création/modification : Administrateur et Gesti
 | Stock maximum | Non | |
 | Stock initial | Uniquement à la création | Quantité de départ |
 | Emplacement | Non | |
-| Code-barres | Non | Doit être unique s'il est renseigné |
+| Code-barres | Non | Doit être unique parmi les articles **actifs** (un article désactivé peut conserver son code sans bloquer un nouvel article actif qui le reprendrait) |
 | Description | Non | |
 
 ### Le CMUP (Coût Moyen Unitaire Pondéré)
@@ -517,6 +521,20 @@ Aucun article n'est jamais supprimé physiquement.
 2. Renseigner référence, désignation, catégorie, unité, prix d'achat, prix de vente, stock minimum.
 3. Renseigner éventuellement le stock initial, le fournisseur, le code-barres, l'emplacement, la description.
 4. Enregistrer.
+
+### Recherche et scan par code-barres
+
+Le champ de recherche libre du catalogue (menu Articles) trouve également un article par son code-barres, en plus de la référence, de la désignation et du nom de catégorie.
+
+Dans les écrans **Ventes** (chapitre 12) et **Inventaires** (chapitre 13), un champ dédié « Scanner / code-barres » permet d'identifier rapidement un article :
+
+- placez le curseur dans ce champ ;
+- scannez le code-barres avec un lecteur USB, ou saisissez-le au clavier ;
+- le lecteur de code-barres se comporte comme un clavier (« keyboard wedge ») : il tape le code puis envoie automatiquement la touche **Entrée** — aucun pilote ni logiciel supplémentaire n'est nécessaire ;
+- si un article actif correspond, il est ajouté directement à la vente (quantité 1, prix de vente actuel) ou pré-sélectionné dans le formulaire de ligne d'inventaire ;
+- si aucun article actif ne correspond, un message clair l'indique et **rien n'est ajouté** — ni ligne invalide, ni impact sur le stock.
+
+> Un article désactivé n'est jamais retrouvé par le scan, même si son code-barres reste affiché dans son historique.
 
 **Capture à insérer** : `[CAPTURE 08 — CATÉGORIES]`, `[CAPTURE 09 — ARTICLES]`, `[CAPTURE 10 — FOURNISSEURS]`
 
@@ -626,7 +644,7 @@ Un client désactivé :
 1. Menu Ventes → nouvelle vente.
 2. Choisir la date.
 3. Choisir un client existant, laisser vide (vente comptant), ou créer un nouveau client via « Nouveau client… ».
-4. Ajouter les lignes de vente (article, quantité, prix unitaire — pré-rempli avec le prix catalogue, modifiable).
+4. Ajouter les lignes de vente : soit manuellement (article, quantité, prix unitaire — pré-rempli avec le prix catalogue, modifiable), soit par **scan d'un code-barres** (voir chapitre 10.4) — moyen rapide et complémentaire à la sélection manuelle, jamais un remplacement obligatoire.
 5. Enregistrer en brouillon.
 
 ### Calcul du total
@@ -637,7 +655,10 @@ Le total de la vente est la somme des lignes (quantité × prix unitaire saisi).
 Bouton « Valider » (visible uniquement pour une vente en brouillon). La validation :
 - diminue le stock des articles vendus ;
 - génère un mouvement de type VENTE (dont le coût de valorisation interne est le CMUP courant — distinct du prix facturé au client) ;
-- rend la vente définitive (elle ne peut plus être modifiée, seulement annulée).
+- rend la vente définitive (elle ne peut plus être modifiée, seulement annulée) ;
+- fixe le **mode de règlement** initial : comptant (paiement du montant total au moment même de la validation) ou à crédit (aucun paiement, ou un acompte partiel) — voir 12.6 pour le détail du suivi des paiements.
+
+> Un paiement ne peut jamais être enregistré sur une vente en brouillon (dont le total peut encore changer) : c'est pourquoi le mode de règlement se décide au moment de la validation, jamais avant.
 
 ## 12.4 Annulation
 
@@ -663,11 +684,61 @@ Trois actions possibles depuis le détail d'une vente validée :
 - **Exporter en PDF (Ticket 80 mm)**.
 
 ### Contenu du reçu
-Informations de l'entreprise (nom, coordonnées, logo — tels que renseignés dans les Paramètres), informations du client si renseignées, lignes de la vente, total, date/heure.
+Informations de l'entreprise (nom, coordonnées, logo — tels que renseignés dans les Paramètres), informations du client si renseignées, lignes de la vente, total, date/heure, et — depuis la prise en charge des ventes à crédit — le **montant payé**, le **reste à payer** et le **statut de paiement**, affichés systématiquement (y compris pour une vente comptant, où le reste à payer affiché est alors 0).
 
 > Il n'existe pas, dans la version actuelle, d'archivage automatique des reçus PDF générés : chaque export doit être enregistré manuellement à l'endroit choisi par l'utilisateur.
 
 **Capture à insérer** : `[CAPTURE 13 — VENTE]`, `[CAPTURE 14 — CLIENT]`
+
+## 12.6 Ventes à crédit, paiements partiels et créances
+
+### Objectif
+Permettre une vente sans exiger le paiement intégral immédiat, suivre les paiements reçus au fil du temps, et consulter les sommes restant dues par client.
+
+### Qui peut l'utiliser
+Enregistrer un paiement : Administrateur, Vendeur. Consulter (historique des paiements, créances) : Administrateur, Vendeur (mêmes droits que la consultation des ventes).
+
+### Statut de paiement d'une vente
+
+Chaque vente validée porte un statut de paiement, recalculé automatiquement à chaque paiement enregistré :
+
+| Statut | Condition |
+|---|---|
+| **Non payée** | Aucun paiement enregistré |
+| **Partiellement payée** | Au moins un paiement enregistré, reste à payer strictement positif |
+| **Payée** | Reste à payer = 0 (y compris une vente comptant, payée intégralement dès la validation) |
+
+Le **reste à payer** (total de la vente moins la somme des paiements) n'est jamais négatif.
+
+### Procédure — Enregistrer un paiement ultérieur
+
+1. Ouvrir le détail d'une vente validée dont le reste à payer est supérieur à 0.
+2. Cliquer sur « Enregistrer un paiement ».
+3. Le total de la vente, le montant déjà payé et le reste à payer sont rappelés avant la saisie.
+4. Saisir le montant du paiement (et, en option, le mode de paiement, une référence, un commentaire).
+5. Valider.
+
+**Règles** :
+- Un paiement dont le montant dépasse le reste à payer est **refusé**, rien n'est enregistré.
+- Une vente déjà intégralement payée refuse tout nouveau paiement.
+- Un paiement ne modifie **jamais** le stock : c'est une opération strictement financière, distincte de la validation de la vente (qui a déjà diminué le stock).
+- Chaque paiement est conservé individuellement dans un historique — jamais fusionné dans un simple total : l'historique complet d'une vente (« Paiement 1 — 20/09, Paiement 2 — 25/09... ») reste toujours consultable, y compris après une éventuelle annulation de la vente.
+
+### Reçu de paiement
+
+Depuis l'historique des paiements d'une vente, chaque paiement peut faire l'objet d'un export PDF dédié (« Reçu du paiement sélectionné ») indiquant : référence de la vente, client, montant du paiement, total payé après ce paiement, reste à payer, date, utilisateur ayant enregistré le paiement. Ce document est distinct du reçu de vente (12.5).
+
+### Annulation d'une vente déjà payée
+
+> **Point important** — L'annulation d'une vente (12.4) reste possible même si des paiements ont déjà été enregistrés. Les paiements déjà enregistrés ne sont **jamais** modifiés, supprimés, ni automatiquement remboursés : ils restent visibles comme trace historique de ce qui a réellement été perçu. **Aucun remboursement n'est généré automatiquement** — un remboursement éventuel reste un processus à gérer manuellement en dehors de l'application.
+
+### Écran Créances clients
+
+Menu **Créances** : liste des ventes validées avec leur montant total, montant payé, reste à payer et statut de paiement. Filtres disponibles : recherche par numéro de vente, client, statut de paiement, période. En sélectionnant un client dans le filtre, un résumé s'affiche : total facturé, total payé et reste à payer pour ce client (sur ses ventes validées — une vente annulée ne compte plus comme une créance active).
+
+> Cet écran n'est pas un tableau de bord financier complet : il présente uniquement les ventes et leur état de paiement.
+
+**Capture à insérer** : `[CAPTURE 22 — CRÉANCES]`
 
 ---
 
@@ -683,7 +754,7 @@ Administrateur, Gestionnaire de stock.
 
 1. Menu Inventaires → nouvel inventaire.
 2. Choisir la date.
-3. Ajouter une ligne par article à compter : sélectionner l'article (parmi les articles actifs), saisir le **stock compté**.
+3. Ajouter une ligne par article à compter : sélectionner l'article (parmi les articles actifs) — manuellement, ou en le retrouvant par **scan de son code-barres** (voir chapitre 10.4), qui pré-sélectionne directement l'article dans le formulaire de ligne —, puis saisir le **stock compté**.
 4. Le **stock théorique** de chaque ligne est capturé automatiquement au moment de l'ajout ; l'**écart** (compté − théorique) est calculé et affiché.
 5. Une fois toutes les lignes saisies, cliquer sur « Valider ». Une confirmation détaille, ligne par ligne, le théorique/compté/écart, et précise que l'opération est définitive.
 
@@ -734,7 +805,7 @@ Menu Rapports — un menu déroulant permet de choisir le rapport souhaité ; le
 
 ---
 
-# 15. Sauvegardes et restauration
+# 15. Sauvegardes, restauration et réinitialisation des données métier
 
 ## Objectif
 Protéger les données de l'entreprise contre une perte (panne, erreur, incident).
@@ -778,6 +849,39 @@ Bouton **« Restaurer la sauvegarde sélectionnée »**, disponible pour toute s
 > **Important — Une restauration remplace entièrement la base de données actuelle.** Toute donnée saisie après la date de la sauvegarde restaurée sera perdue (sauf dans la sauvegarde de sécurité créée automatiquement juste avant la restauration).
 
 **Capture à insérer** : `[CAPTURE 18 — SAUVEGARDES]`
+
+## Réinitialisation des données métier
+
+### Objectif
+Permettre, après une période de test du logiciel, de repartir avec une base métier propre pour l'exploitation réelle — sans désinstaller StockManager et sans perdre la configuration déjà en place.
+
+### Qui peut l'utiliser
+**Administrateur uniquement.**
+
+### Accès
+Bas de l'écran Sauvegardes, section « Zone dangereuse — Réinitialisation des données métier ».
+
+### Données supprimées définitivement
+Articles, catégories, fournisseurs, motifs de sortie, clients, entrées, sorties, ventes, paiements, inventaires, et tous les mouvements de stock.
+
+### Données conservées
+Utilisateurs, rôles et permissions, paramètres de l'entreprise (dont le logo et la devise), licence active, et l'intégralité du journal d'audit — y compris l'événement de la réinitialisation elle-même.
+
+### Procédure
+
+1. Cliquer sur « Réinitialiser les données métier… ».
+2. Un message d'avertissement détaille précisément ce qui sera supprimé et ce qui sera conservé.
+3. Recopier exactement le mot **RÉINITIALISER** dans le champ de confirmation — le bouton de confirmation ne s'active qu'à cette condition, pour éviter toute suppression accidentelle.
+4. Valider.
+
+### Déroulement interne (sécurité)
+
+1. Une **sauvegarde de sécurité** est créée et vérifiée automatiquement.
+2. **Si cette sauvegarde échoue, la réinitialisation est intégralement annulée** — aucune donnée n'est supprimée.
+3. Si la sauvegarde réussit, la suppression des données métier est effectuée.
+4. Un événement est inscrit dans le journal d'audit, que la réinitialisation réussisse ou échoue.
+
+> **Important** — Cette opération est irréversible autrement que par une restauration manuelle de la sauvegarde de sécurité créée à l'étape 1 (voir « Restauration » ci-dessus). Elle est réservée à un usage précis (fin d'une période de test) et ne doit jamais être utilisée à la légère.
 
 ---
 
@@ -846,7 +950,7 @@ Quatre éditions existent dans le logiciel : **DEMO, STANDARD, PROFESSIONAL, ENT
 Indicatif (valeurs par défaut du générateur de licence) :
 - **DEMO** : catalogue (articles, catégories, fournisseurs) et mouvements de stock (entrées, sorties, mouvements) uniquement.
 - **STANDARD** : DEMO + ventes, inventaires, rapports.
-- **PROFESSIONAL** : STANDARD + export des rapports, sauvegardes, journal d'audit.
+- **PROFESSIONAL** : STANDARD + export des rapports, sauvegardes (dont la réinitialisation des données métier, chapitre 15, qui réutilise techniquement les sauvegardes), journal d'audit.
 - **ENTREPRISE** : toutes les fonctionnalités, y compris la gestion de plusieurs comptes utilisateurs.
 
 **Capture à insérer** : `[CAPTURE 20 — LICENCE]`
@@ -863,9 +967,10 @@ Bouton **« À propos »**, dans la barre supérieure de l'application (accessib
 
 ## Contenu affiché
 
+- Le **logo officiel complet** de StockManager (symbole + nom + slogan), affiché sans déformation
 - Nom du produit : **StockManager Desktop**
 - Version installée
-- Éditeur : **StockManager**
+- Éditeur : **TechNova**
 - Section Licence (état et édition), visible uniquement pour les comptes autorisés à consulter la licence (Administrateur)
 - Section Support :
   > *« Pour obtenir de l'aide, consultez la documentation utilisateur et les fichiers de diagnostic/log de l'application. »*
@@ -938,7 +1043,7 @@ Bouton **« À propos »**, dans la barre supérieure de l'application (accessib
 
 # 22. Annexe — Matrice complète des permissions
 
-Cette annexe liste les **63 permissions réelles** définies dans l'application, regroupées par module, avec le détail exact pour chacun des quatre rôles (A = Administrateur, G = Gestionnaire de stock, V = Vendeur, C = Consultation).
+Cette annexe liste les **65 permissions réelles** définies dans l'application, regroupées par module, avec le détail exact pour chacun des quatre rôles (A = Administrateur, G = Gestionnaire de stock, V = Vendeur, C = Consultation).
 
 ### Dashboard
 | Permission | A | G | V | C |
@@ -1007,6 +1112,7 @@ Cette annexe liste les **63 permissions réelles** définies dans l'application,
 | Modifier une vente en brouillon | ✓ | — | ✓ | — |
 | Valider une vente | ✓ | — | ✓ | — |
 | Annuler une vente validée | ✓ | — | — | — |
+| Enregistrer un paiement sur une vente | ✓ | — | ✓ | — |
 
 ### Clients
 | Permission | A | G | V | C |
@@ -1079,6 +1185,11 @@ Cette annexe liste les **63 permissions réelles** définies dans l'application,
 | Consulter la licence | ✓ | — | — | — |
 | Activer une licence | ✓ | — | — | — |
 
+### Système
+| Permission | A | G | V | C |
+|---|:-:|:-:|:-:|:-:|
+| Réinitialiser les données métier | ✓ | — | — | — |
+
 ---
 
 # 23. Annexe — Liste des captures d'écran à réaliser
@@ -1108,6 +1219,7 @@ Aucune capture n'est intégrée à ce document. La liste ci-dessous doit être s
 | 19 | `19-audit.png` | Journal d'audit | Détail d'un événement ouvert | Historique de démonstration |
 | 20 | `20-licence.png` | Licence | Licence active affichée | Licence de démonstration signée |
 | 21 | `21-a-propos.png` | À propos | Section licence visible | Compte Administrateur |
+| 22 | `22-creances.png` | Créances clients | Liste filtrée par client, avec créance affichée | Au moins 1 vente à crédit partiellement payée |
 
 **Marqueurs correspondants utilisés dans ce document** (pour repérage rapide) :
 
@@ -1133,6 +1245,7 @@ Aucune capture n'est intégrée à ce document. La liste ci-dessous doit être s
 [CAPTURE 19 — AUDIT]
 [CAPTURE 20 — LICENCE]
 [CAPTURE 21 — À PROPOS]
+[CAPTURE 22 — CRÉANCES]
 ```
 
 ---

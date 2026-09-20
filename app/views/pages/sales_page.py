@@ -226,6 +226,18 @@ class SalesPage(QWidget):
             articles = []
         return [(a.id, f"{a.reference} — {a.designation}", str(a.prix_vente)) for a in articles]
 
+    def _lookup_article_by_barcode(self, code: str) -> Optional[tuple[int, str, str]]:
+        """Callback transmis à ``SaleFormDialog`` pour le scan (§ code-barres) :
+        ne renvoie qu'un article actif, au même format que
+        ``_load_articles_for_form`` pour rester directement exploitable."""
+        try:
+            article = self._article_service.find_by_barcode(code)
+        except AppError:
+            return None
+        if article is None:
+            return None
+        return article.id, f"{article.reference} — {article.designation}", str(article.prix_vente)
+
     def _load_clients_for_form(self) -> list[tuple[int, str]]:
         """Seuls les clients actifs sont proposés pour une nouvelle
         sélection (§8) — un client désactivé reste visible dans l'historique
@@ -289,7 +301,10 @@ class SalesPage(QWidget):
 
         def factory() -> SaleFormDialog:
             return SaleFormDialog(
-                articles, clients, state["values"], on_create_client=self._create_client_from_sale_form, parent=self
+                articles, clients, state["values"],
+                on_create_client=self._create_client_from_sale_form,
+                on_lookup_barcode=self._lookup_article_by_barcode,
+                parent=self,
             )
 
         def submit(dialog: SaleFormDialog) -> bool:
@@ -396,9 +411,11 @@ class SalesPage(QWidget):
             return
         sale, movements = result
         dialog = SaleDetailDialog(
-            sale, movements, self._currency_code, self._receipt_service, self._permissions, parent=self
+            sale, movements, self._currency_code, self._receipt_service, self._permissions,
+            sale_service=self._sale_service, parent=self,
         )
         dialog.exec()
+        self.refresh()
 
     def _load_sale_for_detail(self, sale_id: int):
         """Isolé de ``_on_detail_clicked`` pour rester testable sans dialogue modal."""

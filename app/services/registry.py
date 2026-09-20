@@ -36,6 +36,7 @@ from app.services.sales.sale_service import SaleService
 from app.services.settings.company_settings_service import CompanySettingsService
 from app.services.stock.movement_service import MovementService
 from app.services.suppliers.supplier_service import SupplierService
+from app.services.system.data_reset_service import DataResetService
 from app.services.users.user_service import UserService
 
 
@@ -63,6 +64,7 @@ class ServiceRegistry:
     audit: AuditService
     roles: RoleService
     onboarding: OnboardingService
+    data_reset: DataResetService
 
 
 def build_service_registry(
@@ -81,6 +83,7 @@ def build_service_registry(
     license_service = LicenseService(permission_service, settings, public_key_bytes=license_public_key_bytes)
     permission_service.set_feature_gate(FeatureGate(license_service))
     report_service = ReportService(permission_service, settings)
+    backup_service = BackupService(permission_service, settings)
 
     return ServiceRegistry(
         auth=auth_service,
@@ -97,7 +100,7 @@ def build_service_registry(
         inventory=InventoryService(permission_service, settings),
         movements=MovementService(permission_service, settings),
         reports=report_service,
-        backups=BackupService(permission_service, settings),
+        backups=backup_service,
         licenses=license_service,
         dashboard=DashboardService(permission_service, report_service, settings),
         parameters=CompanySettingsService(permission_service, settings),
@@ -105,4 +108,5 @@ def build_service_registry(
         audit=AuditService(permission_service, settings),
         roles=RoleService(permission_service, settings),
         onboarding=OnboardingService(settings),
+        data_reset=DataResetService(permission_service, backup_service, settings),
     )

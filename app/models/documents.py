@@ -7,12 +7,15 @@ from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
-from app.models.enums import StatutOperation
+from app.models.enums import StatutOperation, StatutPaiement
 from app.models.mixins import TimestampMixin
 from app.models.types import MONEY, QUANTITY
 
 _STATUT_OPERATION_TYPE = SAEnum(
     StatutOperation, native_enum=False, length=20, name="statut_operation"
+)
+_STATUT_PAIEMENT_TYPE = SAEnum(
+    StatutPaiement, native_enum=False, length=25, name="statut_paiement"
 )
 
 
@@ -115,9 +118,21 @@ class Vente(TimestampMixin, Base):
         _STATUT_OPERATION_TYPE, default=StatutOperation.BROUILLON, nullable=False
     )
     total: Mapped[Decimal] = mapped_column(MONEY, default=Decimal("0"), nullable=False)
+    # Totaux courants dénormalisés (lecture rapide), recalculés dans la même
+    # transaction que chaque ``Paiement`` inséré — jamais modifiés
+    # directement ailleurs (voir app/models/payment.py). Sans objet tant que
+    # la vente est en BROUILLON (un paiement n'est enregistré qu'à partir
+    # d'une vente VALIDEE, voir SaleService.record_payment).
+    montant_paye: Mapped[Decimal] = mapped_column(MONEY, default=Decimal("0"), nullable=False)
+    statut_paiement: Mapped[StatutPaiement] = mapped_column(
+        _STATUT_PAIEMENT_TYPE, default=StatutPaiement.NON_PAYEE, nullable=False
+    )
 
     lignes: Mapped[list["VenteLigne"]] = relationship(
         "VenteLigne", back_populates="vente", cascade="all, delete-orphan"
+    )
+    paiements: Mapped[list["Paiement"]] = relationship(
+        "Paiement", back_populates="vente", cascade="all, delete-orphan", order_by="Paiement.id"
     )
     user: Mapped["User"] = relationship("User")
     client: Mapped[Optional["Client"]] = relationship("Client")

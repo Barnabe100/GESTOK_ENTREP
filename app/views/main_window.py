@@ -47,6 +47,7 @@ from app.views.pages.inventories_page import InventoriesPage
 from app.views.pages.licenses_page import LicensesPage
 from app.views.pages.mouvements_page import MouvementsPage
 from app.views.pages.placeholder_page import PlaceholderPage
+from app.views.pages.receivables_page import ReceivablesPage
 from app.views.pages.reports_page import ReportsPage
 from app.views.pages.roles_page import RolesPage
 from app.views.pages.sales_page import SalesPage
@@ -75,6 +76,7 @@ NAVIGATION_MODULES: list[str] = [
     "Sorties",
     "Clients",
     "Ventes",
+    "Créances",
     "Mouvements",
     "Inventaires",
     "Rapports",
@@ -96,6 +98,9 @@ NAVIGATION_PERMISSIONS: dict[str, str] = {
     "Sorties": "STOCK_EXIT_VIEW",
     "Clients": "CLIENT_VIEW",
     "Ventes": "SALE_VIEW",
+    # Réutilise SALE_VIEW (pas de nouvelle permission dédiée à la lecture des
+    # créances, qui n'est qu'une vue filtrée des ventes déjà consultables).
+    "Créances": "SALE_VIEW",
     "Mouvements": "STOCK_MOVEMENT_VIEW",
     "Inventaires": "INVENTORY_VIEW",
     "Rapports": "REPORT_VIEW",
@@ -216,6 +221,8 @@ class MainWindow(QMainWindow):
                 self._services.sales, self._services.articles, self._services.clients,
                 self._services.documents, self._permissions,
             )
+        if module_name == "Créances":
+            return ReceivablesPage(self._services.sales, self._services.clients, self._permissions)
         if module_name == "Mouvements":
             return MouvementsPage(self._services.movements, self._permissions)
         if module_name == "Inventaires":
@@ -228,7 +235,7 @@ class MainWindow(QMainWindow):
         if module_name == "Paramètres":
             return SettingsPage(self._services.parameters, self._permissions)
         if module_name == "Sauvegardes":
-            return BackupsPage(self._services.backups, self._permissions)
+            return BackupsPage(self._services.backups, self._permissions, self._services.data_reset)
         if module_name == "Audit":
             return AuditPage(self._services.audit, self._permissions)
         if module_name == "Licences":

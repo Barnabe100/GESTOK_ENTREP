@@ -18,6 +18,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDialog,
     QFileDialog,
     QFormLayout,
     QGroupBox,
@@ -35,8 +36,10 @@ from PySide6.QtWidgets import (
 
 from app.services.auth.permission_service import PermissionService
 from app.services.backups.backup_service import BackupConfig, BackupService, FREQUENCY_DAILY, FREQUENCY_WEEKLY
+from app.services.system.data_reset_service import DataResetService
 from app.utils.exceptions import AppError
 from app.views.common import confirm_action
+from app.views.data_reset_confirm_dialog import DataResetConfirmDialog
 
 _FREQUENCY_LABELS = {FREQUENCY_DAILY: "Quotidienne", FREQUENCY_WEEKLY: "Hebdomadaire"}
 _FREQUENCY_BY_LABEL = {label: value for value, label in _FREQUENCY_LABELS.items()}
@@ -58,11 +61,13 @@ class BackupsPage(QWidget):
         self,
         backup_service: BackupService,
         permission_service: PermissionService,
+        data_reset_service: Optional[DataResetService] = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._backup_service = backup_service
         self._permissions = permission_service
+        self._data_reset_service = data_reset_service
 
         layout = QVBoxLayout(self)
 
@@ -70,6 +75,7 @@ class BackupsPage(QWidget):
         layout.addLayout(self._build_actions_row())
         layout.addWidget(QLabel("Historique des sauvegardes", self))
         layout.addWidget(self._build_history_table())
+        layout.addWidget(self._build_danger_zone_group())
 
         self._load_config_into_form()
         self.refresh_history()
@@ -271,3 +277,50 @@ class BackupsPage(QWidget):
         else:
             QMessageBox.critical(self, "Échec de la restauration", result.message)
         return result.success
+
+    # -- réinitialisation des données métier (§3 du lot) -----------------------------
+
+    def _build_danger_zone_group(self) -> QGroupBox:
+        group = QGroupBox("Zone dangereuse — Réinitialisation des données métier", self)
+        layout = QVBoxLayout(group)
+
+        description = QLabel(
+            "Réservé à l'Administrateur. Permet de repartir avec une base métier "
+            "propre après une période de test client, sans désinstaller "
+            "StockManager. Une sauvegarde de sécurité est créée et vérifiée "
+            "automatiquement avant toute suppression.",
+            self,
+        )
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        self.reset_business_data_button = QPushButton("Réinitialiser les données métier…", self)
+        can_reset = (
+            self._data_reset_service is not None
+            and self._permissions.has_permission("SYSTEM_RESET_BUSINESS_DATA")
+        )
+        self.reset_business_data_button.setEnabled(can_reset)
+        self.reset_business_data_button.clicked.connect(self._on_reset_business_data_clicked)
+        layout.addWidget(self.reset_business_data_button)
+
+        return group
+
+    def _on_reset_business_data_clicked(self) -> None:
+        if self._data_reset_service is None:
+            return
+        dialog = DataResetConfirmDialog(parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._run_reset_business_data()
+
+    def _run_reset_business_data(self) -> bool:
+        """Isolé de ``_on_reset_business_data_clicked`` pour rester testable
+        sans dialogue modal de confirmation."""
+        try:
+            result = self._data_reset_service.reset_business_data()
+        except AppError as exc:
+            QMessageBox.critical(self, "Réinitialisation refusée", str(exc))
+            return False
+        QMessageBox.information(self, "Réinitialisation réussie", result.message)
+        self.refresh_history()
+        return True

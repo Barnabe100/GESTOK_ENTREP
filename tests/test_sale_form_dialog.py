@@ -59,6 +59,76 @@ def test_dialog_prefills_date_from_initial(qtbot) -> None:
     assert dialog.values()["date"] == date(2026, 1, 15)
 
 
+# -- scan code-barres (lecteur USB « keyboard wedge ») -----------------------------
+#
+# Le matériel physique n'est jamais disponible en test : ces cas simulent
+# l'entrée clavier produite par un scanner (texte tapé puis Entrée), sans
+# jamais prétendre tester un vrai lecteur USB.
+
+
+def test_scan_disabled_without_lookup_callback(qtbot) -> None:
+    dialog = SaleFormDialog(_ARTICLES, _CLIENTS)
+    qtbot.addWidget(dialog)
+
+    assert dialog.scan_edit.isEnabled() is False
+
+
+def test_scan_known_barcode_adds_line_with_quantity_one(qtbot) -> None:
+    def lookup(code: str):
+        assert code == "1234567890123"
+        return (10, "ART-1 — Eau", "800")
+
+    dialog = SaleFormDialog(_ARTICLES, _CLIENTS, on_lookup_barcode=lookup)
+    qtbot.addWidget(dialog)
+
+    qtbot.keyClicks(dialog.scan_edit, "1234567890123")
+    qtbot.keyClick(dialog.scan_edit, Qt.Key.Key_Return)
+
+    values = dialog.values()
+    assert len(values["lignes"]) == 1
+    assert values["lignes"][0]["article_id"] == 10
+    assert values["lignes"][0]["quantite"] == Decimal("1")
+    assert values["lignes"][0]["prix_unitaire"] == Decimal("800")
+    # Le champ de scan est vidé après chaque code, prêt pour le suivant.
+    assert dialog.scan_edit.text() == ""
+
+
+def test_scan_unknown_barcode_adds_no_line_and_warns(qtbot, monkeypatch: pytest.MonkeyPatch) -> None:
+    warnings: list[tuple] = []
+    monkeypatch.setattr(
+        "app.views.sale_form_dialog.QMessageBox.warning",
+        lambda *args, **kwargs: warnings.append(args),
+    )
+
+    dialog = SaleFormDialog(_ARTICLES, _CLIENTS, on_lookup_barcode=lambda code: None)
+    qtbot.addWidget(dialog)
+
+    qtbot.keyClicks(dialog.scan_edit, "0000000000000")
+    qtbot.keyClick(dialog.scan_edit, Qt.Key.Key_Return)
+
+    assert dialog.values()["lignes"] == []
+    assert len(warnings) == 1
+
+
+def test_scan_does_not_interfere_with_manual_line_addition(qtbot) -> None:
+    """Le scan est un moyen supplémentaire, jamais un remplacement : la
+    sélection manuelle (bouton « Ajouter une ligne ») doit continuer à
+    fonctionner normalement, y compris après un scan."""
+    dialog = SaleFormDialog(_ARTICLES, _CLIENTS, on_lookup_barcode=lambda code: (20, "ART-2 — Riz", "1500"))
+    qtbot.addWidget(dialog)
+
+    qtbot.keyClicks(dialog.scan_edit, "any-code")
+    qtbot.keyClick(dialog.scan_edit, Qt.Key.Key_Return)
+    assert len(dialog.values()["lignes"]) == 1
+
+    dialog._lines.append(
+        {"article_id": 10, "article_label": "ART-1 — Eau", "quantite": Decimal("2"), "prix_unitaire": Decimal("800")}
+    )
+    dialog._refresh_lines_table()
+
+    assert len(dialog.values()["lignes"]) == 2
+
+
 def test_dialog_date_change_is_reflected_in_values(qtbot) -> None:
     initial = {"date": date(2026, 1, 15)}
     dialog = SaleFormDialog(_ARTICLES, _CLIENTS, initial)

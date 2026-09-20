@@ -371,3 +371,64 @@ def test_confirmation_dialog_no_cancels_validate(qtbot, login_as, monkeypatch) -
     page._on_validate_clicked()
 
     assert stack.sales.get_sale(sale.id).statut == StatutOperation.BROUILLON
+
+
+# -- scan code-barres : callback de recherche transmis au formulaire ---------------
+
+
+def test_lookup_article_by_barcode_finds_active_article(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    category = stack.categories.create_category("Cat-scan")
+    article = stack.articles.create_article(
+        "ART-SCAN", "Article scanné", category.id, "unité",
+        Decimal("100"), Decimal("150"), Decimal("0"), code_barres="1234567890000",
+    )
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    result = page._lookup_article_by_barcode("1234567890000")
+
+    # Comparaison par valeur Decimal (pas par texte) : le prix relu en base
+    # (Numeric(14,2)) peut afficher des zéros de fin différents du texte
+    # saisi à la création, sans être une valeur différente.
+    assert result is not None
+    assert result[0] == article.id
+    assert result[1] == "ART-SCAN — Article scanné"
+    assert Decimal(result[2]) == article.prix_vente
+
+
+def test_lookup_article_by_barcode_unknown_returns_none(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page._lookup_article_by_barcode("0000000000000") is None
+
+
+def test_scanning_barcode_in_sale_form_adds_line_and_can_be_validated(qtbot, login_as) -> None:
+    """Bout en bout : scan -> ajout au panier -> enregistrement -> validation,
+    sans casser la sélection manuelle ni le stock avant validation."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, "ART-SCAN2", stock_initial=Decimal("20"))
+    stack.articles.update_article(
+        article.id, article.reference, article.designation, article.category_id, article.unite,
+        article.prix_achat, article.prix_vente, article.stock_min, code_barres="9998887770000",
+    )
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    result = page._lookup_article_by_barcode("9998887770000")
+    assert result is not None
+    article_id, label, prix_vente = result
+
+    created = stack.sales.create_sale(
+        date.today(), [VenteLigneInput(article_id, Decimal("1"), Decimal(prix_vente))]
+    )
+    # Un brouillon ne modifie jamais le stock.
+    assert stack.articles.get_article(article.id).stock_actuel == Decimal("20")
+
+    validated = stack.sales.validate_sale(created.id)
+    assert validated.statut == StatutOperation.VALIDEE
+    assert stack.articles.get_article(article.id).stock_actuel == Decimal("19")

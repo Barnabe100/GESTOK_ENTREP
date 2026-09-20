@@ -17,7 +17,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from app.version import APP_NAME, __version__  # noqa: E402
+from app.version import APP_NAME, PUBLISHER_NAME, __version__  # noqa: E402
 
 OUTPUT_PATH = Path(__file__).resolve().parent / "file_version_info.txt"
 
@@ -40,7 +40,7 @@ VSVersionInfo(
       [
         StringTable(
           u'040c04b0',
-          [StringStruct(u'CompanyName', u'{app_name}'),
+          [StringStruct(u'CompanyName', u'{publisher_name}'),
           StringStruct(u'FileDescription', u'{app_name}'),
           StringStruct(u'FileVersion', u'{version}'),
           StringStruct(u'InternalName', u'stockmanager'),
@@ -59,7 +59,9 @@ def main() -> int:
     parts += ["0"] * (3 - len(parts))
     tuple_version = ", ".join(parts[:3])
 
-    content = _TEMPLATE.format(version=__version__, tuple_version=tuple_version, app_name=APP_NAME)
+    content = _TEMPLATE.format(
+        version=__version__, tuple_version=tuple_version, app_name=APP_NAME, publisher_name=PUBLISHER_NAME
+    )
     OUTPUT_PATH.write_text(content, encoding="utf-8")
     print(f"Métadonnées de version écrites : {OUTPUT_PATH} (version={__version__}).")
     return 0

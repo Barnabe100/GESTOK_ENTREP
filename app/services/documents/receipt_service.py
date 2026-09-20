@@ -29,15 +29,18 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Optional
 
+from datetime import datetime
+
 from app.config.settings import Settings
 from app.db.session import session_scope
-from app.models.enums import StatutOperation, TypeMouvement
+from app.models.enums import StatutOperation, StatutPaiement, TypeMouvement
 from app.models.movement import MouvementStock
 from app.repositories.mouvement_repository import MouvementRepository
 from app.repositories.vente_repository import VenteRepository
 from app.services.auth.permission_service import PermissionService
 from app.services.settings.company_settings_service import get_company_profile, get_effective_currency
 from app.utils.exceptions import NotFoundError, ValidationError
+from app.utils.money import round_money
 
 
 @dataclass(frozen=True)
@@ -77,6 +80,40 @@ class SaleReceiptData:
     client_telephone: Optional[str] = None
     client_adresse: Optional[str] = None
     client_email: Optional[str] = None
+    # Ventes à crédit / paiements partiels (§5.8) : toujours renseignés
+    # (comptant = montant_paye == total, statut PAYEE), jamais absents —
+    # affichés sur tout reçu, comptant ou partiel, pour la même transparence.
+    montant_paye: Decimal = Decimal("0")
+    statut_paiement: StatutPaiement = StatutPaiement.PAYEE
+
+    @property
+    def reste_a_payer(self) -> Decimal:
+        return max(self.total - self.montant_paye, Decimal("0"))
+
+
+@dataclass(frozen=True)
+class PaymentReceiptData:
+    """Données du reçu d'un paiement ultérieur (§5.8) — document distinct du
+    reçu de vente : ne reprend jamais les lignes d'articles, seulement la
+    trace du règlement (référence de la vente, montant, total payé et reste
+    après ce paiement, date, utilisateur)."""
+
+    vente_numero: str
+    client_nom: Optional[str]
+    montant: Decimal
+    total_vente: Decimal
+    total_paye_apres: Decimal
+    date_heure: datetime
+    username: str
+    devise: str
+    entreprise_nom: Optional[str]
+    entreprise_adresse: Optional[str]
+    entreprise_telephone: Optional[str]
+    entreprise_email: Optional[str]
+
+    @property
+    def reste_a_payer(self) -> Decimal:
+        return max(self.total_vente - self.total_paye_apres, Decimal("0"))
 
 
 class ReceiptService:
@@ -122,6 +159,8 @@ class ReceiptService:
             sale_date = vente.date
             username = vente.user.username
             total = vente.total
+            montant_paye = vente.montant_paye
+            statut_paiement = vente.statut_paiement
 
             # Lecture directe de la relation ORM (déjà chargée dans cette
             # session, comme vente.user/ligne.article ci-dessus) : jamais via
@@ -160,4 +199,54 @@ class ReceiptService:
             client_telephone=client_telephone,
             client_adresse=client_adresse,
             client_email=client_email,
+            montant_paye=montant_paye,
+            statut_paiement=statut_paiement,
+        )
+
+    def build_payment_receipt(self, sale_id: int, paiement_id: int) -> PaymentReceiptData:
+        """Reçu d'un paiement ultérieur (§5.8), disponible dès qu'une vente
+        est validée (jamais pour un brouillon, qui ne peut avoir aucun
+        paiement — voir ``SaleService``)."""
+        self._permissions.require_permission("SALE_VIEW")
+
+        with session_scope(self._settings) as session:
+            vente_repo = VenteRepository(session)
+            vente = vente_repo.get_by_id(sale_id)
+            if vente is None:
+                raise NotFoundError(f"Vente {sale_id} introuvable.")
+
+            paiement = next((p for p in vente.paiements if p.id == paiement_id), None)
+            if paiement is None:
+                raise NotFoundError(f"Paiement {paiement_id} introuvable pour la vente {sale_id}.")
+
+            # Total payé « après ce paiement » reconstruit depuis l'historique
+            # jusqu'à ce paiement inclus (jamais depuis le total courant de la
+            # vente, qui peut avoir évolué depuis via des paiements
+            # ultérieurs) — le reçu d'un paiement passé reste toujours exact.
+            paiements_jusque_la = [p for p in vente.paiements if p.id <= paiement_id]
+            total_paye_apres = round_money(sum((p.montant for p in paiements_jusque_la), Decimal("0")))
+
+            vente_numero = vente.numero
+            total_vente = vente.total
+            client_nom = vente.client.nom if vente.client is not None else None
+            montant = paiement.montant
+            date_heure = paiement.date_heure
+            username = paiement.user.username
+
+        profile = get_company_profile(self._settings)
+        devise = get_effective_currency(self._settings)
+
+        return PaymentReceiptData(
+            vente_numero=vente_numero,
+            client_nom=client_nom,
+            montant=montant,
+            total_vente=total_vente,
+            total_paye_apres=total_paye_apres,
+            date_heure=date_heure,
+            username=username,
+            devise=devise,
+            entreprise_nom=profile.nom,
+            entreprise_adresse=profile.adresse,
+            entreprise_telephone=profile.telephone,
+            entreprise_email=profile.email,
         )
