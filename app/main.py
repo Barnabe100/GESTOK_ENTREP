@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QApplication, QDialog
 
 from app.config import get_settings
 from app.db.init_db import init_database
+from app.db.reference_data_sync import sync_reference_data
 from app.db.seed import seed_initial_admin, seed_reference_data
 from app.db.session import session_scope
 from app.resources import load_stylesheet
@@ -23,7 +24,9 @@ from app.views.main_window import MainWindow
 def bootstrap() -> None:
     """Prépare l'environnement d'exécution avant l'ouverture de l'interface :
     configuration, logging, gestion des erreurs, schéma de base de données,
-    données de référence (rôles/permissions) et compte administrateur initial."""
+    données de référence (rôles/permissions, initialisation puis
+    synchronisation additive pour les bases existantes) et compte
+    administrateur initial."""
     settings = get_settings()
     setup_logging(settings)
     install_global_exception_handler()
@@ -36,6 +39,7 @@ def bootstrap() -> None:
     init_database(settings)
     with session_scope(settings) as session:
         seed_reference_data(session)
+        sync_reference_data(session)
         generated_password = seed_initial_admin(session)
 
     if generated_password:
