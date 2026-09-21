@@ -2,6 +2,36 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog
 
 from app.views.supplier_form_dialog import SupplierFormDialog
+from tests.ui_test_helpers import (
+    assert_field_is_marked_required,
+    assert_field_is_not_marked_required,
+    assert_has_required_field_legend,
+)
+
+
+def test_name_field_is_marked_required(qtbot) -> None:
+    dialog = SupplierFormDialog()
+    qtbot.addWidget(dialog)
+
+    assert_field_is_marked_required(dialog, dialog.name_edit)
+
+
+def test_optional_fields_are_not_marked_required(qtbot) -> None:
+    dialog = SupplierFormDialog()
+    qtbot.addWidget(dialog)
+
+    for field in (
+        dialog.contact_edit, dialog.telephone_edit, dialog.email_edit,
+        dialog.adresse_edit, dialog.ville_edit, dialog.pays_edit, dialog.observations_edit,
+    ):
+        assert_field_is_not_marked_required(dialog, field)
+
+
+def test_dialog_shows_required_field_legend(qtbot) -> None:
+    dialog = SupplierFormDialog()
+    qtbot.addWidget(dialog)
+
+    assert_has_required_field_legend(dialog)
 
 
 def test_dialog_prefills_all_fields(qtbot) -> None:

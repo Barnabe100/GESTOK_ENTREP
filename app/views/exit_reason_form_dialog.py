@@ -18,6 +18,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.views.common import build_required_field_legend, required_label
+
 
 class ExitReasonFormDialog(QDialog):
     def __init__(
@@ -33,7 +35,7 @@ class ExitReasonFormDialog(QDialog):
         form = QFormLayout()
         self.label_edit = QLineEdit(self)
         self.label_edit.setText(initial_libelle)
-        form.addRow("Libellé", self.label_edit)
+        form.addRow(required_label("Libellé"), self.label_edit)
 
         self.description_edit = QTextEdit(self)
         self.description_edit.setPlainText(initial_description)
@@ -41,6 +43,8 @@ class ExitReasonFormDialog(QDialog):
         form.addRow("Description", self.description_edit)
 
         layout.addLayout(form)
+
+        layout.addWidget(build_required_field_legend(self))
 
         self.error_label = QLabel("", self)
         self.error_label.setStyleSheet("color: #DC2626;")

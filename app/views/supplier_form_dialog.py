@@ -20,6 +20,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.views.common import build_required_field_legend, required_label
+
 
 class SupplierFormDialog(QDialog):
     def __init__(self, initial: Optional[dict] = None, parent: QWidget | None = None) -> None:
@@ -35,7 +37,7 @@ class SupplierFormDialog(QDialog):
         form = QFormLayout()
         self.name_edit = QLineEdit(self)
         self.name_edit.setText(initial.get("nom", ""))
-        form.addRow("Nom / raison sociale", self.name_edit)
+        form.addRow(required_label("Nom / raison sociale"), self.name_edit)
 
         self.contact_edit = QLineEdit(self)
         self.contact_edit.setText(initial.get("contact", "") or "")
@@ -67,6 +69,8 @@ class SupplierFormDialog(QDialog):
         form.addRow("Observations", self.observations_edit)
 
         layout.addLayout(form)
+
+        layout.addWidget(build_required_field_legend(self))
 
         self.error_label = QLabel("", self)
         self.error_label.setStyleSheet("color: #DC2626;")

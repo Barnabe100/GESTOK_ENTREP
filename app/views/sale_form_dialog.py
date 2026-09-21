@@ -39,7 +39,12 @@ from PySide6.QtWidgets import (
 
 from app.utils.exceptions import ValidationError
 from app.utils.quantity import format_quantity
-from app.views.common import date_to_qdate, parse_decimal
+from app.views.common import (
+    build_required_field_legend,
+    date_to_qdate,
+    parse_decimal,
+    required_label,
+)
 from app.views.sale_line_form_dialog import SaleLineFormDialog
 
 _LINE_COLUMNS = ["Article", "Quantité", "Prix unitaire", "Montant"]
@@ -88,7 +93,7 @@ class SaleFormDialog(QDialog):
         # appliquée côté service (SaleService.create_sale/update_sale).
         self.date_edit.setMaximumDate(QDate.currentDate())
         self.date_edit.setDate(date_to_qdate(initial.get("date") or date.today()))
-        form.addRow("Date", self.date_edit)
+        form.addRow(required_label("Date"), self.date_edit)
 
         client_row = QHBoxLayout()
         self.client_combo = QComboBox(self)
@@ -100,6 +105,8 @@ class SaleFormDialog(QDialog):
         self._refresh_client_combo(selected_id=initial.get("client_id"))
 
         layout.addLayout(form)
+
+        layout.addWidget(build_required_field_legend(self))
 
         scan_row = QHBoxLayout()
         scan_row.addWidget(QLabel("Scanner / code-barres", self))

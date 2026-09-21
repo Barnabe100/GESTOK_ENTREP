@@ -34,7 +34,12 @@ from PySide6.QtWidgets import (
 
 from app.utils.exceptions import ValidationError
 from app.utils.quantity import format_quantity
-from app.views.common import date_to_qdate, parse_decimal
+from app.views.common import (
+    build_required_field_legend,
+    date_to_qdate,
+    parse_decimal,
+    required_label,
+)
 from app.views.exit_line_form_dialog import ExitLineFormDialog
 
 _LINE_COLUMNS = ["Article", "Quantité", "Coût (CMUP)", "Montant"]
@@ -66,7 +71,7 @@ class ExitFormDialog(QDialog):
         for motif_id, libelle in motifs:
             self.motif_combo.addItem(libelle, motif_id)
         self._select_combo_data(self.motif_combo, initial.get("motif_id"))
-        form.addRow("Motif", self.motif_combo)
+        form.addRow(required_label("Motif"), self.motif_combo)
 
         self.date_edit = QDateEdit(self)
         self.date_edit.setCalendarPopup(True)
@@ -76,15 +81,15 @@ class ExitFormDialog(QDialog):
         # appliquée côté service (ExitService.create_exit/update_exit).
         self.date_edit.setMaximumDate(QDate.currentDate())
         self.date_edit.setDate(date_to_qdate(initial.get("date") or date.today()))
-        form.addRow("Date", self.date_edit)
+        form.addRow(required_label("Date"), self.date_edit)
 
         self.beneficiaire_edit = QLineEdit(self)
         self.beneficiaire_edit.setText(initial.get("beneficiaire", "") or "")
-        form.addRow("Bénéficiaire / service (optionnel)", self.beneficiaire_edit)
+        form.addRow("Bénéficiaire / service", self.beneficiaire_edit)
 
         self.reference_edit = QLineEdit(self)
         self.reference_edit.setText(initial.get("reference", "") or "")
-        form.addRow("Référence document (optionnel)", self.reference_edit)
+        form.addRow("Référence document", self.reference_edit)
 
         self.commentaire_edit = QTextEdit(self)
         self.commentaire_edit.setPlainText(initial.get("commentaire", "") or "")
@@ -92,6 +97,8 @@ class ExitFormDialog(QDialog):
         form.addRow("Commentaire", self.commentaire_edit)
 
         layout.addLayout(form)
+
+        layout.addWidget(build_required_field_legend(self))
 
         layout.addWidget(QLabel("Lignes", self))
 

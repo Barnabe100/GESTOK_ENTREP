@@ -16,6 +16,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.views.common import build_required_field_legend, required_label
+
 
 class CategoryFormDialog(QDialog):
     def __init__(self, initial_name: str = "", parent: QWidget | None = None) -> None:
@@ -29,8 +31,10 @@ class CategoryFormDialog(QDialog):
         form = QFormLayout()
         self.name_edit = QLineEdit(self)
         self.name_edit.setText(initial_name)
-        form.addRow("Nom", self.name_edit)
+        form.addRow(required_label("Nom"), self.name_edit)
         layout.addLayout(form)
+
+        layout.addWidget(build_required_field_legend(self))
 
         self.error_label = QLabel("", self)
         self.error_label.setStyleSheet("color: #DC2626;")

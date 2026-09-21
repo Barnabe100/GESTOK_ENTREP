@@ -2,8 +2,27 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog
 
 from app.views.entry_line_form_dialog import EntryLineFormDialog
+from tests.ui_test_helpers import assert_field_is_marked_required, assert_has_required_field_legend
 
 _ARTICLES = [(1, "ART-1 — Eau", "500"), (2, "ART-2 — Riz", "1200")]
+
+
+def test_all_fields_are_marked_required(qtbot) -> None:
+    """Article, quantité et prix d'achat sont tous requis pour une ligne
+    d'entrée (voir EntryService._build_lignes)."""
+    dialog = EntryLineFormDialog(_ARTICLES)
+    qtbot.addWidget(dialog)
+
+    assert_field_is_marked_required(dialog, dialog.article_combo)
+    assert_field_is_marked_required(dialog, dialog.quantite_edit)
+    assert_field_is_marked_required(dialog, dialog.prix_unitaire_edit)
+
+
+def test_dialog_shows_required_field_legend(qtbot) -> None:
+    dialog = EntryLineFormDialog(_ARTICLES)
+    qtbot.addWidget(dialog)
+
+    assert_has_required_field_legend(dialog)
 
 
 def test_prefills_price_from_selected_article_default(qtbot) -> None:

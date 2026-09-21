@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 
 from app.services.auth.permission_service import PermissionService
 from app.services.users.user_service import UserService
-from app.utils.exceptions import AppError
+from app.utils.exceptions import AppError, ValidationError
 from app.views.common import confirm_action, run_modal_form
 from app.views.create_user_dialog import CreateUserDialog
 from app.views.edit_user_dialog import EditUserDialog
@@ -132,6 +132,8 @@ class UsersPage(QWidget):
         """Effectue l'appel service et affiche le résultat. Isolé de
         ``_on_add_clicked`` pour rester testable sans dialogue modal."""
         try:
+            if role_id is None:
+                raise ValidationError("Veuillez sélectionner un rôle.")
             self._user_service.create_user(username, password, role_id, actif=actif)
             QMessageBox.information(self, "Utilisateur créé", f"Le compte « {username} » a été créé.")
         except AppError as exc:
@@ -175,6 +177,8 @@ class UsersPage(QWidget):
         """Effectue l'appel service et affiche le résultat. Isolé de
         ``_on_edit_clicked`` pour rester testable sans dialogue modal."""
         try:
+            if role_id is None:
+                raise ValidationError("Veuillez sélectionner un rôle.")
             self._user_service.update_user(user_id, role_id)
             QMessageBox.information(self, "Rôle modifié", "Le rôle de l'utilisateur a été mis à jour.")
         except AppError as exc:

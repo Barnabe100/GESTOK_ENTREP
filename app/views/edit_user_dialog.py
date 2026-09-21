@@ -22,6 +22,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.views.common import build_required_field_legend, required_label
+
 
 class EditUserDialog(QDialog):
     def __init__(
@@ -44,8 +46,10 @@ class EditUserDialog(QDialog):
         index = self.role_combo.findData(current_role_id)
         if index >= 0:
             self.role_combo.setCurrentIndex(index)
-        form.addRow("Rôle", self.role_combo)
+        form.addRow(required_label("Rôle"), self.role_combo)
         layout.addLayout(form)
+
+        layout.addWidget(build_required_field_legend(self))
 
         self.error_label = QLabel("", self)
         self.error_label.setStyleSheet("color: #DC2626;")

@@ -2,9 +2,44 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog
 
 from app.views.article_form_dialog import ArticleFormDialog
+from tests.ui_test_helpers import (
+    assert_field_is_marked_required,
+    assert_field_is_not_marked_required,
+    assert_has_required_field_legend,
+)
 
 _CATEGORIES = [(1, "Boissons"), (2, "Épicerie")]
 _SUPPLIERS = [(10, "Fournisseur A"), (20, "Fournisseur B")]
+
+
+def test_required_fields_are_marked_in_create_mode(qtbot) -> None:
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, is_edit=False)
+    qtbot.addWidget(dialog)
+
+    for field in (
+        dialog.reference_edit, dialog.designation_edit, dialog.category_combo,
+        dialog.unite_combo, dialog.prix_achat_edit, dialog.prix_vente_edit,
+        dialog.stock_min_edit, dialog.stock_initial_edit,
+    ):
+        assert_field_is_marked_required(dialog, field)
+
+
+def test_optional_fields_are_not_marked_required(qtbot) -> None:
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, is_edit=False)
+    qtbot.addWidget(dialog)
+
+    for field in (
+        dialog.supplier_combo, dialog.stock_max_edit, dialog.emplacement_edit,
+        dialog.code_barres_edit, dialog.description_edit,
+    ):
+        assert_field_is_not_marked_required(dialog, field)
+
+
+def test_dialog_shows_required_field_legend(qtbot) -> None:
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, is_edit=False)
+    qtbot.addWidget(dialog)
+
+    assert_has_required_field_legend(dialog)
 
 
 def test_create_mode_shows_stock_initial_not_stock_actuel(qtbot) -> None:

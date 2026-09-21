@@ -31,7 +31,12 @@ from PySide6.QtWidgets import (
 
 from app.utils.exceptions import ValidationError
 from app.utils.quantity import format_quantity, format_quantity_signed
-from app.views.common import date_to_qdate, parse_decimal
+from app.views.common import (
+    build_required_field_legend,
+    date_to_qdate,
+    parse_decimal,
+    required_label,
+)
 from app.views.inventory_line_form_dialog import InventoryLineFormDialog
 
 _LINE_COLUMNS = ["Article", "Stock théorique", "Stock compté", "Écart"]
@@ -72,9 +77,11 @@ class InventoryFormDialog(QDialog):
         # appliquée côté service (InventoryService.create_inventory/update_inventory).
         self.date_edit.setMaximumDate(QDate.currentDate())
         self.date_edit.setDate(date_to_qdate(initial.get("date") or date.today()))
-        form.addRow("Date", self.date_edit)
+        form.addRow(required_label("Date"), self.date_edit)
 
         layout.addLayout(form)
+
+        layout.addWidget(build_required_field_legend(self))
 
         scan_row = QHBoxLayout()
         scan_row.addWidget(QLabel("Scanner / code-barres", self))

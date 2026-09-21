@@ -34,7 +34,12 @@ from PySide6.QtWidgets import (
 
 from app.utils.exceptions import ValidationError
 from app.utils.quantity import format_quantity
-from app.views.common import date_to_qdate, parse_decimal
+from app.views.common import (
+    build_required_field_legend,
+    date_to_qdate,
+    parse_decimal,
+    required_label,
+)
 from app.views.entry_line_form_dialog import EntryLineFormDialog
 
 _LINE_COLUMNS = ["Article", "Quantité", "Prix unitaire", "Montant"]
@@ -66,7 +71,7 @@ class EntryFormDialog(QDialog):
         for supplier_id, nom in suppliers:
             self.supplier_combo.addItem(nom, supplier_id)
         self._select_combo_data(self.supplier_combo, initial.get("fournisseur_id"))
-        form.addRow("Fournisseur", self.supplier_combo)
+        form.addRow(required_label("Fournisseur"), self.supplier_combo)
 
         self.date_edit = QDateEdit(self)
         self.date_edit.setCalendarPopup(True)
@@ -76,11 +81,11 @@ class EntryFormDialog(QDialog):
         # appliquée côté service (EntryService.create_entry/update_entry).
         self.date_edit.setMaximumDate(QDate.currentDate())
         self.date_edit.setDate(date_to_qdate(initial.get("date") or date.today()))
-        form.addRow("Date", self.date_edit)
+        form.addRow(required_label("Date"), self.date_edit)
 
         self.reference_document_edit = QLineEdit(self)
         self.reference_document_edit.setText(initial.get("reference_document", "") or "")
-        form.addRow("Référence document (optionnel)", self.reference_document_edit)
+        form.addRow("Référence document", self.reference_document_edit)
 
         self.commentaire_edit = QTextEdit(self)
         self.commentaire_edit.setPlainText(initial.get("commentaire", "") or "")
@@ -88,6 +93,8 @@ class EntryFormDialog(QDialog):
         form.addRow("Commentaire", self.commentaire_edit)
 
         layout.addLayout(form)
+
+        layout.addWidget(build_required_field_legend(self))
 
         layout.addWidget(QLabel("Lignes", self))
 

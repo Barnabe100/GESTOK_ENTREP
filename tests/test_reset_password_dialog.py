@@ -4,6 +4,22 @@ app/views/reset_password_dialog.py)."""
 from PySide6.QtWidgets import QDialog
 
 from app.views.reset_password_dialog import ResetPasswordDialog
+from tests.ui_test_helpers import assert_field_is_marked_required, assert_has_required_field_legend
+
+
+def test_both_fields_are_marked_required(qtbot) -> None:
+    dialog = ResetPasswordDialog()
+    qtbot.addWidget(dialog)
+
+    assert_field_is_marked_required(dialog, dialog.password_edit)
+    assert_field_is_marked_required(dialog, dialog.confirm_password_edit)
+
+
+def test_dialog_shows_required_field_legend(qtbot) -> None:
+    dialog = ResetPasswordDialog()
+    qtbot.addWidget(dialog)
+
+    assert_has_required_field_legend(dialog)
 
 
 def test_matching_passwords_accept_dialog(qtbot) -> None:

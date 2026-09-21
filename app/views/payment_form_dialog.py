@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.utils.money import format_money
+from app.views.common import build_required_field_legend, required_label
 
 
 class PaymentFormDialog(QDialog):
@@ -51,20 +52,20 @@ class PaymentFormDialog(QDialog):
         form = QFormLayout()
         self.montant_edit = QLineEdit(self)
         self.montant_edit.setPlaceholderText(str(reste_a_payer))
-        form.addRow("Montant du paiement", self.montant_edit)
+        form.addRow(required_label("Montant du paiement"), self.montant_edit)
 
         self.mode_paiement_edit = QLineEdit(self)
-        self.mode_paiement_edit.setPlaceholderText("Espèces, Mobile Money, Virement… (optionnel)")
+        self.mode_paiement_edit.setPlaceholderText("Espèces, Mobile Money, Virement…")
         form.addRow("Mode de paiement", self.mode_paiement_edit)
 
         self.reference_edit = QLineEdit(self)
-        self.reference_edit.setPlaceholderText("Optionnel")
         form.addRow("Référence", self.reference_edit)
 
         self.commentaire_edit = QLineEdit(self)
-        self.commentaire_edit.setPlaceholderText("Optionnel")
         form.addRow("Commentaire", self.commentaire_edit)
         layout.addLayout(form)
+
+        layout.addWidget(build_required_field_legend(self))
 
         self.error_label = QLabel("", self)
         self.error_label.setStyleSheet("color: #DC2626;")

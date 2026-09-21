@@ -3,8 +3,26 @@ logique métier (voir app/views/create_user_dialog.py)."""
 from PySide6.QtWidgets import QDialog
 
 from app.views.create_user_dialog import CreateUserDialog
+from tests.ui_test_helpers import assert_field_is_marked_required, assert_has_required_field_legend
 
 _ROLES = [(1, "Administrateur"), (2, "Gestionnaire de stock"), (3, "Vendeur"), (4, "Consultation")]
+
+
+def test_all_fields_are_marked_required(qtbot) -> None:
+    dialog = CreateUserDialog(_ROLES)
+    qtbot.addWidget(dialog)
+
+    for field in (
+        dialog.username_edit, dialog.password_edit, dialog.confirm_password_edit, dialog.role_combo,
+    ):
+        assert_field_is_marked_required(dialog, field)
+
+
+def test_dialog_shows_required_field_legend(qtbot) -> None:
+    dialog = CreateUserDialog(_ROLES)
+    qtbot.addWidget(dialog)
+
+    assert_has_required_field_legend(dialog)
 
 
 def test_role_combo_populated_from_given_roles(qtbot) -> None:

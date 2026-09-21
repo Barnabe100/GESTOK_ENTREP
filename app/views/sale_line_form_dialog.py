@@ -21,6 +21,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.views.common import build_required_field_legend, required_label
+
 
 class SaleLineFormDialog(QDialog):
     def __init__(
@@ -45,18 +47,20 @@ class SaleLineFormDialog(QDialog):
         for article_id, label, prix_vente in articles:
             self.article_combo.addItem(label, (article_id, prix_vente))
         self._select_combo_data_by_id(initial.get("article_id"))
-        form.addRow("Article", self.article_combo)
+        form.addRow(required_label("Article"), self.article_combo)
 
         self.quantite_edit = QLineEdit(self)
         self.quantite_edit.setText(str(initial.get("quantite", "")) if initial.get("quantite") is not None else "")
-        form.addRow("Quantité", self.quantite_edit)
+        form.addRow(required_label("Quantité"), self.quantite_edit)
 
         self.prix_unitaire_edit = QLineEdit(self)
         if initial.get("prix_unitaire") is not None:
             self.prix_unitaire_edit.setText(str(initial.get("prix_unitaire")))
-        form.addRow("Prix de vente unitaire", self.prix_unitaire_edit)
+        form.addRow(required_label("Prix de vente unitaire"), self.prix_unitaire_edit)
 
         layout.addLayout(form)
+
+        layout.addWidget(build_required_field_legend(self))
 
         self.error_label = QLabel("", self)
         self.error_label.setStyleSheet("color: #DC2626;")

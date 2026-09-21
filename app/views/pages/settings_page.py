@@ -32,7 +32,7 @@ from app.services.settings.company_settings_service import (
     SUPPORTED_CURRENCIES,
 )
 from app.utils.exceptions import AppError
-from app.views.common import confirm_action
+from app.views.common import build_required_field_legend, confirm_action, required_label
 
 _LOGO_PREVIEW_SIZE = 160
 
@@ -62,7 +62,7 @@ class SettingsPage(QWidget):
         form = QFormLayout(group)
 
         self.nom_edit = QLineEdit(self)
-        form.addRow("Nom de l'entreprise", self.nom_edit)
+        form.addRow(required_label("Nom de l'entreprise"), self.nom_edit)
 
         self.adresse_edit = QLineEdit(self)
         form.addRow("Adresse", self.adresse_edit)
@@ -75,7 +75,7 @@ class SettingsPage(QWidget):
 
         self.devise_combo = QComboBox(self)
         self.devise_combo.addItems(sorted(SUPPORTED_CURRENCIES))
-        form.addRow("Devise", self.devise_combo)
+        form.addRow(required_label("Devise"), self.devise_combo)
 
         can_update = self._permissions.has_permission("SETTINGS_UPDATE")
         for widget in (
@@ -86,6 +86,8 @@ class SettingsPage(QWidget):
         self.save_profile_button = QPushButton("Enregistrer", self)
         self.save_profile_button.setEnabled(can_update)
         form.addRow(self.save_profile_button)
+
+        form.addRow(build_required_field_legend(self))
 
         self.save_profile_button.clicked.connect(self._on_save_profile_clicked)
 

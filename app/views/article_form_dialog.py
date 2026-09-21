@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.utils.quantity import format_quantity
+from app.views.common import build_required_field_legend, required_label
 
 UNIT_SUGGESTIONS = ["pièce", "unité", "carton", "paquet", "kg", "litre", "mètre"]
 
@@ -56,17 +57,17 @@ class ArticleFormDialog(QDialog):
 
         self.reference_edit = QLineEdit(self)
         self.reference_edit.setText(initial.get("reference", ""))
-        form.addRow("Référence", self.reference_edit)
+        form.addRow(required_label("Référence"), self.reference_edit)
 
         self.designation_edit = QLineEdit(self)
         self.designation_edit.setText(initial.get("designation", ""))
-        form.addRow("Désignation", self.designation_edit)
+        form.addRow(required_label("Désignation"), self.designation_edit)
 
         self.category_combo = QComboBox(self)
         for category_id, nom in categories:
             self.category_combo.addItem(nom, category_id)
         self._select_combo_data(self.category_combo, initial.get("category_id"))
-        form.addRow("Catégorie", self.category_combo)
+        form.addRow(required_label("Catégorie"), self.category_combo)
 
         self.supplier_combo = QComboBox(self)
         self.supplier_combo.addItem("(Aucun)", None)
@@ -79,27 +80,27 @@ class ArticleFormDialog(QDialog):
         self.unite_combo.setEditable(True)
         self.unite_combo.addItems(UNIT_SUGGESTIONS)
         self.unite_combo.setCurrentText(initial.get("unite", "") or "")
-        form.addRow("Unité", self.unite_combo)
+        form.addRow(required_label("Unité"), self.unite_combo)
 
         self.prix_achat_edit = QLineEdit(self)
         self.prix_achat_edit.setText(_as_text(initial.get("prix_achat"), default="0"))
-        form.addRow("Prix d'achat", self.prix_achat_edit)
+        form.addRow(required_label("Prix d'achat"), self.prix_achat_edit)
 
         self.prix_vente_edit = QLineEdit(self)
         self.prix_vente_edit.setText(_as_text(initial.get("prix_vente"), default="0"))
-        form.addRow("Prix de vente", self.prix_vente_edit)
+        form.addRow(required_label("Prix de vente"), self.prix_vente_edit)
 
         self.stock_min_edit = QLineEdit(self)
         self.stock_min_edit.setText(
             format_quantity(initial["stock_min"]) if initial.get("stock_min") is not None else "0"
         )
-        form.addRow("Stock minimum", self.stock_min_edit)
+        form.addRow(required_label("Stock minimum"), self.stock_min_edit)
 
         self.stock_max_edit = QLineEdit(self)
         self.stock_max_edit.setText(
             format_quantity(initial["stock_max"]) if initial.get("stock_max") is not None else ""
         )
-        form.addRow("Stock maximum (optionnel)", self.stock_max_edit)
+        form.addRow("Stock maximum", self.stock_max_edit)
 
         self.stock_initial_edit: Optional[QLineEdit] = None
         self.stock_actuel_label: Optional[QLabel] = None
@@ -118,7 +119,7 @@ class ArticleFormDialog(QDialog):
         else:
             self.stock_initial_edit = QLineEdit(self)
             self.stock_initial_edit.setText("0")
-            form.addRow("Stock initial", self.stock_initial_edit)
+            form.addRow(required_label("Stock initial"), self.stock_initial_edit)
 
         self.emplacement_edit = QLineEdit(self)
         self.emplacement_edit.setText(initial.get("emplacement", "") or "")
@@ -126,7 +127,7 @@ class ArticleFormDialog(QDialog):
 
         self.code_barres_edit = QLineEdit(self)
         self.code_barres_edit.setText(initial.get("code_barres", "") or "")
-        form.addRow("Code-barres (optionnel)", self.code_barres_edit)
+        form.addRow("Code-barres", self.code_barres_edit)
 
         self.description_edit = QTextEdit(self)
         self.description_edit.setPlainText(initial.get("description", "") or "")
@@ -134,6 +135,8 @@ class ArticleFormDialog(QDialog):
         form.addRow("Description", self.description_edit)
 
         layout.addLayout(form)
+
+        layout.addWidget(build_required_field_legend(self))
 
         self.error_label = QLabel("", self)
         self.error_label.setStyleSheet("color: #DC2626;")

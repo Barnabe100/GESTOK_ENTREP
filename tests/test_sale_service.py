@@ -626,6 +626,91 @@ def test_payment_history_preserves_each_payment_separately(login_as) -> None:
     assert history[1].reference == "MM-123"
 
 
+def test_record_payment_rejects_mode_paiement_too_long(login_as) -> None:
+    """Aligné sur Paiement.mode_paiement (String(50)) — un dépassement doit
+    lever une ValidationError explicite, jamais une erreur SQL brute."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("50"))
+    validated = _create_validated_sale(stack, article)
+
+    with pytest.raises(ValidationError, match="mode de paiement"):
+        stack.sales.record_payment(validated.id, Decimal("50"), mode_paiement="x" * 51)
+
+
+def test_record_payment_rejects_reference_too_long(login_as) -> None:
+    """Aligné sur Paiement.reference (String(100))."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("50"))
+    validated = _create_validated_sale(stack, article)
+
+    with pytest.raises(ValidationError, match="référence"):
+        stack.sales.record_payment(validated.id, Decimal("50"), reference="x" * 101)
+
+
+def test_record_payment_rejects_commentaire_too_long(login_as) -> None:
+    """Aligné sur Paiement.commentaire (String(500))."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("50"))
+    validated = _create_validated_sale(stack, article)
+
+    with pytest.raises(ValidationError, match="commentaire"):
+        stack.sales.record_payment(validated.id, Decimal("50"), commentaire="x" * 501)
+
+
+def test_record_payment_accepts_fields_at_exact_max_length(login_as) -> None:
+    """Non-régression : la borne est inclusive (une valeur exactement à la
+    longueur maximale reste acceptée, comme pour les autres champs texte
+    optionnels de l'application — voir ClientService/SupplierService)."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("50"))
+    validated = _create_validated_sale(stack, article)
+
+    updated = stack.sales.record_payment(
+        validated.id, Decimal("50"),
+        mode_paiement="x" * 50, reference="y" * 100, commentaire="z" * 500,
+    )
+
+    assert updated.montant_paye == Decimal("50")
+
+
+def test_record_payment_still_accepts_none_and_short_optional_fields(login_as) -> None:
+    """Non-régression explicite : les valeurs valides déjà couvertes par la
+    suite existante (mode_paiement/reference court, ou totalement absents)
+    continuent de fonctionner exactement comme avant cette correction."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("50"))
+    validated = _create_validated_sale(stack, article)
+
+    without_optional_fields = stack.sales.record_payment(validated.id, Decimal("40"))
+    assert without_optional_fields.montant_paye == Decimal("40")
+
+    with_optional_fields = stack.sales.record_payment(
+        validated.id, Decimal("30"), mode_paiement="Espèces", reference="REF-1", commentaire="Réglé au comptoir"
+    )
+    assert with_optional_fields.montant_paye == Decimal("70")
+
+    history = stack.sales.list_payments(validated.id)
+    assert history[-1].mode_paiement == "Espèces"
+    assert history[-1].reference == "REF-1"
+    assert history[-1].commentaire == "Réglé au comptoir"
+
+
+def test_record_payment_strips_whitespace_only_optional_fields_to_none(login_as) -> None:
+    """Cohérence avec le reste de l'application : une chaîne uniquement
+    composée d'espaces est traitée comme absente, jamais comme une valeur
+    significative (voir audit champs obligatoires/facultatifs)."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("50"))
+    validated = _create_validated_sale(stack, article)
+
+    stack.sales.record_payment(validated.id, Decimal("50"), mode_paiement="   ", reference="   ", commentaire="   ")
+
+    history = stack.sales.list_payments(validated.id)
+    assert history[-1].mode_paiement is None
+    assert history[-1].reference is None
+    assert history[-1].commentaire is None
+
+
 def test_payment_creates_audit_entry(login_as) -> None:
     from app.config.settings import get_settings
     from app.db.session import session_scope

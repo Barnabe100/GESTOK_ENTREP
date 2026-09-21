@@ -12,9 +12,32 @@ from decimal import Decimal, InvalidOperation
 from typing import Callable, Optional
 
 from PySide6.QtCore import QDate
-from PySide6.QtWidgets import QDialog, QMessageBox, QWidget
+from PySide6.QtWidgets import QDialog, QLabel, QMessageBox, QWidget
 
 from app.utils.exceptions import ValidationError
+
+# Convention unique de l'application pour signaler un champ obligatoire dans
+# un formulaire : un « * » accolé au libellé, plus cette légende commune —
+# jamais la mention « (optionnel) » sur les champs facultatifs, qui créerait
+# une seconde convention concurrente (voir l'audit champs obligatoires/
+# facultatifs). Un champ facultatif ne porte simplement aucun marqueur.
+REQUIRED_FIELD_MARKER = "*"
+REQUIRED_FIELD_LEGEND = "* Champ obligatoire"
+
+
+def required_label(text: str) -> str:
+    """Libellé de champ marqué obligatoire — seul point d'origine du
+    marqueur, pour que tous les formulaires appliquent la même convention."""
+    return f"{text} {REQUIRED_FIELD_MARKER}"
+
+
+def build_required_field_legend(parent: QWidget) -> QLabel:
+    """Légende commune « * Champ obligatoire », à ajouter une fois par
+    dialogue/page comportant au moins un champ marqué par :func:`required_label`."""
+    legend = QLabel(REQUIRED_FIELD_LEGEND, parent)
+    legend.setObjectName("requiredFieldLegend")
+    legend.setStyleSheet("color: #6B7280; font-size: 11px;")
+    return legend
 
 
 def date_to_qdate(value: date) -> QDate:

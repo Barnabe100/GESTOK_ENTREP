@@ -69,6 +69,13 @@ from app.utils.money import round_money
 
 logger = get_logger("services.sales")
 
+# Alignées sur les colonnes de ``Paiement`` (app/models/payment.py) : au-delà
+# de ces longueurs, une insertion échouerait avec une erreur SQL brute plutôt
+# qu'un message métier — voir ``_validate_optional_text``.
+MAX_MODE_PAIEMENT_LENGTH = 50
+MAX_PAIEMENT_REFERENCE_LENGTH = 100
+MAX_PAIEMENT_COMMENTAIRE_LENGTH = 500
+
 
 @dataclass(frozen=True)
 class VenteLigneInput:
@@ -213,6 +220,22 @@ def _validate_positive_quantity(value: Decimal, field_label: str) -> Decimal:
 def _validate_money(value: Decimal, field_label: str) -> Decimal:
     if value < 0:
         raise ValidationError(f"Le champ « {field_label} » ne peut pas être négatif.")
+    return value
+
+
+def _validate_optional_text(value: Optional[str], field_label: str, max_length: int) -> Optional[str]:
+    """Même principe que dans ``ClientService``/``SupplierService`` : une
+    chaîne vide ou uniquement des espaces devient ``None`` (champ facultatif
+    réellement non renseigné), sinon la longueur est bornée pour rester
+    cohérente avec la colonne SQL correspondante — jamais laissé remonter
+    comme une erreur SQL brute."""
+    if value is None:
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    if len(value) > max_length:
+        raise ValidationError(f"Le champ « {field_label} » ne doit pas dépasser {max_length} caractères.")
     return value
 
 
@@ -624,6 +647,9 @@ class SaleService:
         montant = _validate_money(montant, "montant du paiement")
         if montant <= 0:
             raise ValidationError("Le montant du paiement doit être strictement positif.")
+        mode_paiement = _validate_optional_text(mode_paiement, "mode de paiement", MAX_MODE_PAIEMENT_LENGTH)
+        reference = _validate_optional_text(reference, "référence", MAX_PAIEMENT_REFERENCE_LENGTH)
+        commentaire = _validate_optional_text(commentaire, "commentaire", MAX_PAIEMENT_COMMENTAIRE_LENGTH)
 
         with session_scope(self._settings) as session:
             vente_repo = VenteRepository(session)

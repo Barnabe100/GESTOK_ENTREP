@@ -2,8 +2,37 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog
 
 from app.views.inventory_line_form_dialog import InventoryLineFormDialog
+from tests.ui_test_helpers import (
+    assert_field_is_marked_required,
+    assert_field_is_not_marked_required,
+    assert_has_required_field_legend,
+)
 
 _ARTICLES = [(1, "ART-1 — Eau", "100"), (2, "ART-2 — Riz", "50")]
+
+
+def test_article_and_stock_compte_are_marked_required(qtbot) -> None:
+    dialog = InventoryLineFormDialog(_ARTICLES)
+    qtbot.addWidget(dialog)
+
+    assert_field_is_marked_required(dialog, dialog.article_combo)
+    assert_field_is_marked_required(dialog, dialog.stock_physique_edit)
+
+
+def test_stock_theorique_label_is_not_marked_required(qtbot) -> None:
+    """Champ en lecture seule, piloté par le système — jamais une saisie
+    utilisateur, donc jamais marqué obligatoire (ni facultatif)."""
+    dialog = InventoryLineFormDialog(_ARTICLES)
+    qtbot.addWidget(dialog)
+
+    assert_field_is_not_marked_required(dialog, dialog.stock_theorique_label)
+
+
+def test_dialog_shows_required_field_legend(qtbot) -> None:
+    dialog = InventoryLineFormDialog(_ARTICLES)
+    qtbot.addWidget(dialog)
+
+    assert_has_required_field_legend(dialog)
 
 
 def test_shows_stock_theorique_for_selected_article_as_readonly(qtbot) -> None:

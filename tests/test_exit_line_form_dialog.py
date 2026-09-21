@@ -2,8 +2,24 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog
 
 from app.views.exit_line_form_dialog import ExitLineFormDialog
+from tests.ui_test_helpers import assert_field_is_marked_required, assert_has_required_field_legend
 
 _ARTICLES = [(1, "ART-1 — Eau", "500"), (2, "ART-2 — Riz", "1200")]
+
+
+def test_article_and_quantite_are_marked_required(qtbot) -> None:
+    dialog = ExitLineFormDialog(_ARTICLES)
+    qtbot.addWidget(dialog)
+
+    assert_field_is_marked_required(dialog, dialog.article_combo)
+    assert_field_is_marked_required(dialog, dialog.quantite_edit)
+
+
+def test_dialog_shows_required_field_legend(qtbot) -> None:
+    dialog = ExitLineFormDialog(_ARTICLES)
+    qtbot.addWidget(dialog)
+
+    assert_has_required_field_legend(dialog)
 
 
 def test_shows_cmup_for_selected_article_as_readonly(qtbot) -> None:

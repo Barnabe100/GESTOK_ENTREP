@@ -6,8 +6,23 @@ from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import QDateEdit, QDialog
 
 from app.views.inventory_form_dialog import InventoryFormDialog
+from tests.ui_test_helpers import assert_field_is_marked_required, assert_has_required_field_legend
 
 _ARTICLES = [(10, "ART-1 — Eau", "100"), (20, "ART-2 — Riz", "50")]
+
+
+def test_date_field_is_marked_required(qtbot) -> None:
+    dialog = InventoryFormDialog(_ARTICLES)
+    qtbot.addWidget(dialog)
+
+    assert_field_is_marked_required(dialog, dialog.date_edit)
+
+
+def test_dialog_shows_required_field_legend(qtbot) -> None:
+    dialog = InventoryFormDialog(_ARTICLES)
+    qtbot.addWidget(dialog)
+
+    assert_has_required_field_legend(dialog)
 
 
 class _FakeLineDialog:

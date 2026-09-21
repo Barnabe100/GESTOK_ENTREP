@@ -2,6 +2,21 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog
 
 from app.views.category_form_dialog import CategoryFormDialog
+from tests.ui_test_helpers import assert_field_is_marked_required, assert_has_required_field_legend
+
+
+def test_name_field_is_marked_required(qtbot) -> None:
+    dialog = CategoryFormDialog()
+    qtbot.addWidget(dialog)
+
+    assert_field_is_marked_required(dialog, dialog.name_edit)
+
+
+def test_dialog_shows_required_field_legend(qtbot) -> None:
+    dialog = CategoryFormDialog()
+    qtbot.addWidget(dialog)
+
+    assert_has_required_field_legend(dialog)
 
 
 def test_dialog_prefills_name(qtbot) -> None:

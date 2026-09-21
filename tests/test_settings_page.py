@@ -5,6 +5,11 @@ from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QMessageBox
 
 from app.views.pages.settings_page import SettingsPage
+from tests.ui_test_helpers import (
+    assert_field_is_marked_required,
+    assert_field_is_not_marked_required,
+    assert_has_required_field_legend,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -37,6 +42,33 @@ def test_form_prefilled_with_current_config(qtbot, login_as) -> None:
     assert page.telephone_edit.text() == "0102030405"
     assert page.email_edit.text() == "a@b.com"
     assert page.devise_combo.currentText() == "EUR"
+
+
+def test_required_fields_are_marked_required(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert_field_is_marked_required(page, page.nom_edit)
+    assert_field_is_marked_required(page, page.devise_combo)
+
+
+def test_optional_fields_are_not_marked_required(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert_field_is_not_marked_required(page, page.adresse_edit)
+    assert_field_is_not_marked_required(page, page.telephone_edit)
+    assert_field_is_not_marked_required(page, page.email_edit)
+
+
+def test_page_shows_required_field_legend(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert_has_required_field_legend(page)
 
 
 def test_default_currency_is_preselected_when_unconfigured(qtbot, login_as) -> None:

@@ -22,6 +22,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.views.common import build_required_field_legend, required_label
+
 
 class CreateUserDialog(QDialog):
     def __init__(
@@ -37,26 +39,28 @@ class CreateUserDialog(QDialog):
         form = QFormLayout()
         self.username_edit = QLineEdit(self)
         self.username_edit.setText(initial_username)
-        form.addRow("Nom d'utilisateur", self.username_edit)
+        form.addRow(required_label("Nom d'utilisateur"), self.username_edit)
 
         self.password_edit = QLineEdit(self)
         self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        form.addRow("Mot de passe", self.password_edit)
+        form.addRow(required_label("Mot de passe"), self.password_edit)
 
         self.confirm_password_edit = QLineEdit(self)
         self.confirm_password_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        form.addRow("Confirmer le mot de passe", self.confirm_password_edit)
+        form.addRow(required_label("Confirmer le mot de passe"), self.confirm_password_edit)
 
         self.role_combo = QComboBox(self)
         for role_id, role_name in roles:
             self.role_combo.addItem(role_name, role_id)
-        form.addRow("Rôle", self.role_combo)
+        form.addRow(required_label("Rôle"), self.role_combo)
 
         self.active_checkbox = QCheckBox("Compte actif", self)
         self.active_checkbox.setChecked(True)
         form.addRow(self.active_checkbox)
 
         layout.addLayout(form)
+
+        layout.addWidget(build_required_field_legend(self))
 
         self.error_label = QLabel("", self)
         self.error_label.setStyleSheet("color: #DC2626;")

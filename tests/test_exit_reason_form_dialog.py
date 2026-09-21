@@ -2,6 +2,32 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog
 
 from app.views.exit_reason_form_dialog import ExitReasonFormDialog
+from tests.ui_test_helpers import (
+    assert_field_is_marked_required,
+    assert_field_is_not_marked_required,
+    assert_has_required_field_legend,
+)
+
+
+def test_libelle_field_is_marked_required(qtbot) -> None:
+    dialog = ExitReasonFormDialog()
+    qtbot.addWidget(dialog)
+
+    assert_field_is_marked_required(dialog, dialog.label_edit)
+
+
+def test_description_field_is_not_marked_required(qtbot) -> None:
+    dialog = ExitReasonFormDialog()
+    qtbot.addWidget(dialog)
+
+    assert_field_is_not_marked_required(dialog, dialog.description_edit)
+
+
+def test_dialog_shows_required_field_legend(qtbot) -> None:
+    dialog = ExitReasonFormDialog()
+    qtbot.addWidget(dialog)
+
+    assert_has_required_field_legend(dialog)
 
 
 def test_dialog_prefills_libelle_and_description(qtbot) -> None:

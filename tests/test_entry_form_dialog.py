@@ -6,9 +6,37 @@ from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import QDateEdit, QDialog
 
 from app.views.entry_form_dialog import EntryFormDialog
+from tests.ui_test_helpers import (
+    assert_field_is_marked_required,
+    assert_field_is_not_marked_required,
+    assert_has_required_field_legend,
+)
 
 _SUPPLIERS = [(1, "Fournisseur A"), (2, "Fournisseur B")]
 _ARTICLES = [(10, "ART-1 — Eau", "500"), (20, "ART-2 — Riz", "1200")]
+
+
+def test_required_fields_are_marked_required(qtbot) -> None:
+    dialog = EntryFormDialog(_SUPPLIERS, _ARTICLES)
+    qtbot.addWidget(dialog)
+
+    assert_field_is_marked_required(dialog, dialog.supplier_combo)
+    assert_field_is_marked_required(dialog, dialog.date_edit)
+
+
+def test_optional_fields_are_not_marked_required(qtbot) -> None:
+    dialog = EntryFormDialog(_SUPPLIERS, _ARTICLES)
+    qtbot.addWidget(dialog)
+
+    assert_field_is_not_marked_required(dialog, dialog.reference_document_edit)
+    assert_field_is_not_marked_required(dialog, dialog.commentaire_edit)
+
+
+def test_dialog_shows_required_field_legend(qtbot) -> None:
+    dialog = EntryFormDialog(_SUPPLIERS, _ARTICLES)
+    qtbot.addWidget(dialog)
+
+    assert_has_required_field_legend(dialog)
 
 
 class _FakeLineDialog:

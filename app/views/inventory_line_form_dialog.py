@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.utils.quantity import format_quantity, format_quantity_signed
+from app.views.common import build_required_field_legend, required_label
 
 
 class InventoryLineFormDialog(QDialog):
@@ -50,7 +51,7 @@ class InventoryLineFormDialog(QDialog):
         for article_id, label, stock_theorique in articles:
             self.article_combo.addItem(label, (article_id, stock_theorique))
         self._select_combo_data_by_id(initial.get("article_id"))
-        form.addRow("Article", self.article_combo)
+        form.addRow(required_label("Article"), self.article_combo)
 
         self.stock_theorique_label = QLabel("", self)
         self.stock_theorique_label.setStyleSheet("color: #6B7280;")
@@ -60,12 +61,14 @@ class InventoryLineFormDialog(QDialog):
         self.stock_physique_edit.setText(
             str(initial.get("stock_physique", "")) if initial.get("stock_physique") is not None else ""
         )
-        form.addRow("Stock compté", self.stock_physique_edit)
+        form.addRow(required_label("Stock compté"), self.stock_physique_edit)
 
         self.ecart_label = QLabel("—", self)
         form.addRow("Écart", self.ecart_label)
 
         layout.addLayout(form)
+
+        layout.addWidget(build_required_field_legend(self))
 
         self.error_label = QLabel("", self)
         self.error_label.setStyleSheet("color: #DC2626;")

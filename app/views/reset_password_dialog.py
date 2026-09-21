@@ -22,6 +22,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.views.common import build_required_field_legend, required_label
+
 
 class ResetPasswordDialog(QDialog):
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -37,9 +39,11 @@ class ResetPasswordDialog(QDialog):
         self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self.confirm_password_edit = QLineEdit(self)
         self.confirm_password_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        form.addRow("Nouveau mot de passe", self.password_edit)
-        form.addRow("Confirmer le nouveau mot de passe", self.confirm_password_edit)
+        form.addRow(required_label("Nouveau mot de passe"), self.password_edit)
+        form.addRow(required_label("Confirmer le nouveau mot de passe"), self.confirm_password_edit)
         layout.addLayout(form)
+
+        layout.addWidget(build_required_field_legend(self))
 
         self.error_label = QLabel("", self)
         self.error_label.setStyleSheet("color: #DC2626;")

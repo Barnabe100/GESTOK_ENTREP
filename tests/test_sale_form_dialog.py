@@ -6,9 +6,44 @@ from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import QDateEdit, QDialog
 
 from app.views.sale_form_dialog import SaleFormDialog
+from tests.ui_test_helpers import assert_field_is_marked_required, assert_has_required_field_legend
 
 _ARTICLES = [(10, "ART-1 — Eau", "800"), (20, "ART-2 — Riz", "1500")]
 _CLIENTS = [(1, "Client Alpha"), (2, "Client Beta")]
+
+
+def test_date_field_is_marked_required(qtbot) -> None:
+    dialog = SaleFormDialog(_ARTICLES, _CLIENTS)
+    qtbot.addWidget(dialog)
+
+    assert_field_is_marked_required(dialog, dialog.date_edit)
+
+
+def test_dialog_shows_required_field_legend(qtbot) -> None:
+    dialog = SaleFormDialog(_ARTICLES, _CLIENTS)
+    qtbot.addWidget(dialog)
+
+    assert_has_required_field_legend(dialog)
+
+
+def test_client_field_is_not_marked_required(qtbot) -> None:
+    """Le client est facultatif (vente comptant, voir SaleService) — son
+    libellé ne doit porter aucun « * »."""
+    from PySide6.QtWidgets import QFormLayout
+
+    dialog = SaleFormDialog(_ARTICLES, _CLIENTS)
+    qtbot.addWidget(dialog)
+
+    form = dialog.findChild(QFormLayout)
+    client_row_index = None
+    for i in range(form.rowCount()):
+        field_item = form.itemAt(i, QFormLayout.ItemRole.FieldRole)
+        if field_item is not None and field_item.layout() is not None:
+            client_row_index = i
+            break
+    assert client_row_index is not None, "Ligne « Client » introuvable."
+    label = form.itemAt(client_row_index, QFormLayout.ItemRole.LabelRole).widget()
+    assert not label.text().rstrip().endswith("*")
 
 
 class _FakeLineDialog:

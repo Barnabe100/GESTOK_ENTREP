@@ -30,6 +30,30 @@ def test_users_page_toggle_button_enabled_for_administrateur(qtbot, login_as) ->
     assert page.toggle_button.isEnabled() is True
 
 
+def test_submit_create_user_rejects_missing_role(qtbot, login_as) -> None:
+    """Garde explicite (audit champs obligatoires) : un role_id manquant est
+    refusé avec un message clair, avant même l'appel au service — jamais un
+    NotFoundError confus (« Rôle None introuvable »)."""
+    stack, _ = login_as("Administrateur")
+    page = UsersPage(stack.users, stack.permissions)
+    qtbot.addWidget(page)
+
+    result = page._submit_create_user("nouvel_utilisateur", "MotDePasse!23", None, True)
+
+    assert result is False
+    assert "nouvel_utilisateur" not in {u.username for u in stack.users.list_users()}
+
+
+def test_submit_update_user_rejects_missing_role(qtbot, login_as) -> None:
+    stack, current_user = login_as("Administrateur")
+    page = UsersPage(stack.users, stack.permissions)
+    qtbot.addWidget(page)
+
+    result = page._submit_update_user(current_user.id, None)
+
+    assert result is False
+
+
 def test_users_page_toggle_button_disabled_and_table_empty_for_vendeur(qtbot, login_as) -> None:
     """Un Vendeur n'a ni USER_VIEW ni USER_ACTIVATE : la page, si elle était atteinte,
     n'affiche rien et son bouton d'action est désactivé."""
