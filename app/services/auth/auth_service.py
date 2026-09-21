@@ -111,12 +111,20 @@ class AuthService:
                 pending_error = AccountDisabledError("Ce compte est désactivé.")
             else:
                 user.dernier_login = datetime.now(timezone.utc)
-                permissions = frozenset(p.code for p in user.role.permissions)
+                # Permissions effectives = union des permissions de TOUS les
+                # rôles de l'utilisateur (§2 du lot multi-rôles) — une
+                # permission commune à plusieurs rôles n'apparaît qu'une
+                # seule fois grâce au frozenset. Calculé ici, une fois pour
+                # toutes à la connexion, jamais recalculé dynamiquement en
+                # cours de session (voir docstring de UserService.update_user).
+                permissions = frozenset(
+                    p.code for role in user.roles for p in role.permissions
+                )
                 current_user = CurrentUser(
                     id=user.id,
                     username=user.username,
-                    role_id=user.role_id,
-                    role_name=user.role.nom,
+                    role_ids=frozenset(role.id for role in user.roles),
+                    role_names=tuple(sorted(role.nom for role in user.roles)),
                     permissions=permissions,
                     must_change_password=user.must_change_password,
                 )

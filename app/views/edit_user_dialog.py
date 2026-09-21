@@ -1,20 +1,24 @@
-"""Formulaire de modification du rôle d'un utilisateur existant.
+"""Formulaire de modification des rôles d'un utilisateur existant.
 
-Ne connaît rien du service métier : collecte uniquement le nouveau rôle
-choisi (liste fournie par l'appelant, ``UsersPage``, qui appelle seul
+Ne connaît rien du service métier : collecte uniquement les rôles choisis
+(liste fournie par l'appelant, ``UsersPage``, qui appelle seul
 ``UserService`` et gère la validation métier — même principe que
 :class:`app.views.create_user_dialog.CreateUserDialog`). Ne permet pas de
 modifier le nom d'utilisateur (identifiant de connexion) ni le mot de
-passe : cette opération est strictement limitée au changement de rôle.
-"""
+passe : cette opération est strictement limitée aux rôles.
+
+Un utilisateur peut avoir plusieurs rôles (§6 du lot multi-rôles) : une
+case à cocher par rôle, pré-cochée selon les rôles actuels de
+l'utilisateur — si l'administrateur ne touche à aucune case, les mêmes
+rôles sont retransmis tels quels à ``UserService.update_user`` (aucun
+changement effectif), ce qui satisfait naturellement l'exigence « conserver
+les rôles existants si non modifiés » sans logique dédiée."""
 from __future__ import annotations
 
-from typing import Optional
-
 from PySide6.QtWidgets import (
-    QComboBox,
+    QCheckBox,
     QDialog,
-    QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -29,25 +33,26 @@ class EditUserDialog(QDialog):
     def __init__(
         self,
         roles: list[tuple[int, str]],
-        current_role_id: Optional[int],
+        current_role_ids: list[int],
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Modifier le rôle de l'utilisateur")
+        self.setWindowTitle("Modifier les rôles de l'utilisateur")
         self.setModal(True)
         self.setMinimumWidth(320)
 
         layout = QVBoxLayout(self)
 
-        form = QFormLayout()
-        self.role_combo = QComboBox(self)
+        current_role_ids_set = set(current_role_ids)
+        roles_group = QGroupBox(required_label("Rôle(s)"), self)
+        roles_layout = QVBoxLayout(roles_group)
+        self._role_checkboxes: list[tuple[int, QCheckBox]] = []
         for role_id, role_name in roles:
-            self.role_combo.addItem(role_name, role_id)
-        index = self.role_combo.findData(current_role_id)
-        if index >= 0:
-            self.role_combo.setCurrentIndex(index)
-        form.addRow(required_label("Rôle"), self.role_combo)
-        layout.addLayout(form)
+            checkbox = QCheckBox(role_name, roles_group)
+            checkbox.setChecked(role_id in current_role_ids_set)
+            roles_layout.addWidget(checkbox)
+            self._role_checkboxes.append((role_id, checkbox))
+        layout.addWidget(roles_group)
 
         layout.addWidget(build_required_field_legend(self))
 
@@ -66,10 +71,16 @@ class EditUserDialog(QDialog):
         layout.addLayout(button_row)
 
         self.cancel_button.clicked.connect(self.reject)
-        self.save_button.clicked.connect(self.accept)
+        self.save_button.clicked.connect(self._on_save_clicked)
 
-    def role_id(self) -> Optional[int]:
-        return self.role_combo.currentData()
+    def _on_save_clicked(self) -> None:
+        if not self.role_ids():
+            self.error_label.setText("Veuillez sélectionner au moins un rôle.")
+            return
+        self.accept()
+
+    def role_ids(self) -> list[int]:
+        return [role_id for role_id, checkbox in self._role_checkboxes if checkbox.isChecked()]
 
     def set_error(self, message: str) -> None:
         self.error_label.setText(message)

@@ -28,7 +28,7 @@ from app.views.create_user_dialog import CreateUserDialog
 from app.views.edit_user_dialog import EditUserDialog
 from app.views.reset_password_dialog import ResetPasswordDialog
 
-_COLUMNS = ["Utilisateur", "Rôle", "Statut", "Dernière connexion"]
+_COLUMNS = ["Utilisateur", "Rôle(s)", "Statut", "Dernière connexion"]
 
 
 class UsersPage(QWidget):
@@ -89,8 +89,13 @@ class UsersPage(QWidget):
         for row, user in enumerate(users):
             username_item = QTableWidgetItem(user.username)
             username_item.setData(Qt.ItemDataRole.UserRole, user.id)
+            # Rôles réels (ids) stockés à part de l'affichage textuel : évite
+            # de devoir ré-associer un nom de rôle affiché à son id (fragile
+            # dès que plusieurs rôles sont affichés ensemble), voir
+            # _on_edit_clicked ci-dessous.
+            username_item.setData(Qt.ItemDataRole.UserRole + 1, user.role_ids)
             self.table.setItem(row, 0, username_item)
-            self.table.setItem(row, 1, QTableWidgetItem(user.role_name))
+            self.table.setItem(row, 1, QTableWidgetItem(", ".join(user.role_names)))
             self.table.setItem(row, 2, QTableWidgetItem("Actif" if user.actif else "Inactif"))
             last_login = (
                 user.dernier_login.strftime("%Y-%m-%d %H:%M") if user.dernier_login else "—"
@@ -120,21 +125,21 @@ class UsersPage(QWidget):
         def submit(dialog: CreateUserDialog) -> bool:
             state["username"] = dialog.username()
             return self._submit_create_user(
-                dialog.username(), dialog.password(), dialog.role_id(), dialog.is_active()
+                dialog.username(), dialog.password(), dialog.role_ids(), dialog.is_active()
             )
 
         run_modal_form(factory, submit)
         self.refresh()
 
     def _submit_create_user(
-        self, username: str, password: str, role_id: Optional[int], actif: bool
+        self, username: str, password: str, role_ids: Optional[list[int]], actif: bool
     ) -> bool:
         """Effectue l'appel service et affiche le résultat. Isolé de
         ``_on_add_clicked`` pour rester testable sans dialogue modal."""
         try:
-            if role_id is None:
-                raise ValidationError("Veuillez sélectionner un rôle.")
-            self._user_service.create_user(username, password, role_id, actif=actif)
+            if not role_ids:
+                raise ValidationError("Veuillez sélectionner au moins un rôle.")
+            self._user_service.create_user(username, password, role_ids, actif=actif)
             QMessageBox.information(self, "Utilisateur créé", f"Le compte « {username} » a été créé.")
         except AppError as exc:
             QMessageBox.warning(self, "Création refusée", str(exc))
@@ -150,7 +155,7 @@ class UsersPage(QWidget):
 
         row = selected[0].row()
         user_id = self.table.item(row, 0).data(Qt.ItemDataRole.UserRole)
-        current_role_name = self.table.item(row, 1).text()
+        current_role_ids = self.table.item(row, 0).data(Qt.ItemDataRole.UserRole + 1) or []
 
         try:
             roles = [(role.id, role.nom) for role in self._user_service.list_roles()]
@@ -160,27 +165,24 @@ class UsersPage(QWidget):
         if not roles:
             QMessageBox.warning(self, "Aucun rôle disponible", "Aucun rôle n'est configuré.")
             return
-        current_role_id = next(
-            (role_id for role_id, role_name in roles if role_name == current_role_name), roles[0][0]
-        )
 
         def factory() -> EditUserDialog:
-            return EditUserDialog(roles, current_role_id, parent=self)
+            return EditUserDialog(roles, list(current_role_ids), parent=self)
 
         def submit(dialog: EditUserDialog) -> bool:
-            return self._submit_update_user(user_id, dialog.role_id())
+            return self._submit_update_user(user_id, dialog.role_ids())
 
         run_modal_form(factory, submit)
         self.refresh()
 
-    def _submit_update_user(self, user_id: int, role_id: Optional[int]) -> bool:
+    def _submit_update_user(self, user_id: int, role_ids: Optional[list[int]]) -> bool:
         """Effectue l'appel service et affiche le résultat. Isolé de
         ``_on_edit_clicked`` pour rester testable sans dialogue modal."""
         try:
-            if role_id is None:
-                raise ValidationError("Veuillez sélectionner un rôle.")
-            self._user_service.update_user(user_id, role_id)
-            QMessageBox.information(self, "Rôle modifié", "Le rôle de l'utilisateur a été mis à jour.")
+            if not role_ids:
+                raise ValidationError("Veuillez sélectionner au moins un rôle.")
+            self._user_service.update_user(user_id, role_ids)
+            QMessageBox.information(self, "Rôles modifiés", "Les rôles de l'utilisateur ont été mis à jour.")
         except AppError as exc:
             QMessageBox.warning(self, "Modification refusée", str(exc))
             return False

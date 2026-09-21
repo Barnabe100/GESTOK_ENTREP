@@ -10,6 +10,22 @@ role_permissions = Table(
     Column("permission_id", ForeignKey("permissions.id", ondelete="CASCADE"), primary_key=True),
 )
 
+# Association Utilisateur <-> Rôle (many-to-many, un utilisateur peut avoir
+# plusieurs rôles — voir migration 0011). Définie ici, à côté de
+# ``role_permissions``, plutôt que dans ``app/models/user.py`` : les deux
+# tables d'association RBAC restent regroupées au même endroit. Toujours
+# ``users.role_id`` (colonne historique conservée telle quelle, voir
+# ``User.role_id``) qui satisfait la contrainte NOT NULL historique — cette
+# table est la seule source de vérité pour l'appartenance réelle à un rôle
+# et pour le calcul des permissions effectives (``AuthService.login``,
+# ``UserService``), jamais ``users.role_id``.
+user_roles = Table(
+    "user_roles",
+    Base.metadata,
+    Column("user_id", ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+    Column("role_id", ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True),
+)
+
 
 class Role(Base):
     __tablename__ = "roles"
@@ -18,7 +34,7 @@ class Role(Base):
     nom: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
     description: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
-    users: Mapped[list["User"]] = relationship("User", back_populates="role")
+    users: Mapped[list["User"]] = relationship("User", secondary=user_roles, back_populates="roles")
     permissions: Mapped[list["Permission"]] = relationship(
         "Permission", secondary=role_permissions, back_populates="roles"
     )

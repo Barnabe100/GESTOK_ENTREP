@@ -104,18 +104,25 @@ def initialized_db(test_settings: Settings) -> Settings:
 
 @pytest.fixture()
 def make_user(initialized_db: Settings) -> Callable[..., None]:
-    """Factory de test : crée un utilisateur avec le rôle donné."""
+    """Factory de test : crée un utilisateur avec le(s) rôle(s) donné(s).
+
+    ``role_name`` accepte un nom de rôle unique (``str``, comportement
+    historique, inchangé) ou une liste de noms (``list[str]``, lot
+    multi-rôles) — évite de devoir toucher aux dizaines de sites d'appel
+    existants qui passent un seul rôle."""
 
     def _make_user(
-        role_name: str, username: str, password: str = DEFAULT_TEST_PASSWORD, actif: bool = True
+        role_name: str | list[str], username: str, password: str = DEFAULT_TEST_PASSWORD, actif: bool = True
     ) -> None:
+        role_names = [role_name] if isinstance(role_name, str) else list(role_name)
         with db_session_module.session_scope(initialized_db) as session:
-            role = session.query(Role).filter_by(nom=role_name).one()
+            roles = [session.query(Role).filter_by(nom=name).one() for name in role_names]
             session.add(
                 User(
                     username=username,
                     password_hash=hash_password(password),
-                    role_id=role.id,
+                    role_id=roles[0].id,
+                    roles=roles,
                     actif=actif,
                 )
             )
@@ -140,13 +147,20 @@ def login_as(
     make_user: Callable[..., None],
     make_stack: Callable[[], ServiceRegistry],
 ) -> Callable[..., tuple[ServiceRegistry, CurrentUser]]:
-    """Crée un utilisateur avec le rôle donné, le connecte, et retourne (stack, current_user)."""
+    """Crée un utilisateur avec le(s) rôle(s) donné(s), le connecte, et
+    retourne (stack, current_user). ``role_name`` accepte un ``str`` (un
+    seul rôle, comportement historique) ou une ``list[str]`` (plusieurs
+    rôles, lot multi-rôles)."""
 
     counter = {"n": 0}
 
-    def _login_as(role_name: str, password: str = DEFAULT_TEST_PASSWORD) -> tuple[ServiceRegistry, CurrentUser]:
+    def _login_as(
+        role_name: str | list[str], password: str = DEFAULT_TEST_PASSWORD
+    ) -> tuple[ServiceRegistry, CurrentUser]:
         counter["n"] += 1
-        username = f"test_{role_name.lower().replace(' ', '_')}_{counter['n']}"
+        role_names = [role_name] if isinstance(role_name, str) else list(role_name)
+        slug = "_".join(name.lower().replace(" ", "_") for name in role_names)
+        username = f"test_{slug}_{counter['n']}"
         make_user(role_name, username, password)
         stack = make_stack()
         current_user = stack.auth.login(username, password)

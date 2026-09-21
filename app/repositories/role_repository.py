@@ -22,9 +22,13 @@ class RoleRepository(SQLAlchemyRepository[Role]):
         return self.session.query(Role).order_by(Role.nom).all()
 
     def count_active_users(self, role_id: int) -> int:
+        """Compte les comptes actifs possédant réellement ce rôle — un
+        utilisateur peut avoir plusieurs rôles (voir migration 0011) : c'est
+        l'appartenance réelle (``User.roles``), jamais l'ancien pointeur de
+        compatibilité ``User.role_id``, qui détermine ce décompte."""
         return (
             self.session.query(User)
-            .filter(User.role_id == role_id, User.actif.is_(True))
+            .filter(User.roles.any(Role.id == role_id), User.actif.is_(True))
             .count()
         )
 

@@ -4,16 +4,22 @@ Ne connaît rien du service métier : collecte uniquement une saisie (la
 liste des rôles proposés est fournie par l'appelant, ``UsersPage``, qui
 appelle seul ``UserService`` et gère la validation métier — même principe
 que :class:`app.views.category_form_dialog.CategoryFormDialog`).
-"""
-from __future__ import annotations
 
-from typing import Optional
+Un utilisateur peut avoir plusieurs rôles (§6 du lot multi-rôles) : une
+case à cocher par rôle, plutôt qu'un ``QComboBox`` à sélection unique —
+interface volontairement simple (pas de liste à sélection multiple plus
+complexe à manipuler). La validation « au moins un rôle » reste de la
+responsabilité du service (``UserService.create_user``), jamais uniquement
+de cette vue — le bouton n'est pas désactivé ici en l'absence de
+sélection : le message d'erreur du service s'affiche normalement en cas de
+tentative sans rôle coché."""
+from __future__ import annotations
 
 from PySide6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QDialog,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -49,16 +55,20 @@ class CreateUserDialog(QDialog):
         self.confirm_password_edit.setEchoMode(QLineEdit.EchoMode.Password)
         form.addRow(required_label("Confirmer le mot de passe"), self.confirm_password_edit)
 
-        self.role_combo = QComboBox(self)
+        layout.addLayout(form)
+
+        roles_group = QGroupBox(required_label("Rôle(s)"), self)
+        roles_layout = QVBoxLayout(roles_group)
+        self._role_checkboxes: list[tuple[int, QCheckBox]] = []
         for role_id, role_name in roles:
-            self.role_combo.addItem(role_name, role_id)
-        form.addRow(required_label("Rôle"), self.role_combo)
+            checkbox = QCheckBox(role_name, roles_group)
+            roles_layout.addWidget(checkbox)
+            self._role_checkboxes.append((role_id, checkbox))
+        layout.addWidget(roles_group)
 
         self.active_checkbox = QCheckBox("Compte actif", self)
         self.active_checkbox.setChecked(True)
-        form.addRow(self.active_checkbox)
-
-        layout.addLayout(form)
+        layout.addWidget(self.active_checkbox)
 
         layout.addWidget(build_required_field_legend(self))
 
@@ -83,6 +93,9 @@ class CreateUserDialog(QDialog):
         if self.password_edit.text() != self.confirm_password_edit.text():
             self.error_label.setText("Les deux mots de passe ne correspondent pas.")
             return
+        if not self.role_ids():
+            self.error_label.setText("Veuillez sélectionner au moins un rôle.")
+            return
         self.accept()
 
     def username(self) -> str:
@@ -91,8 +104,8 @@ class CreateUserDialog(QDialog):
     def password(self) -> str:
         return self.password_edit.text()
 
-    def role_id(self) -> Optional[int]:
-        return self.role_combo.currentData()
+    def role_ids(self) -> list[int]:
+        return [role_id for role_id, checkbox in self._role_checkboxes if checkbox.isChecked()]
 
     def is_active(self) -> bool:
         return self.active_checkbox.isChecked()

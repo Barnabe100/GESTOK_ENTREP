@@ -132,7 +132,7 @@ def test_submit_create_user_succeeds_and_refreshes_list(qtbot, login_as) -> None
     qtbot.addWidget(page)
     role_id = next(r.id for r in stack.users.list_roles() if r.nom == "Vendeur")
 
-    result = page._submit_create_user("nouveau_via_ui", "MotDePasse!23", role_id, True)
+    result = page._submit_create_user("nouveau_via_ui", "MotDePasse!23", [role_id], True)
     page.refresh()
 
     assert result is True
@@ -147,7 +147,7 @@ def test_submit_create_user_shows_error_on_duplicate_username(qtbot, login_as, m
     qtbot.addWidget(page)
     role_id = next(r.id for r in stack.users.list_roles() if r.nom == "Vendeur")
 
-    result = page._submit_create_user("existe_deja", "MotDePasse!23", role_id, True)
+    result = page._submit_create_user("existe_deja", "MotDePasse!23", [role_id], True)
 
     assert result is False
 
@@ -160,7 +160,7 @@ def test_submit_create_user_denied_for_role_without_permission(qtbot, login_as) 
     page = UsersPage(stack.users, stack.permissions)
     qtbot.addWidget(page)
 
-    result = page._submit_create_user("intrus_ui", "MotDePasse!23", 1, True)
+    result = page._submit_create_user("intrus_ui", "MotDePasse!23", [1], True)
 
     assert result is False
     admin_stack, _ = login_as("Administrateur")
@@ -176,11 +176,11 @@ def test_submit_create_user_succeeds_for_each_role_via_ui(qtbot, login_as, role_
     role_id = next(r.id for r in stack.users.list_roles() if r.nom == role_name)
     username = f"ui_{role_name.split()[0].lower()}"
 
-    result = page._submit_create_user(username, "MotDePasse!23", role_id, True)
+    result = page._submit_create_user(username, "MotDePasse!23", [role_id], True)
 
     assert result is True
     created = next(u for u in stack.users.list_users() if u.username == username)
-    assert created.role_name == role_name
+    assert created.role_names == (role_name,)
 
 
 # -- modification du rôle -------------------------------------------------------------
@@ -210,12 +210,12 @@ def test_submit_update_user_succeeds_and_refreshes_list(qtbot, login_as, make_us
     target_id = next(u.id for u in stack.users.list_users() if u.username == "cible_ui_edit")
     role_id = next(r.id for r in stack.users.list_roles() if r.nom == "Gestionnaire de stock")
 
-    result = page._submit_update_user(target_id, role_id)
+    result = page._submit_update_user(target_id, [role_id])
     page.refresh()
 
     assert result is True
     updated = next(u for u in stack.users.list_users() if u.username == "cible_ui_edit")
-    assert updated.role_name == "Gestionnaire de stock"
+    assert updated.role_names == ("Gestionnaire de stock",)
 
 
 def test_submit_update_user_shows_error_when_blocked_by_admin_guard(qtbot, login_as) -> None:
@@ -226,11 +226,11 @@ def test_submit_update_user_shows_error_when_blocked_by_admin_guard(qtbot, login
     qtbot.addWidget(page)
     role_id = next(r.id for r in stack.users.list_roles() if r.nom == "Vendeur")
 
-    result = page._submit_update_user(current_user.id, role_id)
+    result = page._submit_update_user(current_user.id, [role_id])
 
     assert result is False
     unchanged = next(u for u in stack.users.list_users() if u.id == current_user.id)
-    assert unchanged.role_name == "Administrateur"
+    assert unchanged.role_names == ("Administrateur",)
 
 
 def test_submit_update_user_denied_for_role_without_permission(qtbot, login_as, make_user) -> None:
@@ -239,7 +239,7 @@ def test_submit_update_user_denied_for_role_without_permission(qtbot, login_as, 
     page = UsersPage(stack.users, stack.permissions)
     qtbot.addWidget(page)
 
-    result = page._submit_update_user(1, 1)
+    result = page._submit_update_user(1, [1])
 
     assert result is False
 

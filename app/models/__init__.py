@@ -5,7 +5,7 @@ dans ``Base.registry`` avant toute création de schéma ou résolution de
 relation (``configure_mappers()``).
 """
 from app.models.base import Base
-from app.models.rbac import Permission, Role, role_permissions
+from app.models.rbac import Permission, Role, role_permissions, user_roles
 from app.models.user import User
 from app.models.catalog import Article, Category, ExitReason, Supplier
 from app.models.client import Client
@@ -29,6 +29,7 @@ __all__ = [
     "Role",
     "Permission",
     "role_permissions",
+    "user_roles",
     "User",
     "Category",
     "Supplier",

@@ -14,7 +14,7 @@ def test_seed_initial_admin_creates_admin_when_no_users_exist(initialized_db: Se
 
     with session_scope(initialized_db) as session:
         admin = session.query(User).filter_by(username=INITIAL_ADMIN_USERNAME).one()
-        assert admin.role.nom == "Administrateur"
+        assert [r.nom for r in admin.roles] == ["Administrateur"]
         assert admin.actif is True
         assert admin.must_change_password is True
         assert verify_password(generated_password, admin.password_hash) is True

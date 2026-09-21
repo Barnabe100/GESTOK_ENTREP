@@ -94,7 +94,7 @@ def test_create_user_active_refused_when_it_would_exceed_max_users(login_as, lic
     role_id = _role_id("Vendeur")
 
     with pytest.raises(ValidationError):
-        stack.users.create_user("nouveau_refuse", "MotDePasse!23", role_id, actif=True)
+        stack.users.create_user("nouveau_refuse", "MotDePasse!23", [role_id], actif=True)
 
     usernames = {u.username for u in stack.users.list_users()}
     assert "nouveau_refuse" not in usernames  # rien n'a été créé
@@ -105,7 +105,7 @@ def test_create_user_active_succeeds_when_still_under_max_users(login_as, licens
     _activate_license_with_max_users(stack, license_envelope_factory, max_users=2)
     role_id = _role_id("Vendeur")
 
-    summary = stack.users.create_user("nouveau_accepte", "MotDePasse!23", role_id, actif=True)
+    summary = stack.users.create_user("nouveau_accepte", "MotDePasse!23", [role_id], actif=True)
 
     assert summary.actif is True
 
@@ -117,6 +117,6 @@ def test_create_user_inactive_is_never_blocked_by_the_limit(login_as, license_en
     _activate_license_with_max_users(stack, license_envelope_factory, max_users=1)  # déjà à sa limite
     role_id = _role_id("Vendeur")
 
-    summary = stack.users.create_user("nouveau_inactif", "MotDePasse!23", role_id, actif=False)
+    summary = stack.users.create_user("nouveau_inactif", "MotDePasse!23", [role_id], actif=False)
 
     assert summary.actif is False

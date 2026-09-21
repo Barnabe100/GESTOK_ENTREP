@@ -18,7 +18,7 @@ from app.security.password_hashing import hash_password
 
 def _create_base_data(session: Session):
     role = session.query(Role).filter_by(nom="Gestionnaire de stock").one()
-    user = User(username="jdupont", password_hash=hash_password("Motdepasse!23"), role_id=role.id)
+    user = User(username="jdupont", password_hash=hash_password("Motdepasse!23"), role_id=role.id, roles=[role])
     category = Category(nom="Boissons")
     supplier = Supplier(nom="Fournisseur Test")
     session.add_all([user, category, supplier])
@@ -90,15 +90,37 @@ def test_entree_validation_creates_traceable_movement(initialized_db: Settings) 
         assert mouvement.entree_ligne_id == ligne.id
 
 
-def test_user_role_relationship(initialized_db: Settings) -> None:
+def test_user_roles_relationship(initialized_db: Settings) -> None:
+    """``User.roles``/``Role.users`` : relation many-to-many (lot
+    multi-rôles) — un utilisateur peut porter un ou plusieurs rôles."""
     with session_scope(initialized_db) as session:
         role = session.query(Role).filter_by(nom="Vendeur").one()
-        user = User(username="vendeur1", password_hash=hash_password("AzertY123!"), role_id=role.id)
+        user = User(
+            username="vendeur1", password_hash=hash_password("AzertY123!"), role_id=role.id, roles=[role]
+        )
         session.add(user)
         session.flush()
 
-        assert user.role.nom == "Vendeur"
+        assert [r.nom for r in user.roles] == ["Vendeur"]
         assert user in role.users
+
+
+def test_user_can_have_multiple_roles(initialized_db: Settings) -> None:
+    with session_scope(initialized_db) as session:
+        vendeur = session.query(Role).filter_by(nom="Vendeur").one()
+        gestionnaire = session.query(Role).filter_by(nom="Gestionnaire de stock").one()
+        user = User(
+            username="polyvalent",
+            password_hash=hash_password("AzertY123!"),
+            role_id=vendeur.id,
+            roles=[vendeur, gestionnaire],
+        )
+        session.add(user)
+        session.flush()
+
+        assert {r.nom for r in user.roles} == {"Vendeur", "Gestionnaire de stock"}
+        assert user in vendeur.users
+        assert user in gestionnaire.users
 
 
 def test_foreign_key_violation_is_rejected(initialized_db: Settings) -> None:

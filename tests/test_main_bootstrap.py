@@ -47,7 +47,7 @@ def test_bootstrap_creates_initial_admin_account(test_settings: Settings) -> Non
 
     with session_scope(test_settings) as session:
         admin = session.query(User).filter_by(username=INITIAL_ADMIN_USERNAME).one()
-        assert admin.role.nom == "Administrateur"
+        assert [r.nom for r in admin.roles] == ["Administrateur"]
         assert admin.must_change_password is True
 
 

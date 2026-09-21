@@ -256,7 +256,7 @@ class MainWindow(QMainWindow):
 
         current_user = self._permissions.current_user
         user_text = (
-            f"{current_user.username} ({current_user.role_name})" if current_user else ""
+            f"{current_user.username} ({', '.join(current_user.role_names)})" if current_user else ""
         )
         self.user_label = QLabel(user_text, top_bar)
         top_bar_layout.addWidget(self.user_label)

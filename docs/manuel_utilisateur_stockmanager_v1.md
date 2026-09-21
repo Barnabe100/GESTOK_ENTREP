@@ -487,7 +487,7 @@ Selon le rapport : recherche texte, catégorie, période, statut, motif, type de
 
 ### Création
 
-Formulaire : identifiant (obligatoire, unique, 50 caractères max), mot de passe (obligatoire, au moins 8 caractères), rôle (obligatoire), compte actif (case à cocher). Le nouveau compte doit obligatoirement changer son mot de passe à sa première connexion — cette contrainte est automatique, jamais un champ que l'administrateur peut désactiver.
+Formulaire : identifiant (obligatoire, unique, 50 caractères max), mot de passe (obligatoire, au moins 8 caractères), rôle(s) (au moins un obligatoire — une case à cocher par rôle disponible), compte actif (case à cocher). Le nouveau compte doit obligatoirement changer son mot de passe à sa première connexion — cette contrainte est automatique, jamais un champ que l'administrateur peut désactiver.
 
 ### Activation / désactivation
 
@@ -501,11 +501,17 @@ Un administrateur peut réinitialiser le mot de passe d'un utilisateur. Le nouve
 
 ### Rôles
 
-Chaque utilisateur est rattaché à exactement un rôle parmi les quatre rôles existants (voir chapitre 17). Un administrateur ne peut jamais retirer son **propre** rôle Administrateur (même s'il reste d'autres administrateurs) ; un autre administrateur peut le faire, à condition qu'il reste au moins un compte Administrateur actif après l'opération.
+**Un utilisateur peut posséder plusieurs rôles. Les permissions effectives correspondent à l'union des permissions de tous ses rôles.** Un compte garde toujours un seul identifiant et un seul mot de passe, quel que soit le nombre de rôles qui lui sont attribués — ce n'est jamais un compte par rôle. Exemple : Jean cumule les rôles **Vendeur** et **Gestionnaire de stock** ; il se connecte une seule fois, avec un seul mot de passe, et dispose dans la même session de l'ensemble des permissions des deux rôles (créer/valider une vente, comme gérer le catalogue et les mouvements de stock).
+
+Chaque utilisateur doit avoir **au moins un rôle** ; il est impossible d'enregistrer un compte sans aucun rôle sélectionné, et un même rôle ne peut pas être coché deux fois pour le même utilisateur. À la création comme à la modification, l'écran Utilisateurs propose une case à cocher par rôle disponible (voir chapitre 17) ; à la modification, les rôles déjà attribués sont pré-cochés — si l'administrateur ne touche à aucune case, les mêmes rôles restent inchangés.
+
+Un administrateur ne peut jamais retirer son **propre** rôle Administrateur (même s'il reste d'autres administrateurs, et même si Administrateur n'est qu'un rôle parmi d'autres pour ce compte) ; un autre administrateur peut le faire, à condition qu'il reste au moins un compte Administrateur actif après l'opération. Le rôle Administrateur ne bénéficie d'aucun traitement spécial du seul fait qu'un compte cumule plusieurs rôles : ses permissions, comme celles de n'importe quel autre rôle, s'ajoutent simplement à l'union.
 
 ### Permissions
 
-Les permissions ne se gèrent pas individuellement par utilisateur : elles sont attachées au **rôle**. Modifier les droits d'un utilisateur consiste donc à lui attribuer un autre rôle (voir chapitre 17).
+Les permissions ne se gèrent pas individuellement par utilisateur : elles sont attachées à chaque **rôle**. Un utilisateur ayant plusieurs rôles cumule les permissions de chacun d'eux (union, sans doublon) ; retirer un rôle lui retire les permissions propres à ce rôle, sauf si un autre de ses rôles les couvre également. Modifier les droits d'un utilisateur consiste donc à lui attribuer ou lui retirer des rôles (voir chapitre 17).
+
+**Nombre de comptes utilisateurs (licence)** : un utilisateur ayant plusieurs rôles ne compte jamais que pour **un seul compte actif** vis-à-vis de la limite `max_users` de la licence — avoir plusieurs rôles n'occupe jamais plusieurs places. Exemple : Jean (Vendeur + Gestionnaire de stock), Paul (Vendeur) et Marie (Consultation) représentent 3 comptes actifs, jamais 4.
 
 ---
 
@@ -708,5 +714,5 @@ Le reçu de vente documente **la transaction commerciale complète** (ce qui a �
 - **Validation** : action qui rend un document définitif et déclenche son impact réel sur le stock (création de mouvements).
 - **Annulation** : action inverse d'une validation, applicable uniquement à un document déjà validé (sauf inventaire, qui ne s'annule jamais), générant un mouvement inverse sans supprimer le document original.
 - **Vente comptant** : vente sans client identifié.
-- **RBAC** : contrôle d'accès basé sur les rôles — chaque utilisateur a un rôle, chaque rôle a un ensemble de permissions.
+- **RBAC** : contrôle d'accès basé sur les rôles — chaque utilisateur a un ou plusieurs rôles, chaque rôle a un ensemble de permissions ; les permissions effectives d'un utilisateur sont l'union des permissions de tous ses rôles.
 - **Licence** : fichier signé électroniquement qui autorise l'usage de certaines fonctionnalités de l'application, pour une édition et une durée données.

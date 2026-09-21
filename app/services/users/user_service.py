@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Sequence
 
 from sqlalchemy.exc import IntegrityError
 
@@ -67,22 +67,53 @@ class RoleSummary:
     nom: str
 
 
+def _validate_role_ids(role_ids: Sequence[int]) -> list[int]:
+    """Un utilisateur doit avoir au moins un rôle, jamais deux fois le même
+    (§7 du lot multi-rôles) — vérifié ici, côté service, avant toute
+    résolution en base : jamais uniquement côté interface."""
+    role_ids = list(role_ids or [])
+    if not role_ids:
+        raise ValidationError("Veuillez sélectionner au moins un rôle.")
+    if len(role_ids) != len(set(role_ids)):
+        raise ValidationError("Un même rôle ne peut pas être attribué deux fois au même utilisateur.")
+    return role_ids
+
+
+def _resolve_roles(session, role_ids: Sequence[int]) -> list[Role]:
+    """Résout et retourne les ``Role`` correspondant à ``role_ids``, dans
+    l'ordre fourni. Lève ``NotFoundError`` au premier identifiant inconnu."""
+    roles: list[Role] = []
+    for role_id in role_ids:
+        role = session.get(Role, role_id)
+        if role is None:
+            raise NotFoundError(f"Rôle {role_id} introuvable.")
+        roles.append(role)
+    return roles
+
+
 @dataclass(frozen=True)
 class UserSummary:
-    """Vue en lecture seule d'un utilisateur, sans le hash de mot de passe."""
+    """Vue en lecture seule d'un utilisateur, sans le hash de mot de passe.
+
+    ``role_ids``/``role_names`` sont des tuples triés par nom de rôle
+    (ordre stable et déterministe pour l'affichage comme pour les tests) —
+    un utilisateur a toujours au moins un rôle (§7), jamais aucun."""
 
     id: int
     username: str
-    role_name: str
+    role_ids: tuple[int, ...]
+    role_names: tuple[str, ...]
     actif: bool
     dernier_login: Optional[datetime]
 
     @classmethod
     def from_model(cls, user: User) -> "UserSummary":
+        ordered_roles = sorted(user.roles, key=lambda role: role.nom)
         return cls(
             id=user.id,
             username=user.username,
-            role_name=user.role.nom,
+            role_ids=tuple(role.id for role in ordered_roles),
+            role_names=tuple(role.nom for role in ordered_roles),
             actif=user.actif,
             dernier_login=user.dernier_login,
         )
@@ -124,9 +155,18 @@ class UserService:
             return [RoleSummary(id=role.id, nom=role.nom) for role in roles]
 
     def create_user(
-        self, username: str, password: str, role_id: int, actif: bool = True
+        self, username: str, password: str, role_ids: Sequence[int], actif: bool = True
     ) -> UserSummary:
         """Crée un nouvel utilisateur (écran Administration → Utilisateurs).
+
+        ``role_ids`` : un ou plusieurs rôles (§1/§7 du lot multi-rôles) —
+        jamais vide, jamais de doublon (voir ``_validate_role_ids``). Un même
+        compte garde un seul mot de passe, quel que soit le nombre de rôles.
+        La colonne historique ``User.role_id`` (conservée pour compatibilité,
+        voir son commentaire dans ``app/models/user.py``) est renseignée avec
+        le premier rôle fourni ; ``User.roles`` (la collection complète) est
+        la seule source de vérité pour les permissions et l'appartenance
+        réelle aux rôles.
 
         Le mot de passe saisi par l'administrateur est haché avec le même
         mécanisme que partout ailleurs (``hash_password``, Argon2) — jamais
@@ -140,17 +180,19 @@ class UserService:
         la limite ``max_users`` de la licence active (§12 de la phase
         Licences) est donc revérifiée ici de la même façon, pour ne jamais
         pouvoir être contournée en créant un compte plutôt qu'en réactivant
-        un compte existant."""
+        un compte existant. Un utilisateur ayant plusieurs rôles ne compte
+        jamais que pour un seul compte actif (§10 du lot multi-rôles) : la
+        limite porte sur le nombre de lignes ``User``, jamais sur le nombre
+        de rôles détenus."""
         self._permissions.require_permission("USER_CREATE")
         acting_user_id = self._acting_user_id()
 
         username = _validate_username(username)
         _validate_password(password)
+        role_ids = _validate_role_ids(role_ids)
 
         with session_scope(self._settings) as session:
-            role = session.get(Role, role_id)
-            if role is None:
-                raise NotFoundError(f"Rôle {role_id} introuvable.")
+            roles = _resolve_roles(session, role_ids)
 
             if session.query(User).filter(User.username == username).one_or_none() is not None:
                 raise ConflictError(f"Le nom d'utilisateur « {username} » est déjà utilisé.")
@@ -161,7 +203,8 @@ class UserService:
             user = User(
                 username=username,
                 password_hash=hash_password(password),
-                role_id=role_id,
+                role_id=roles[0].id,
+                roles=roles,
                 actif=actif,
                 must_change_password=True,
             )
@@ -184,8 +227,8 @@ class UserService:
             summary = UserSummary.from_model(user)
 
         logger.info(
-            "Utilisateur créé : %s (rôle id=%s, actif=%s, par acteur id=%s)",
-            username, role_id, actif, acting_user_id,
+            "Utilisateur créé : %s (rôles id=%s, actif=%s, par acteur id=%s)",
+            username, role_ids, actif, acting_user_id,
         )
         return summary
 
@@ -206,12 +249,12 @@ class UserService:
             if user is None:
                 raise NotFoundError(f"Utilisateur {user_id} introuvable.")
 
-            if not actif and user.actif and user.role.nom == _ROLE_ADMINISTRATEUR:
+            is_administrateur = any(role.nom == _ROLE_ADMINISTRATEUR for role in user.roles)
+            if not actif and user.actif and is_administrateur:
                 other_active_admins = (
                     session.query(User)
-                    .join(Role)
                     .filter(
-                        Role.nom == _ROLE_ADMINISTRATEUR,
+                        User.roles.any(Role.nom == _ROLE_ADMINISTRATEUR),
                         User.actif.is_(True),
                         User.id != user_id,
                     )
@@ -242,12 +285,21 @@ class UserService:
         logger.info("Compte %s : %s (par acteur id=%s)", user_id, action, acting_user_id)
         return summary
 
-    def update_user(self, user_id: int, role_id: int) -> UserSummary:
-        """Modifie le rôle d'un utilisateur existant (écran Administration →
-        Utilisateurs). Ne modifie jamais le nom d'utilisateur (identifiant de
-        connexion, hors périmètre de cette opération) ni le mot de passe.
+    def update_user(self, user_id: int, role_ids: Sequence[int]) -> UserSummary:
+        """Modifie les rôles d'un utilisateur existant (écran Administration →
+        Utilisateurs). Remplace intégralement l'ensemble de ses rôles —
+        même convention que le remplacement complet des lignes d'un
+        brouillon Entrée/Sortie/Vente : pour conserver les rôles actuels
+        sans les modifier, l'appelant (UI) doit les fournir à nouveau (voir
+        ``EditUserDialog``, pré-coché avec ``UserSummary.role_ids``). Ne
+        modifie jamais le nom d'utilisateur (identifiant de connexion, hors
+        périmètre de cette opération) ni le mot de passe.
 
-        Le nouveau rôle ne prend effet qu'à la prochaine connexion de
+        ``role_ids`` : un ou plusieurs rôles, jamais vide, jamais de doublon
+        (voir ``_validate_role_ids``). La colonne historique ``User.role_id``
+        est mise à jour avec le premier rôle fourni (voir ``create_user``).
+
+        Les nouveaux rôles ne prennent effet qu'à la prochaine connexion de
         l'utilisateur concerné : les permissions d'une session déjà ouverte
         sont figées dans son ``CurrentUser`` au moment du login
         (``AuthService.login``) et ne sont jamais recalculées en cours de
@@ -263,22 +315,25 @@ class UserService:
         cible), appliqué ici indépendamment du rôle de l'acteur : un rôle
         non-Administrateur ayant reçu ``USER_UPDATE`` via l'écran
         Rôles/Permissions ne doit pas non plus pouvoir supprimer le dernier
-        Administrateur actif."""
+        Administrateur actif. Ce garde-fou porte sur l'ensemble RÉEL des
+        rôles (Administrateur peut désormais être un rôle secondaire parmi
+        d'autres), jamais sur un seul rôle « principal »."""
         self._permissions.require_permission("USER_UPDATE")
         acting_user_id = self._acting_user_id()
+        role_ids = _validate_role_ids(role_ids)
 
         with session_scope(self._settings) as session:
             user = session.get(User, user_id)
             if user is None:
                 raise NotFoundError(f"Utilisateur {user_id} introuvable.")
 
-            role = session.get(Role, role_id)
-            if role is None:
-                raise NotFoundError(f"Rôle {role_id} introuvable.")
+            new_roles = _resolve_roles(session, role_ids)
+            new_role_names = {role.nom for role in new_roles}
 
+            was_administrateur = any(role.nom == _ROLE_ADMINISTRATEUR for role in user.roles)
             demoting_active_administrateur = (
-                user.role.nom == _ROLE_ADMINISTRATEUR
-                and role.nom != _ROLE_ADMINISTRATEUR
+                was_administrateur
+                and _ROLE_ADMINISTRATEUR not in new_role_names
                 and user.actif
             )
 
@@ -290,9 +345,8 @@ class UserService:
             if demoting_active_administrateur:
                 other_active_admins = (
                     session.query(User)
-                    .join(Role)
                     .filter(
-                        Role.nom == _ROLE_ADMINISTRATEUR,
+                        User.roles.any(Role.nom == _ROLE_ADMINISTRATEUR),
                         User.actif.is_(True),
                         User.id != user_id,
                     )
@@ -304,13 +358,8 @@ class UserService:
                         "Administrateur actif."
                     )
 
-            # Affecté via la relation ``role`` (et non le seul ``role_id``
-            # scalaire) : l'objet ``user`` reste utilisé plus bas dans cette
-            # même transaction pour construire le ``UserSummary`` retourné,
-            # qui lit ``user.role.nom`` — un simple ``user.role_id = role_id``
-            # laisserait la relation déjà chargée (utilisée par la garde
-            # ci-dessus) pointer vers l'ancien rôle jusqu'au prochain rechargement.
-            user.role = role
+            user.roles = new_roles
+            user.role_id = new_roles[0].id
             session.add(
                 AuditLog(
                     user_id=acting_user_id,
@@ -324,8 +373,8 @@ class UserService:
             summary = UserSummary.from_model(user)
 
         logger.info(
-            "Rôle modifié pour l'utilisateur %s : nouveau rôle id=%s (par acteur id=%s)",
-            user_id, role_id, acting_user_id,
+            "Rôles modifiés pour l'utilisateur %s : nouveaux rôles id=%s (par acteur id=%s)",
+            user_id, role_ids, acting_user_id,
         )
         return summary
 

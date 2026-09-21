@@ -91,7 +91,7 @@ Modules implémentés et fonctionnels : Authentification, Tableau de bord, Artic
 ## 6. Profils utilisateurs
 
 ### A. CE QUI EXISTE
-Quatre profils fixes correspondant aux quatre rôles système : Administrateur, Gestionnaire de stock, Vendeur, Consultation. Un utilisateur = un compte = un rôle unique. Voir §7 et §40 pour le détail complet des permissions.
+Quatre profils fixes correspondant aux quatre rôles système : Administrateur, Gestionnaire de stock, Vendeur, Consultation. **Un utilisateur = un compte = un seul mot de passe, mais un ou plusieurs rôles** (relation many-to-many `User <-> Role` via la table `user_roles`, migration `0011_user_roles_many_to_many`). Un utilisateur peut posséder plusieurs rôles. Les permissions effectives correspondent à l'union des permissions de tous ses rôles. Exemple : Jean cumule Vendeur + Gestionnaire de stock — une seule connexion, un seul mot de passe, les permissions des deux rôles cumulées. Voir §7 et §40 pour le détail complet des permissions.
 
 ## 7. Gestion des rôles et permissions
 
@@ -102,6 +102,12 @@ Quatre profils fixes correspondant aux quatre rôles système : Administrateur, 
   2. Un rôle avec au moins un utilisateur actif ne peut jamais se retrouver sans aucune permission (`role_service.py:115-120`).
 - 65 permissions déclarées au total (`app/db/seed.py:25-95`, vérifié par comptage exhaustif de la liste), organisées par module. Les modifications de permissions prennent effet à la prochaine connexion de l'utilisateur (`app/views/pages/roles_page.py:49`), pas en temps réel.
 - Vérification RBAC centralisée : `PermissionService.require_permission()`/`has_permission()` (`app/services/auth/permission_service.py`) — point d'application unique, jamais contourné côté UI (masquage de bouton = confort visuel uniquement, jamais la garantie de sécurité réelle).
+- **Multi-rôles** (relation many-to-many `User <-> Role` via `user_roles`, migration `0011_user_roles_many_to_many`) : un utilisateur peut posséder plusieurs rôles. Les permissions effectives correspondent à l'union des permissions de tous ses rôles, calculée côté service à la connexion (`AuthService.login`, `app/services/auth/auth_service.py`) et stockée dans `CurrentUser.permissions` — jamais recalculée uniquement côté interface. Exemple : Jean cumule les rôles Vendeur et Gestionnaire de stock — une seule connexion, un seul mot de passe, les permissions des deux rôles cumulées et dédupliquées.
+  - Contraintes : au moins un rôle obligatoire (impossible d'enregistrer un utilisateur sans rôle), un même rôle ne peut pas être attribué deux fois au même utilisateur (`UserService._validate_role_ids`).
+  - Le rôle Administrateur ne bénéficie d'aucun traitement spécial du seul fait qu'un compte cumule plusieurs rôles : les garde-fous « dernier administrateur actif » (`UserService.set_active`/`update_user`) portent sur l'ensemble réel des rôles détenus (`User.roles`), jamais sur un rôle « principal ».
+  - Colonne historique `users.role_id` **conservée** (jamais supprimée) comme pointeur de compatibilité non-autoritaire, renseigné avec le premier rôle attribué — jamais utilisé pour le calcul des permissions ou de l'appartenance réelle aux rôles, qui repose exclusivement sur `user_roles`/`User.roles`.
+  - `max_users` de la licence active compte les **comptes actifs**, jamais les rôles détenus : un utilisateur ayant plusieurs rôles ne consomme qu'une seule place (ex. Jean = Vendeur + Gestionnaire de stock, Paul = Vendeur, Marie = Consultation → 3 comptes actifs, jamais 4).
+  - La gestion multi-utilisateurs/multi-rôles (création, modification, activation, réinitialisation de mot de passe) reste soumise, comme avant ce lot, au double contrôle RBAC + licence : elle nécessite que la licence active inclue `MULTI_USER` (non incluse par défaut dans DEMO/STANDARD, incluse par défaut dans ENTREPRISE — voir §8), via le `FeatureGate` existant, inchangé par ce lot.
 
 ### B. ÉVOLUTION POSSIBLE (WEB)
 Le modèle RBAC à 4 rôles fixes est robuste et pourrait être conservé tel quel en Web. Une évolution possible : permissions personnalisées par rôle **créé par le client** (au-delà des 4 rôles système), ou rôles par boutique/site dans un contexte multi-boutiques — à valider avec le métier, ceci élargirait significativement le périmètre RBAC actuel.
@@ -400,19 +406,19 @@ Question ouverte, à trancher avec le métier avant toute conception technique :
 ## User (`users`)
 
 **Rôle** : compte utilisateur de l'application.
-**Attributs** : `id`, `username` (50c, unique), `password_hash` (255c, Argon2), `role_id` (FK Role, obligatoire), `actif` (bool, défaut vrai), `must_change_password` (bool, défaut faux), `dernier_login` (nullable), horodatages.
-**Relations** : un rôle (many-to-one).
-**Contraintes** : `username` unique.
-**Règles métier** : aucune suppression physique (activation/désactivation uniquement) ; garde-fous « dernier administrateur actif » (voir §7/§41).
+**Attributs** : `id`, `username` (50c, unique), `password_hash` (255c, Argon2), `role_id` (FK Role, obligatoire — colonne historique de compatibilité, voir ci-dessous), `actif` (bool, défaut vrai), `must_change_password` (bool, défaut faux), `dernier_login` (nullable), horodatages.
+**Relations** : plusieurs rôles (many-to-many via `user_roles`, migration `0011_user_roles_many_to_many`) — un utilisateur peut posséder plusieurs rôles ; ses permissions effectives sont l'union des permissions de tous ses rôles.
+**Contraintes** : `username` unique ; au moins un rôle obligatoire (`user_roles`), jamais le même rôle deux fois pour un même utilisateur.
+**Règles métier** : aucune suppression physique (activation/désactivation uniquement) ; garde-fous « dernier administrateur actif » (voir §7/§41), appliqués sur l'ensemble réel des rôles détenus, pas sur un rôle « principal » ; `role_id` reste renseigné (premier rôle attribué) à titre de compatibilité, mais n'est jamais la source de vérité pour les permissions — celle-ci est exclusivement `user_roles`.
 
 **Correspondance possible pour la future base Web** : conserver telle quelle. **[PROPOSITION]** ajout d'un `organization_id`/`tenant_id` si architecture multi-tenant retenue ; **[PROPOSITION]** champs de sécurité renforcée (`failed_login_count`, `locked_until`, `mfa_secret`) — absents aujourd'hui (voir §37.4).
 
-## Role (`roles`) / Permission (`permissions`) / `role_permissions`
+## Role (`roles`) / Permission (`permissions`) / `role_permissions` / `user_roles`
 
-**Rôle** : RBAC — un rôle regroupe un ensemble de permissions ; association many-to-many via `role_permissions`.
+**Rôle** : RBAC — un rôle regroupe un ensemble de permissions ; association many-to-many via `role_permissions`. Un utilisateur peut à son tour posséder plusieurs rôles, via l'association many-to-many `user_roles` (`user_id`, `role_id`, clé primaire composite, FK `ondelete=CASCADE` des deux côtés).
 **Attributs Role** : `id`, `nom` (50c, unique), `description` (255c).
 **Attributs Permission** : `id`, `code` (50c, unique, indexé), `libelle` (255c), `module` (50c).
-**Règles métier** : 4 rôles fixes, aucune création/suppression, garde-fous décrits au §7.
+**Règles métier** : 4 rôles fixes, aucune création/suppression, garde-fous décrits au §7. Un rôle a désormais plusieurs utilisateurs comme avant (many-to-one devenu many-to-many côté `User`), sans changement sur la gestion des permissions d'un rôle lui-même.
 
 **Correspondance possible pour la future base Web** : structure directement conservable. **[PROPOSITION]** possibilité de rôles personnalisés par organisation si le Web autorise la création de rôles au-delà des 4 rôles système (décision produit à valider).
 
@@ -527,6 +533,8 @@ Légende : ✅ existe et fonctionne / ⚙️ existe, nécessite adaptation / �
 # 40. Matrice des rôles
 
 Source : seed initial de référence (`app/db/seed.py`), état par défaut. Un administrateur peut modifier ces permissions par rôle en usage réel (sous réserve des garde-fous du §7) — le tableau ci-dessous décrit l'état de référence initial, pas nécessairement l'état courant d'une installation donnée.
+
+Cette matrice décrit les permissions **par rôle** : un utilisateur peut posséder plusieurs rôles. Les permissions effectives correspondent à l'union des permissions de tous ses rôles. Exemple : Jean cumule Vendeur + Gestionnaire de stock — il dispose de la colonne « Vendeur » ET de la colonne « Gestionnaire de stock » réunies (une seule connexion, un seul mot de passe).
 
 | Permission | Administrateur | Gestionnaire de stock | Vendeur | Consultation |
 |---|:---:|:---:|:---:|:---:|

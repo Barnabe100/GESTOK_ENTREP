@@ -15,7 +15,7 @@ def test_list_users_as_administrateur(login_as, make_user) -> None:
 
     usernames = {u.username for u in users}
     assert "un_vendeur" in usernames
-    assert any(u.role_name == "Administrateur" for u in users)
+    assert any("Administrateur" in u.role_names for u in users)
 
 
 def test_list_users_denied_for_vendeur(login_as) -> None:
@@ -122,10 +122,10 @@ def test_create_user_as_administrateur_succeeds(login_as) -> None:
     stack, _ = login_as("Administrateur")
     role_id = _role_id("Vendeur")
 
-    summary = stack.users.create_user("nouveau_vendeur", "MotDePasse!23", role_id, actif=True)
+    summary = stack.users.create_user("nouveau_vendeur", "MotDePasse!23", [role_id], actif=True)
 
     assert summary.username == "nouveau_vendeur"
-    assert summary.role_name == "Vendeur"
+    assert summary.role_names == ("Vendeur",)
     assert summary.actif is True
 
 
@@ -134,20 +134,20 @@ def test_create_user_succeeds_for_each_non_admin_role(login_as, role_name: str) 
     stack, _ = login_as("Administrateur")
     role_id = _role_id(role_name)
 
-    summary = stack.users.create_user(f"user_{role_name.split()[0].lower()}", "MotDePasse!23", role_id)
+    summary = stack.users.create_user(f"user_{role_name.split()[0].lower()}", "MotDePasse!23", [role_id])
 
-    assert summary.role_name == role_name
+    assert summary.role_names == (role_name,)
     users = stack.users.list_users()
-    assert any(u.username == summary.username and u.role_name == role_name for u in users)
+    assert any(u.username == summary.username and u.role_names == (role_name,) for u in users)
 
 
 def test_create_user_with_administrateur_role_succeeds(login_as) -> None:
     stack, _ = login_as("Administrateur")
     role_id = _role_id("Administrateur")
 
-    summary = stack.users.create_user("second_admin", "MotDePasse!23", role_id)
+    summary = stack.users.create_user("second_admin", "MotDePasse!23", [role_id])
 
-    assert summary.role_name == "Administrateur"
+    assert summary.role_names == ("Administrateur",)
 
 
 def test_create_user_denied_for_non_administrateur(login_as) -> None:
@@ -155,7 +155,7 @@ def test_create_user_denied_for_non_administrateur(login_as) -> None:
     role_id = _role_id("Vendeur")
 
     try:
-        stack.users.create_user("intrus", "MotDePasse!23", role_id)
+        stack.users.create_user("intrus", "MotDePasse!23", [role_id])
         assert False, "devait lever PermissionDeniedError"
     except PermissionDeniedError:
         pass
@@ -167,7 +167,7 @@ def test_create_user_duplicate_username_raises_conflict(login_as, make_user) -> 
     role_id = _role_id("Vendeur")
 
     try:
-        stack.users.create_user("deja_pris", "MotDePasse!23", role_id)
+        stack.users.create_user("deja_pris", "MotDePasse!23", [role_id])
         assert False, "devait lever ConflictError"
     except ConflictError:
         pass
@@ -178,7 +178,7 @@ def test_create_user_empty_username_is_rejected(login_as) -> None:
     role_id = _role_id("Vendeur")
 
     try:
-        stack.users.create_user("   ", "MotDePasse!23", role_id)
+        stack.users.create_user("   ", "MotDePasse!23", [role_id])
         assert False, "devait lever ValidationError"
     except ValidationError:
         pass
@@ -189,7 +189,7 @@ def test_create_user_short_password_is_rejected(login_as) -> None:
     role_id = _role_id("Vendeur")
 
     try:
-        stack.users.create_user("nouvel_utilisateur", "court", role_id)
+        stack.users.create_user("nouvel_utilisateur", "court", [role_id])
         assert False, "devait lever ValidationError"
     except ValidationError:
         pass
@@ -199,7 +199,7 @@ def test_create_user_unknown_role_raises_not_found(login_as) -> None:
     stack, _ = login_as("Administrateur")
 
     try:
-        stack.users.create_user("nouvel_utilisateur", "MotDePasse!23", 999999)
+        stack.users.create_user("nouvel_utilisateur", "MotDePasse!23", [999999])
         assert False, "devait lever NotFoundError"
     except NotFoundError:
         pass
@@ -209,7 +209,7 @@ def test_create_user_can_be_created_inactive(login_as) -> None:
     stack, _ = login_as("Administrateur")
     role_id = _role_id("Vendeur")
 
-    summary = stack.users.create_user("compte_inactif", "MotDePasse!23", role_id, actif=False)
+    summary = stack.users.create_user("compte_inactif", "MotDePasse!23", [role_id], actif=False)
 
     assert summary.actif is False
 
@@ -217,7 +217,7 @@ def test_create_user_can_be_created_inactive(login_as) -> None:
 def test_create_user_forces_must_change_password(login_as) -> None:
     stack, _ = login_as("Administrateur")
     role_id = _role_id("Vendeur")
-    stack.users.create_user("doit_changer", "MotDePasseInitial1", role_id)
+    stack.users.create_user("doit_changer", "MotDePasseInitial1", [role_id])
 
     logged_in_user = stack.auth.login("doit_changer", "MotDePasseInitial1")
 
@@ -227,7 +227,7 @@ def test_create_user_forces_must_change_password(login_as) -> None:
 def test_create_user_password_is_hashed_never_plaintext(login_as) -> None:
     stack, _ = login_as("Administrateur")
     role_id = _role_id("Vendeur")
-    stack.users.create_user("hash_check", "MotDePasseSecret1", role_id)
+    stack.users.create_user("hash_check", "MotDePasseSecret1", [role_id])
 
     with session_scope(None) as session:
         from app.models.user import User
@@ -240,7 +240,7 @@ def test_create_user_password_is_hashed_never_plaintext(login_as) -> None:
 def test_create_user_writes_audit_log(login_as) -> None:
     stack, admin_user = login_as("Administrateur")
     role_id = _role_id("Vendeur")
-    summary = stack.users.create_user("audite", "MotDePasse!23", role_id)
+    summary = stack.users.create_user("audite", "MotDePasse!23", [role_id])
 
     with session_scope(None) as session:
         entries = session.query(AuditLog).filter_by(action="USER_CREATE", entite_id=summary.id).all()
@@ -275,9 +275,9 @@ def test_update_user_as_administrateur_succeeds(login_as, make_user) -> None:
     target_id = next(u.id for u in stack.users.list_users() if u.username == "cible_role")
     role_id = _role_id("Gestionnaire de stock")
 
-    updated = stack.users.update_user(target_id, role_id)
+    updated = stack.users.update_user(target_id, [role_id])
 
-    assert updated.role_name == "Gestionnaire de stock"
+    assert updated.role_names == ("Gestionnaire de stock",)
 
 
 def test_update_user_unknown_role_raises_not_found(login_as, make_user) -> None:
@@ -286,7 +286,7 @@ def test_update_user_unknown_role_raises_not_found(login_as, make_user) -> None:
     target_id = next(u.id for u in stack.users.list_users() if u.username == "cible_role_inconnu")
 
     try:
-        stack.users.update_user(target_id, 999999)
+        stack.users.update_user(target_id, [999999])
         assert False, "devait lever NotFoundError"
     except NotFoundError:
         pass
@@ -297,7 +297,7 @@ def test_update_user_unknown_user_raises_not_found(login_as) -> None:
     role_id = _role_id("Vendeur")
 
     try:
-        stack.users.update_user(999999, role_id)
+        stack.users.update_user(999999, [role_id])
         assert False, "devait lever NotFoundError"
     except NotFoundError:
         pass
@@ -309,7 +309,7 @@ def test_update_user_denied_for_non_administrateur(login_as, make_user) -> None:
     role_id = _role_id("Gestionnaire de stock")
 
     try:
-        stack.users.update_user(1, role_id)
+        stack.users.update_user(1, [role_id])
         assert False, "devait lever PermissionDeniedError"
     except PermissionDeniedError:
         pass
@@ -321,7 +321,7 @@ def test_update_user_writes_audit_log(login_as, make_user) -> None:
     target_id = next(u.id for u in stack.users.list_users() if u.username == "cible_audit")
     role_id = _role_id("Consultation")
 
-    stack.users.update_user(target_id, role_id)
+    stack.users.update_user(target_id, [role_id])
 
     with session_scope(None) as session:
         entries = session.query(AuditLog).filter_by(action="USER_UPDATE", entite_id=target_id).all()
@@ -335,7 +335,7 @@ def test_update_user_does_not_change_username_or_password(login_as, make_user) -
     target_id = next(u.id for u in stack.users.list_users() if u.username == "cible_inchangee")
     role_id = _role_id("Gestionnaire de stock")
 
-    stack.users.update_user(target_id, role_id)
+    stack.users.update_user(target_id, [role_id])
 
     with session_scope(None) as session:
         from app.models.user import User
@@ -351,7 +351,7 @@ def test_update_user_cannot_remove_own_administrateur_role(login_as) -> None:
     role_id = _role_id("Vendeur")
 
     try:
-        stack.users.update_user(current_user.id, role_id)
+        stack.users.update_user(current_user.id, [role_id])
         assert False, "devait lever ValidationError"
     except ValidationError:
         pass
@@ -360,7 +360,7 @@ def test_update_user_cannot_remove_own_administrateur_role(login_as) -> None:
         from app.models.user import User
 
         user = session.get(User, current_user.id)
-        assert user.role.nom == "Administrateur"
+        assert any(r.nom == "Administrateur" for r in user.roles)
 
 
 def test_update_user_can_change_another_administrateur_role(login_as) -> None:
@@ -369,11 +369,11 @@ def test_update_user_can_change_another_administrateur_role(login_as) -> None:
     stack, _ = login_as("Administrateur")
     role_id = _role_id("Vendeur")
     admin_role_id = _role_id("Administrateur")
-    other_admin = stack.users.create_user("autre_admin", "MotDePasse!23", admin_role_id)
+    other_admin = stack.users.create_user("autre_admin", "MotDePasse!23", [admin_role_id])
 
-    updated = stack.users.update_user(other_admin.id, role_id)
+    updated = stack.users.update_user(other_admin.id, [role_id])
 
-    assert updated.role_name == "Vendeur"
+    assert updated.role_names == ("Vendeur",)
 
 
 # -- protection du dernier administrateur actif (§6) ----------------------------------
@@ -398,7 +398,7 @@ def test_set_active_cannot_deactivate_last_active_administrateur(login_as) -> No
 def test_set_active_can_deactivate_administrateur_when_another_active_admin_exists(login_as) -> None:
     stack, current_user = login_as("Administrateur")
     admin_role_id = _role_id("Administrateur")
-    other_admin = stack.users.create_user("second_admin_actif", "MotDePasse!23", admin_role_id)
+    other_admin = stack.users.create_user("second_admin_actif", "MotDePasse!23", [admin_role_id])
 
     updated = stack.users.set_active(other_admin.id, False)
 
@@ -416,16 +416,16 @@ def test_update_user_two_active_admins_peer_demotion_succeeds_and_actor_stays_ad
     stack, admin_a = login_as("Administrateur")
     admin_role_id = _role_id("Administrateur")
     vendeur_role_id = _role_id("Vendeur")
-    admin_b = stack.users.create_user("admin_b_peer", "MotDePasse!23", admin_role_id)
+    admin_b = stack.users.create_user("admin_b_peer", "MotDePasse!23", [admin_role_id])
 
-    updated_b = stack.users.update_user(admin_b.id, vendeur_role_id)
+    updated_b = stack.users.update_user(admin_b.id, [vendeur_role_id])
 
-    assert updated_b.role_name == "Vendeur"
+    assert updated_b.role_names == ("Vendeur",)
     with session_scope(None) as session:
         from app.models.user import User
 
         admin_a_row = session.get(User, admin_a.id)
-        assert admin_a_row.role.nom == "Administrateur"
+        assert any(r.nom == "Administrateur" for r in admin_a_row.roles)
         assert admin_a_row.actif is True
 
 
@@ -435,9 +435,9 @@ def test_update_user_demoting_peer_admin_leaves_exactly_one_active_admin(login_a
     stack, admin_a = login_as("Administrateur")
     admin_role_id = _role_id("Administrateur")
     consultation_role_id = _role_id("Consultation")
-    admin_b = stack.users.create_user("admin_b_target", "MotDePasse!23", admin_role_id)
+    admin_b = stack.users.create_user("admin_b_target", "MotDePasse!23", [admin_role_id])
 
-    stack.users.update_user(admin_b.id, consultation_role_id)
+    stack.users.update_user(admin_b.id, [consultation_role_id])
 
     with session_scope(None) as session:
         from app.models.rbac import Role
@@ -445,8 +445,7 @@ def test_update_user_demoting_peer_admin_leaves_exactly_one_active_admin(login_a
 
         active_admin_count = (
             session.query(User)
-            .join(Role)
-            .filter(Role.nom == "Administrateur", User.actif.is_(True))
+            .filter(User.roles.any(Role.nom == "Administrateur"), User.actif.is_(True))
             .count()
         )
         assert active_admin_count == 1
@@ -468,7 +467,7 @@ def test_update_user_non_admin_role_with_user_update_cannot_demote_last_active_a
     consultation_role_id = _role_id("Consultation")
 
     try:
-        vendeur_stack.users.update_user(admin_a.id, consultation_role_id)
+        vendeur_stack.users.update_user(admin_a.id, [consultation_role_id])
         assert False, "devait lever ValidationError"
     except ValidationError:
         pass
@@ -477,7 +476,7 @@ def test_update_user_non_admin_role_with_user_update_cannot_demote_last_active_a
         from app.models.user import User
 
         admin_a_row = session.get(User, admin_a.id)
-        assert admin_a_row.role.nom == "Administrateur"
+        assert any(r.nom == "Administrateur" for r in admin_a_row.roles)
         assert admin_a_row.actif is True
 
 

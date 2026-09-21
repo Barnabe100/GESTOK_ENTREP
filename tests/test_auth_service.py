@@ -13,7 +13,7 @@ def test_login_success_returns_current_user_with_permissions(make_user, make_sta
     current_user = auth_service.login("alice", "Password!23")
 
     assert current_user.username == "alice"
-    assert current_user.role_name == "Administrateur"
+    assert current_user.role_names == ("Administrateur",)
     assert "USER_VIEW" in current_user.permissions
     assert auth_service.is_authenticated is True
     assert auth_service.current_user is current_user

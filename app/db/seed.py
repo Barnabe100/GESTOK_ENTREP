@@ -204,6 +204,7 @@ def seed_initial_admin(session: Session) -> Optional[str]:
         username=INITIAL_ADMIN_USERNAME,
         password_hash=hash_password(generated_password),
         role_id=admin_role.id,
+        roles=[admin_role],
         actif=True,
         must_change_password=True,
     )
