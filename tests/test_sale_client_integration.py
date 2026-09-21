@@ -228,7 +228,7 @@ def test_cancel_sale_with_client_restores_stock_normally(login_as) -> None:
     )
     stack.sales.validate_sale(sale.id)
 
-    cancelled = stack.sales.cancel_sale(sale.id)
+    cancelled = stack.sales.cancel_sale(sale.id, "Motif de test valide")
 
     assert cancelled.client_id == client.id  # le client reste associé après annulation
     assert stack.articles.get_article(article.id).stock_actuel == Decimal("50")

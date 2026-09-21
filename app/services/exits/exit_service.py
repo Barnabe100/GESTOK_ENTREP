@@ -26,6 +26,7 @@ Cycle de vie d'une sortie : BROUILLON -> VALIDEE -> (ANNULEE).
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
@@ -56,6 +57,8 @@ logger = get_logger("services.exits")
 MAX_BENEFICIAIRE_LENGTH = 150
 MAX_REFERENCE_LENGTH = 100
 MAX_COMMENTAIRE_LENGTH = 500
+MIN_ANNULATION_MOTIF_LENGTH = 5
+MAX_ANNULATION_MOTIF_LENGTH = 500
 
 # Sentinel distinguant « champ non fourni » (conserver la valeur actuelle lors
 # d'une modification) de ``None``/chaîne vide (effacer explicitement le champ).
@@ -118,6 +121,9 @@ class SortieSummary:
     lignes: list[SortieLigneSummary]
     date_creation: datetime
     date_modification: datetime
+    # None tant que la sortie n'est pas annulée (voir Sortie.annulation_motif) ;
+    # également None pour une sortie annulée avant l'introduction de ce champ.
+    annulation_motif: Optional[str] = None
 
     @property
     def total(self) -> Decimal:
@@ -143,6 +149,7 @@ class SortieSummary:
             lignes=[SortieLigneSummary.from_model(l) for l in sortie.lignes],
             date_creation=sortie.date_creation,
             date_modification=sortie.date_modification,
+            annulation_motif=sortie.annulation_motif,
         )
 
 
@@ -163,6 +170,28 @@ def _validate_optional_text(value: Optional[str], field_label: str, max_length: 
     return value
 
 
+def _validate_annulation_motif(value: Optional[str]) -> str:
+    """Motif d'annulation obligatoire (§26 du cahier des charges de ce
+    lot) : jamais None/vide/uniquement des espaces, jamais un motif
+    générique auto-généré — c'est toujours une vraie saisie utilisateur.
+    Appliqué ici, côté service, pour rester incontournable même par un
+    appel direct hors interface."""
+    if value is None:
+        raise ValidationError("Le motif d'annulation est obligatoire.")
+    value = value.strip()
+    if not value:
+        raise ValidationError("Le motif d'annulation est obligatoire.")
+    if len(value) < MIN_ANNULATION_MOTIF_LENGTH:
+        raise ValidationError(
+            f"Le motif d'annulation doit contenir au moins {MIN_ANNULATION_MOTIF_LENGTH} caractères."
+        )
+    if len(value) > MAX_ANNULATION_MOTIF_LENGTH:
+        raise ValidationError(
+            f"Le motif d'annulation ne doit pas dépasser {MAX_ANNULATION_MOTIF_LENGTH} caractères."
+        )
+    return value
+
+
 class ExitService:
     def __init__(self, permission_service: PermissionService, settings: Optional[Settings] = None) -> None:
         self._permissions = permission_service
@@ -173,7 +202,7 @@ class ExitService:
         current_user = self._permissions.current_user
         return current_user.id if current_user else None
 
-    def _audit(self, session, action: str, sortie_id: Optional[int]) -> None:
+    def _audit(self, session, action: str, sortie_id: Optional[int], details: Optional[str] = None) -> None:
         session.add(
             AuditLog(
                 user_id=self._acting_user_id(),
@@ -181,6 +210,7 @@ class ExitService:
                 entite="sorties",
                 entite_id=sortie_id,
                 resultat=ResultatAudit.SUCCES,
+                details=details,
             )
         )
 
@@ -422,13 +452,20 @@ class ExitService:
         logger.info("Sortie validée : %s", summary.numero)
         return summary
 
-    def cancel_exit(self, sortie_id: int) -> SortieSummary:
+    def cancel_exit(self, sortie_id: int, motif: str) -> SortieSummary:
         """VALIDEE -> ANNULEE : génère un mouvement ANNULATION par ligne
         (quantité inverse, positive) restaurant le stock. Conserve
         l'opération originale (jamais de suppression), refusée dans son
         intégralité — sans aucune modification, grâce au rollback de
-        ``session_scope`` — si l'opération s'avérait incohérente."""
+        ``session_scope`` — si l'opération s'avérait incohérente.
+
+        ``motif`` est obligatoire (§26 du cahier des charges de ce lot) :
+        non vide, non uniquement des espaces, au moins
+        ``MIN_ANNULATION_MOTIF_LENGTH`` caractères après trim — vérifié ici,
+        jamais uniquement côté interface. Conservé définitivement sur
+        ``Sortie.annulation_motif`` et jamais modifié ensuite."""
         self._permissions.require_permission("STOCK_EXIT_CANCEL")
+        motif = _validate_annulation_motif(motif)
         acting_user_id = self._acting_user_id()
 
         with session_scope(self._settings) as session:
@@ -462,7 +499,10 @@ class ExitService:
                 )
 
             sortie.statut = StatutOperation.ANNULEE
-            self._audit(session, "STOCK_EXIT_CANCEL", sortie.id)
+            sortie.annulation_motif = motif
+            self._audit(
+                session, "STOCK_EXIT_CANCEL", sortie.id, details=json.dumps({"motif": motif})
+            )
             summary = SortieSummary.from_model(sortie)
 
         logger.info("Sortie annulée : %s", summary.numero)

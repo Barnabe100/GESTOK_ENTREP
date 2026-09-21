@@ -2,7 +2,7 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QDialog, QMessageBox
 
 from app.models.enums import StatutOperation
 from app.services.sales.sale_service import VenteLigneInput
@@ -266,7 +266,7 @@ def test_cancel_selected_restores_stock(qtbot, login_as) -> None:
     page = _build_page(stack)
     qtbot.addWidget(page)
 
-    result = page._cancel_selected(sale.id)
+    result = page._cancel_selected(sale.id, "Motif de test valide")
 
     assert result is True
     assert stack.articles.get_article(article.id).stock_actuel == Decimal("50")
@@ -283,10 +283,45 @@ def test_cancel_selected_denied_without_permission(qtbot, login_as) -> None:
     page = _build_page(stack)
     qtbot.addWidget(page)
 
-    result = page._cancel_selected(sale.id)
+    result = page._cancel_selected(sale.id, "Motif de test valide")
 
     assert result is False
     assert stack.sales.get_sale(sale.id).statut == StatutOperation.VALIDEE
+
+
+def test_on_cancel_clicked_opens_reason_dialog_and_passes_reason_to_service(
+    qtbot, login_as, monkeypatch
+) -> None:
+    """§7 : l'annulation ne s'exécute jamais directement au clic sur
+    « Annuler » — un dialogue de motif s'ouvre d'abord, et c'est son motif
+    saisi qui est transmis au service."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("50"))
+    sale = stack.sales.create_sale(date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("7"), Decimal("150"))])
+    stack.sales.validate_sale(sale.id)
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    class _FakeReasonDialog:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def exec(self) -> QDialog.DialogCode:
+            return QDialog.DialogCode.Accepted
+
+        def reason(self) -> str:
+            return "Motif saisi via le dialogue"
+
+    monkeypatch.setattr("app.views.pages.sales_page.CancellationReasonDialog", _FakeReasonDialog)
+
+    row = next(r for r in range(page.table.rowCount()) if page.table.item(r, 0).text() == sale.numero)
+    page.table.selectRow(row)
+    page._on_cancel_clicked()
+
+    reloaded = stack.sales.get_sale(sale.id)
+    assert reloaded.statut == StatutOperation.ANNULEE
+    assert reloaded.annulation_motif == "Motif saisi via le dialogue"
 
 
 def test_load_clients_for_form_excludes_inactive(qtbot, login_as) -> None:

@@ -92,7 +92,7 @@ def test_receipt_refused_for_annulee(login_as) -> None:
     stack, _ = login_as("Administrateur")
     article = _make_article(stack)
     sale = _create_and_validate_sale(stack, article)
-    stack.sales.cancel_sale(sale.id)
+    stack.sales.cancel_sale(sale.id, "Motif de test valide")
 
     with pytest.raises(ValidationError):
         stack.documents.build_sale_receipt(sale.id)

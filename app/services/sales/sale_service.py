@@ -35,6 +35,7 @@ Cycle de vie : BROUILLON -> VALIDEE -> (ANNULEE).
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
@@ -75,6 +76,8 @@ logger = get_logger("services.sales")
 MAX_MODE_PAIEMENT_LENGTH = 50
 MAX_PAIEMENT_REFERENCE_LENGTH = 100
 MAX_PAIEMENT_COMMENTAIRE_LENGTH = 500
+MIN_ANNULATION_MOTIF_LENGTH = 5
+MAX_ANNULATION_MOTIF_LENGTH = 500
 
 
 @dataclass(frozen=True)
@@ -170,6 +173,9 @@ class VenteSummary:
     # calculé ici (jamais stocké), jamais négatif par construction.
     montant_paye: Decimal = Decimal("0")
     statut_paiement: StatutPaiement = StatutPaiement.NON_PAYEE
+    # None tant que la vente n'est pas annulée (voir Vente.annulation_motif) ;
+    # également None pour une vente annulée avant l'introduction de ce champ.
+    annulation_motif: Optional[str] = None
 
     @property
     def reste_a_payer(self) -> Decimal:
@@ -192,6 +198,7 @@ class VenteSummary:
             client_nom=vente.client.nom if vente.client is not None else None,
             montant_paye=vente.montant_paye,
             statut_paiement=vente.statut_paiement,
+            annulation_motif=vente.annulation_motif,
         )
 
 
@@ -239,6 +246,28 @@ def _validate_optional_text(value: Optional[str], field_label: str, max_length: 
     return value
 
 
+def _validate_annulation_motif(value: Optional[str]) -> str:
+    """Motif d'annulation obligatoire (§26 du cahier des charges de ce
+    lot) : jamais None/vide/uniquement des espaces, jamais un motif
+    générique auto-généré — c'est toujours une vraie saisie utilisateur.
+    Appliqué ici, côté service, pour rester incontournable même par un
+    appel direct hors interface."""
+    if value is None:
+        raise ValidationError("Le motif d'annulation est obligatoire.")
+    value = value.strip()
+    if not value:
+        raise ValidationError("Le motif d'annulation est obligatoire.")
+    if len(value) < MIN_ANNULATION_MOTIF_LENGTH:
+        raise ValidationError(
+            f"Le motif d'annulation doit contenir au moins {MIN_ANNULATION_MOTIF_LENGTH} caractères."
+        )
+    if len(value) > MAX_ANNULATION_MOTIF_LENGTH:
+        raise ValidationError(
+            f"Le motif d'annulation ne doit pas dépasser {MAX_ANNULATION_MOTIF_LENGTH} caractères."
+        )
+    return value
+
+
 def _compute_statut_paiement(total: Decimal, montant_paye: Decimal) -> StatutPaiement:
     """Règle unique de dérivation du statut de paiement (§5.3) : PAYEE dès
     que le reste à payer atteint zéro (y compris une vente au total nul,
@@ -263,7 +292,7 @@ class SaleService:
         current_user = self._permissions.current_user
         return current_user.id if current_user else None
 
-    def _audit(self, session, action: str, sale_id: Optional[int]) -> None:
+    def _audit(self, session, action: str, sale_id: Optional[int], details: Optional[str] = None) -> None:
         session.add(
             AuditLog(
                 user_id=self._acting_user_id(),
@@ -271,6 +300,7 @@ class SaleService:
                 entite="ventes",
                 entite_id=sale_id,
                 resultat=ResultatAudit.SUCCES,
+                details=details,
             )
         )
 
@@ -564,13 +594,19 @@ class SaleService:
         logger.info("Vente validée : %s", summary.numero)
         return summary
 
-    def cancel_sale(self, sale_id: int) -> VenteSummary:
+    def cancel_sale(self, sale_id: int, motif: str) -> VenteSummary:
         """VALIDEE -> ANNULEE : génère un mouvement ANNULATION par ligne
         (quantité inverse, positive) restaurant le stock. Conserve
         l'opération originale (jamais de suppression), refuse toute
         double annulation, et refuse l'opération dans son intégralité —
         sans aucune modification, grâce au rollback de ``session_scope`` —
         si elle s'avérait incohérente.
+
+        ``motif`` est obligatoire (§26 du cahier des charges de ce lot) :
+        non vide, non uniquement des espaces, au moins
+        ``MIN_ANNULATION_MOTIF_LENGTH`` caractères après trim — vérifié ici,
+        jamais uniquement côté interface. Conservé définitivement sur
+        ``Vente.annulation_motif`` et jamais modifié ensuite.
 
         Choix retenu pour une vente déjà partiellement/totalement payée
         (§5.9, point volontairement laissé à l'appréciation de
@@ -586,6 +622,7 @@ class SaleService:
         gérer manuellement par le client de l'application. Voir le rapport
         de ce lot pour la justification complète de ce choix."""
         self._permissions.require_permission("SALE_CANCEL")
+        motif = _validate_annulation_motif(motif)
         acting_user_id = self._acting_user_id()
 
         with session_scope(self._settings) as session:
@@ -619,7 +656,10 @@ class SaleService:
                 )
 
             vente.statut = StatutOperation.ANNULEE
-            self._audit(session, "SALE_CANCEL", vente.id)
+            vente.annulation_motif = motif
+            self._audit(
+                session, "SALE_CANCEL", vente.id, details=json.dumps({"motif": motif})
+            )
             summary = VenteSummary.from_model(vente)
 
         logger.info("Vente annulée : %s", summary.numero)

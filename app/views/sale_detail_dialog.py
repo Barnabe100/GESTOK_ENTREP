@@ -100,6 +100,10 @@ class SaleDetailDialog(QDialog):
         form.addRow("Client", QLabel(sale.client_nom or "—", self))
         form.addRow("Créée par", QLabel(sale.username, self))
         form.addRow("Statut", QLabel(_STATUT_LABELS.get(sale.statut, str(sale.statut)), self))
+        if sale.statut == StatutOperation.ANNULEE:
+            motif_label = QLabel(sale.annulation_motif or "—", self)
+            motif_label.setWordWrap(True)
+            form.addRow("Motif d'annulation", motif_label)
         form.addRow("Créée le", QLabel(sale.date_creation.strftime("%Y-%m-%d %H:%M"), self))
         form.addRow("Modifiée le", QLabel(sale.date_modification.strftime("%Y-%m-%d %H:%M"), self))
 

@@ -56,6 +56,10 @@ class EntryDetailDialog(QDialog):
         form.addRow("Créée par", QLabel(entry.username, self))
         form.addRow("Commentaire", QLabel(entry.commentaire or "—", self))
         form.addRow("Statut", QLabel(_STATUT_LABELS.get(entry.statut, str(entry.statut)), self))
+        if entry.statut == StatutOperation.ANNULEE:
+            motif_label = QLabel(entry.annulation_motif or "—", self)
+            motif_label.setWordWrap(True)
+            form.addRow("Motif d'annulation", motif_label)
         form.addRow("Créée le", QLabel(entry.date_creation.strftime("%Y-%m-%d %H:%M"), self))
         form.addRow("Modifiée le", QLabel(entry.date_modification.strftime("%Y-%m-%d %H:%M"), self))
 

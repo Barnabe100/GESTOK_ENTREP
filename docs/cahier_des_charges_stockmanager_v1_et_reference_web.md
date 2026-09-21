@@ -143,19 +143,19 @@ Nom (150c, sans unicité), téléphone, email (validé), adresse, observations. 
 ## 13. Entrées
 
 ### A. CE QUI EXISTE
-Cycle `BROUILLON → VALIDEE → (ANNULEE)`. Fournisseur obligatoire actif, date (jamais future), référence document, commentaire, lignes (article, quantité >0, prix unitaire ≥0). Validation : génère un mouvement `ENTREE` par ligne et **recalcule le CMUP** (seule opération à le faire). Annulation (validée uniquement) : mouvement `ANNULATION` inverse, sans recalcul rétroactif du CMUP (`app/services/entries/entry_service.py`).
+Cycle `BROUILLON → VALIDEE → (ANNULEE)`. Fournisseur obligatoire actif, date (jamais future), référence document, commentaire, lignes (article, quantité >0, prix unitaire ≥0). Validation : génère un mouvement `ENTREE` par ligne et **recalcule le CMUP** (seule opération à le faire). Annulation (validée uniquement) : mouvement `ANNULATION` inverse, sans recalcul rétroactif du CMUP (`app/services/entries/entry_service.py`). **Motif d'annulation obligatoire** depuis ce lot : `cancel_entry(entree_id, motif)` refuse l'annulation si `motif` est `None`, vide, uniquement des espaces, ou < 5 caractères après trim ; conservé sur `Entree.annulation_motif`, jamais modifié ensuite.
 
 ## 14. Sorties
 
 ### A. CE QUI EXISTE
-Cycle identique aux Entrées. Motif de sortie obligatoire actif, bénéficiaire, référence, commentaire, lignes (article, quantité >0 ; **aucun coût saisi manuellement** — toujours le CMUP courant, recapturé à la validation). Validation : mouvement `SORTIE` (quantité négative), refus automatique si stock insuffisant, CMUP jamais modifié. Annulation : mouvement `ANNULATION` inverse (`app/services/exits/exit_service.py`).
+Cycle identique aux Entrées. Motif de sortie obligatoire actif, bénéficiaire, référence, commentaire, lignes (article, quantité >0 ; **aucun coût saisi manuellement** — toujours le CMUP courant, recapturé à la validation). Validation : mouvement `SORTIE` (quantité négative), refus automatique si stock insuffisant, CMUP jamais modifié. Annulation : mouvement `ANNULATION` inverse (`app/services/exits/exit_service.py`). **Motif d'annulation obligatoire** depuis ce lot, même règle que pour les Entrées : `cancel_exit(sortie_id, motif)`, conservé sur `Sortie.annulation_motif`. (À ne pas confondre avec le motif de *sortie* lui-même — `Sortie.motif_id`/`ExitReason` — qui qualifie la nature de la sortie, pas son annulation.)
 
 > **Point à signaler — décision future, non résolue ici** : contrairement aux Ventes (§15), ni les Entrées ni les Sorties ne proposent de suppression physique de leur brouillon (aucune méthode `delete_` dans `entry_service.py`/`exit_service.py`, aucun bouton « Supprimer » sur `entries_page.py`/`exits_page.py` — seul « Annuler », réservé aux documents déjà validés). Un brouillon d'Entrée ou de Sortie ne peut donc être qu'édité ou laissé tel quel, jamais retiré. Cette asymétrie avec les Ventes est vérifiée dans le code mais **son caractère volontaire ou non n'est pas tranché par ce document** — à valider avec le métier avant la conception Web (éventuellement en alignant Entrées/Sorties sur le comportement des Ventes, ou en le justifiant explicitement comme une différence assumée).
 
 ## 15. Ventes
 
 ### A. CE QUI EXISTE
-Cycle `BROUILLON → VALIDEE → (ANNULEE)`. Client **optionnel** (`client_id` nullable — vente comptant). Lignes : article, quantité >0, prix unitaire ≥0 (pré-rempli au prix de vente courant, librement modifiable, jamais recalculé). Validation : mouvement `VENTE` par ligne, refus si stock insuffisant, paiement initial optionnel possible. Seul document supprimable physiquement (brouillon uniquement). Annulation (validée uniquement) : mouvement `ANNULATION` inverse ; les paiements déjà enregistrés ne sont jamais modifiés/remboursés automatiquement (`app/services/sales/sale_service.py`).
+Cycle `BROUILLON → VALIDEE → (ANNULEE)`. Client **optionnel** (`client_id` nullable — vente comptant). Lignes : article, quantité >0, prix unitaire ≥0 (pré-rempli au prix de vente courant, librement modifiable, jamais recalculé). Validation : mouvement `VENTE` par ligne, refus si stock insuffisant, paiement initial optionnel possible. Seul document supprimable physiquement (brouillon uniquement). Annulation (validée uniquement) : mouvement `ANNULATION` inverse ; les paiements déjà enregistrés ne sont jamais modifiés/remboursés automatiquement (`app/services/sales/sale_service.py`). **Motif d'annulation obligatoire** depuis ce lot, même règle que pour les Entrées/Sorties : `cancel_sale(sale_id, motif)`, conservé sur `Vente.annulation_motif`.
 
 ## 16. Paiements
 
@@ -436,16 +436,16 @@ Question ouverte, à trancher avec le métier avant toute conception technique :
 ## Entree / EntreeLigne, Sortie / SortieLigne (`entrees`/`entree_lignes`, `sorties`/`sortie_lignes`)
 
 **Rôle** : documents de mouvement de stock hors vente.
-**Attributs Entree/Sortie** : `numero` (unique), `date`, `fournisseur_id`/`motif_id`, `user_id`, `commentaire`, `statut` (`StatutOperation` : BROUILLON/VALIDEE/ANNULEE).
+**Attributs Entree/Sortie** : `numero` (unique), `date`, `fournisseur_id`/`motif_id`, `user_id`, `commentaire`, `statut` (`StatutOperation` : BROUILLON/VALIDEE/ANNULEE), `annulation_motif` (String(500), nullable — NULL tant que non annulée, renseigné une seule fois à l'annulation, jamais modifié ensuite ; ajouté par la migration `0010_motif_annulation`).
 **Attributs ligne** : `article_id`, `quantite` (>0), `prix_unitaire`/`cout_unitaire` (≥0), `montant`.
-**Règles métier** : jamais de suppression physique ; workflow Brouillon→Validée→(Annulée).
+**Règles métier** : jamais de suppression physique ; workflow Brouillon→Validée→(Annulée) ; toute annulation exige désormais un motif obligatoire (≥5 caractères après trim), vérifié côté service.
 
 **Correspondance possible pour la future base Web** : conservable telle quelle. **[PROPOSITION]** `boutique_id` si multi-boutiques.
 
 ## Vente / VenteLigne, Paiement (`ventes`/`vente_lignes`, `paiements`)
 
 **Rôle** : documents de vente et encaissements associés.
-**Attributs Vente** : `numero`, `date`, `user_id`, `client_id` (**nullable** — vente comptant), `statut`, `total`, `montant_paye` (dénormalisé, recalculé à chaque `Paiement`), `statut_paiement` (`StatutPaiement` : NON_PAYEE/PARTIELLEMENT_PAYEE/PAYEE).
+**Attributs Vente** : `numero`, `date`, `user_id`, `client_id` (**nullable** — vente comptant), `statut`, `total`, `montant_paye` (dénormalisé, recalculé à chaque `Paiement`), `statut_paiement` (`StatutPaiement` : NON_PAYEE/PARTIELLEMENT_PAYEE/PAYEE), `annulation_motif` (String(500), nullable — même règle que pour Entree/Sortie, ajouté par la migration `0010_motif_annulation`).
 **Attributs Paiement** : `vente_id`, `montant` (>0), `date_heure`, `mode_paiement` (texte libre, 50c), `reference` (100c), `user_id`, `commentaire` (500c).
 **Règles métier** : `Vente` est le **seul** document physiquement supprimable (brouillon uniquement) ; `Paiement` est strictement immuable (aucune méthode de modification/suppression) ; `montant_paye`/`statut_paiement` sont des totaux courants dénormalisés, jamais la source de vérité (la somme réelle des `Paiement` l'est).
 
@@ -587,3 +587,5 @@ Toutes les règles ci-dessous ont été vérifiées directement dans le code sou
 | 17 | Le CMUP n'est recalculé que sur un mouvement de type `ENTREE` | `app/services/stock/stock_service.py:102-107` |
 | 18 | La formule CMUP est : `((stock_avant × CMUP_avant) + (quantité × prix_achat)) / (stock_avant + quantité)` | `app/services/stock/stock_service.py:130-145` |
 | 19 | Une licence et une permission RBAC peuvent toutes deux être nécessaires pour une fonctionnalité donnée (double contrôle) | `app/services/licensing/permission_map.py`, `app/services/auth/permission_service.py` |
+| 20 | Toute annulation (entrée, sortie, vente validée) exige un motif obligatoire (non vide, non uniquement des espaces, ≥5 caractères après trim), vérifié côté service — jamais uniquement côté interface | `app/services/entries/entry_service.py::_validate_annulation_motif`, `app/services/exits/exit_service.py::_validate_annulation_motif`, `app/services/sales/sale_service.py::_validate_annulation_motif` |
+| 21 | Le motif d'annulation est conservé définitivement (`annulation_motif`), jamais modifié après l'annulation, et n'est jamais inventé rétroactivement pour les opérations annulées avant l'introduction de ce champ (`NULL` dans ce cas) | `app/models/documents.py`, migration `0010_motif_annulation` |

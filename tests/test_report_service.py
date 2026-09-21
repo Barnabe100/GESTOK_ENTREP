@@ -228,7 +228,7 @@ def test_movements_cover_all_types(login_as) -> None:
 
     sale = stack.sales.create_sale(date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("10"), Decimal("150"))])
     stack.sales.validate_sale(sale.id)
-    stack.sales.cancel_sale(sale.id)
+    stack.sales.cancel_sale(sale.id, "Motif de test valide")
 
     inv = stack.inventory.create_inventory(date(2026, 1, 1), [InventaireLigneInput(article.id, Decimal("100"))])
     stack.inventory.validate_inventory(inv.id)

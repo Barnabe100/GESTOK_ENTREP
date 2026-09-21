@@ -85,7 +85,7 @@ def test_receivables_page_excludes_draft_and_cancelled_sales(qtbot, login_as) ->
     article = _make_article(stack)
     stack.sales.create_sale(date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("1"), Decimal("150"))])
     cancelled = _validated_sale(stack, article)
-    stack.sales.cancel_sale(cancelled.id)
+    stack.sales.cancel_sale(cancelled.id, "Motif de test valide")
 
     page = _build_page(stack)
     qtbot.addWidget(page)

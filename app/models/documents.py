@@ -32,6 +32,12 @@ class Entree(TimestampMixin, Base):
     statut: Mapped[StatutOperation] = mapped_column(
         _STATUT_OPERATION_TYPE, default=StatutOperation.BROUILLON, nullable=False
     )
+    # Nullable : NULL tant que l'entrée n'est pas annulée, et pour les
+    # entrées déjà annulées avant l'introduction de cette colonne (aucun
+    # motif rétroactif inventé). Renseigné une seule fois par
+    # ``EntryService.cancel_entry`` et jamais modifié ensuite (voir §26 du
+    # cahier des charges de ce lot).
+    annulation_motif: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
 
     lignes: Mapped[list["EntreeLigne"]] = relationship(
         "EntreeLigne", back_populates="entree", cascade="all, delete-orphan"
@@ -75,6 +81,11 @@ class Sortie(TimestampMixin, Base):
     statut: Mapped[StatutOperation] = mapped_column(
         _STATUT_OPERATION_TYPE, default=StatutOperation.BROUILLON, nullable=False
     )
+    # Nullable : NULL tant que la sortie n'est pas annulée, et pour les
+    # sorties déjà annulées avant l'introduction de cette colonne (aucun
+    # motif rétroactif inventé). Renseigné une seule fois par
+    # ``ExitService.cancel_exit`` et jamais modifié ensuite.
+    annulation_motif: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
 
     lignes: Mapped[list["SortieLigne"]] = relationship(
         "SortieLigne", back_populates="sortie", cascade="all, delete-orphan"
@@ -127,6 +138,11 @@ class Vente(TimestampMixin, Base):
     statut_paiement: Mapped[StatutPaiement] = mapped_column(
         _STATUT_PAIEMENT_TYPE, default=StatutPaiement.NON_PAYEE, nullable=False
     )
+    # Nullable : NULL tant que la vente n'est pas annulée, et pour les
+    # ventes déjà annulées avant l'introduction de cette colonne (aucun
+    # motif rétroactif inventé). Renseigné une seule fois par
+    # ``SaleService.cancel_sale`` et jamais modifié ensuite.
+    annulation_motif: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
 
     lignes: Mapped[list["VenteLigne"]] = relationship(
         "VenteLigne", back_populates="vente", cascade="all, delete-orphan"

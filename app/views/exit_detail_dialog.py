@@ -57,6 +57,10 @@ class ExitDetailDialog(QDialog):
         form.addRow("Créée par", QLabel(exit_.username, self))
         form.addRow("Commentaire", QLabel(exit_.commentaire or "—", self))
         form.addRow("Statut", QLabel(_STATUT_LABELS.get(exit_.statut, str(exit_.statut)), self))
+        if exit_.statut == StatutOperation.ANNULEE:
+            motif_label = QLabel(exit_.annulation_motif or "—", self)
+            motif_label.setWordWrap(True)
+            form.addRow("Motif d'annulation", motif_label)
         form.addRow("Créée le", QLabel(exit_.date_creation.strftime("%Y-%m-%d %H:%M"), self))
         form.addRow("Modifiée le", QLabel(exit_.date_modification.strftime("%Y-%m-%d %H:%M"), self))
 

@@ -21,6 +21,7 @@ Cycle de vie d'une entrée : BROUILLON -> VALIDEE -> (ANNULEE).
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
@@ -50,6 +51,8 @@ logger = get_logger("services.entries")
 
 MAX_REFERENCE_DOCUMENT_LENGTH = 100
 MAX_COMMENTAIRE_LENGTH = 500
+MIN_ANNULATION_MOTIF_LENGTH = 5
+MAX_ANNULATION_MOTIF_LENGTH = 500
 
 # Sentinel distinguant « champ non fourni » (conserver la valeur actuelle lors
 # d'une modification) de ``None``/chaîne vide (effacer explicitement le champ).
@@ -107,6 +110,9 @@ class EntreeSummary:
     lignes: list[EntreeLigneSummary]
     date_creation: datetime
     date_modification: datetime
+    # None tant que l'entrée n'est pas annulée (voir Entree.annulation_motif) ;
+    # également None pour une entrée annulée avant l'introduction de ce champ.
+    annulation_motif: Optional[str] = None
 
     @property
     def total(self) -> Decimal:
@@ -131,6 +137,7 @@ class EntreeSummary:
             lignes=[EntreeLigneSummary.from_model(l) for l in entree.lignes],
             date_creation=entree.date_creation,
             date_modification=entree.date_modification,
+            annulation_motif=entree.annulation_motif,
         )
 
 
@@ -157,6 +164,28 @@ def _validate_optional_text(value: Optional[str], field_label: str, max_length: 
     return value
 
 
+def _validate_annulation_motif(value: Optional[str]) -> str:
+    """Motif d'annulation obligatoire (§26 du cahier des charges de ce
+    lot) : jamais None/vide/uniquement des espaces, jamais un motif
+    générique auto-généré — c'est toujours une vraie saisie utilisateur.
+    Appliqué ici, côté service, pour rester incontournable même par un
+    appel direct hors interface."""
+    if value is None:
+        raise ValidationError("Le motif d'annulation est obligatoire.")
+    value = value.strip()
+    if not value:
+        raise ValidationError("Le motif d'annulation est obligatoire.")
+    if len(value) < MIN_ANNULATION_MOTIF_LENGTH:
+        raise ValidationError(
+            f"Le motif d'annulation doit contenir au moins {MIN_ANNULATION_MOTIF_LENGTH} caractères."
+        )
+    if len(value) > MAX_ANNULATION_MOTIF_LENGTH:
+        raise ValidationError(
+            f"Le motif d'annulation ne doit pas dépasser {MAX_ANNULATION_MOTIF_LENGTH} caractères."
+        )
+    return value
+
+
 class EntryService:
     def __init__(self, permission_service: PermissionService, settings: Optional[Settings] = None) -> None:
         self._permissions = permission_service
@@ -167,7 +196,7 @@ class EntryService:
         current_user = self._permissions.current_user
         return current_user.id if current_user else None
 
-    def _audit(self, session, action: str, entree_id: Optional[int]) -> None:
+    def _audit(self, session, action: str, entree_id: Optional[int], details: Optional[str] = None) -> None:
         session.add(
             AuditLog(
                 user_id=self._acting_user_id(),
@@ -175,6 +204,7 @@ class EntryService:
                 entite="entrees",
                 entite_id=entree_id,
                 resultat=ResultatAudit.SUCCES,
+                details=details,
             )
         )
 
@@ -399,13 +429,21 @@ class EntryService:
         logger.info("Entrée validée : %s", summary.numero)
         return summary
 
-    def cancel_entry(self, entree_id: int) -> EntreeSummary:
+    def cancel_entry(self, entree_id: int, motif: str) -> EntreeSummary:
         """VALIDEE -> ANNULEE : génère un mouvement ANNULATION par ligne
         (quantité inverse). Refusée dans son intégralité — sans aucune
         modification, grâce au rollback de ``session_scope`` — si elle ferait
         passer le stock d'un seul article en négatif (§10 : aucune
-        compensation automatique, aucun délai)."""
+        compensation automatique, aucun délai).
+
+        ``motif`` est obligatoire (§26 du cahier des charges de ce lot) :
+        non vide, non uniquement des espaces, au moins
+        ``MIN_ANNULATION_MOTIF_LENGTH`` caractères après trim — vérifié ici,
+        jamais uniquement côté interface, avant toute écriture. Conservé
+        définitivement sur ``Entree.annulation_motif`` et jamais modifié
+        ensuite."""
         self._permissions.require_permission("STOCK_ENTRY_CANCEL")
+        motif = _validate_annulation_motif(motif)
         acting_user_id = self._acting_user_id()
 
         with session_scope(self._settings) as session:
@@ -439,7 +477,10 @@ class EntryService:
                 )
 
             entree.statut = StatutOperation.ANNULEE
-            self._audit(session, "STOCK_ENTRY_CANCEL", entree.id)
+            entree.annulation_motif = motif
+            self._audit(
+                session, "STOCK_ENTRY_CANCEL", entree.id, details=json.dumps({"motif": motif})
+            )
             summary = EntreeSummary.from_model(entree)
 
         logger.info("Entrée annulée : %s", summary.numero)

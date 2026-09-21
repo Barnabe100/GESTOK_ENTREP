@@ -16,6 +16,7 @@ from typing import Optional
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
+    QDialog,
     QHBoxLayout,
     QLineEdit,
     QMessageBox,
@@ -34,6 +35,7 @@ from app.services.exits.exit_service import ExitService, SortieLigneInput
 from app.services.settings.company_settings_service import get_effective_currency
 from app.utils.exceptions import AppError, ValidationError
 from app.utils.money import format_money
+from app.views.cancellation_reason_dialog import CancellationReasonDialog
 from app.views.common import confirm_action, run_modal_form
 from app.views.exit_detail_dialog import ExitDetailDialog
 from app.views.exit_form_dialog import ExitFormDialog
@@ -359,17 +361,16 @@ class ExitsPage(QWidget):
         exit_id = self._selected_exit_id()
         if exit_id is None:
             return
-        if not confirm_action(
-            self, "Confirmation", "Voulez-vous vraiment annuler cette sortie validée ?"
-        ):
+        dialog = CancellationReasonDialog("cette sortie validée", parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        if self._cancel_selected(exit_id):
+        if self._cancel_selected(exit_id, dialog.reason()):
             self.refresh()
 
-    def _cancel_selected(self, exit_id: int) -> bool:
+    def _cancel_selected(self, exit_id: int, motif: str) -> bool:
         """Isolé de ``_on_cancel_clicked`` pour rester testable sans boîte modale."""
         try:
-            cancelled = self._exit_service.cancel_exit(exit_id)
+            cancelled = self._exit_service.cancel_exit(exit_id, motif)
             QMessageBox.information(
                 self, "Sortie annulée", f"La sortie « {cancelled.numero} » a été annulée."
             )

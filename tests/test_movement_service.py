@@ -78,7 +78,7 @@ def test_sale_and_cancellation_reference_operation_is_sale_numero(login_as) -> N
     article = _make_article(stack, stock_initial=Decimal("50"))
     sale = stack.sales.create_sale(date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("10"), Decimal("150"))])
     stack.sales.validate_sale(sale.id)
-    stack.sales.cancel_sale(sale.id)
+    stack.sales.cancel_sale(sale.id, "Motif de test valide")
 
     movements = stack.movements.list_movements(article_id=article.id)
     vente = next(m for m in movements if m.type == TypeMouvement.VENTE)
@@ -104,7 +104,7 @@ def test_movements_cover_all_four_types_plus_cancellation(login_as) -> None:
 
     sale = stack.sales.create_sale(date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("10"), Decimal("150"))])
     stack.sales.validate_sale(sale.id)
-    stack.sales.cancel_sale(sale.id)
+    stack.sales.cancel_sale(sale.id, "Motif de test valide")
 
     inv = stack.inventory.create_inventory(date(2026, 1, 1), [InventaireLigneInput(article.id, Decimal("100"))])
     stack.inventory.validate_inventory(inv.id)

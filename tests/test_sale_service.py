@@ -339,7 +339,7 @@ def test_cancel_sale_restores_stock_and_creates_annulation_movement(login_as) ->
     stack.sales.validate_sale(sale.id)
     assert stack.articles.get_article(article.id).stock_actuel == Decimal("80")
 
-    cancelled = stack.sales.cancel_sale(sale.id)
+    cancelled = stack.sales.cancel_sale(sale.id, "Motif de test valide")
     assert cancelled.statut == StatutOperation.ANNULEE
 
     updated = stack.articles.get_article(article.id)
@@ -358,7 +358,7 @@ def test_cancel_sale_keeps_original_sale(login_as) -> None:
 
     sale = stack.sales.create_sale(date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("20"), Decimal("150"))])
     stack.sales.validate_sale(sale.id)
-    stack.sales.cancel_sale(sale.id)
+    stack.sales.cancel_sale(sale.id, "Motif de test valide")
 
     reloaded = stack.sales.get_sale(sale.id)
     assert reloaded.numero == sale.numero
@@ -371,10 +371,10 @@ def test_cannot_cancel_a_sale_twice(login_as) -> None:
 
     sale = stack.sales.create_sale(date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("20"), Decimal("150"))])
     stack.sales.validate_sale(sale.id)
-    stack.sales.cancel_sale(sale.id)
+    stack.sales.cancel_sale(sale.id, "Motif de test valide")
 
     with pytest.raises(ConflictError):
-        stack.sales.cancel_sale(sale.id)
+        stack.sales.cancel_sale(sale.id, "Motif de test valide")
 
 
 def test_cancel_sale_requires_permission(login_as) -> None:
@@ -386,7 +386,83 @@ def test_cancel_sale_requires_permission(login_as) -> None:
     stack.sales.validate_sale(sale.id)
 
     with pytest.raises(PermissionDeniedError):
-        stack.sales.cancel_sale(sale.id)
+        stack.sales.cancel_sale(sale.id, "Motif de test valide")
+
+
+# -- motif d'annulation obligatoire ------------------------------------------------
+
+
+def _make_validated_sale(stack, quantite=Decimal("20"), stock_initial=Decimal("100")):
+    article = _make_article(stack, stock_initial=stock_initial)
+    sale = stack.sales.create_sale(date(2026, 1, 1), [VenteLigneInput(article.id, quantite, Decimal("150"))])
+    stack.sales.validate_sale(sale.id)
+    return sale, article
+
+
+def test_cancel_sale_without_reason_is_refused(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    sale, _ = _make_validated_sale(stack)
+
+    with pytest.raises(ValidationError):
+        stack.sales.cancel_sale(sale.id, None)
+
+
+def test_cancel_sale_with_blank_reason_is_refused(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    sale, _ = _make_validated_sale(stack)
+
+    with pytest.raises(ValidationError):
+        stack.sales.cancel_sale(sale.id, "")
+
+    with pytest.raises(ValidationError):
+        stack.sales.cancel_sale(sale.id, "     ")
+
+
+def test_cancel_sale_with_too_short_reason_is_refused(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    sale, _ = _make_validated_sale(stack)
+
+    with pytest.raises(ValidationError):
+        stack.sales.cancel_sale(sale.id, "abcd")
+
+
+def test_cancel_sale_with_valid_reason_succeeds_and_persists_motif(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    sale, article = _make_validated_sale(stack, quantite=Decimal("20"), stock_initial=Decimal("100"))
+
+    cancelled = stack.sales.cancel_sale(sale.id, "Client a annulé sa commande")
+
+    assert cancelled.statut == StatutOperation.ANNULEE
+    assert cancelled.annulation_motif == "Client a annulé sa commande"
+
+    reloaded = stack.sales.get_sale(sale.id)
+    assert reloaded.annulation_motif == "Client a annulé sa commande"
+
+    updated_article = stack.articles.get_article(article.id)
+    assert updated_article.stock_actuel == Decimal("100")
+
+    movements = stack.sales.get_sale_movements(sale.id)
+    assert len(movements) == 2
+    assert movements[1].type == TypeMouvement.ANNULATION
+
+
+def test_cancel_sale_audit_contains_motif(login_as, initialized_db) -> None:
+    stack, _ = login_as("Administrateur")
+    sale, _ = _make_validated_sale(stack)
+
+    stack.sales.cancel_sale(sale.id, "Motif visible dans l'audit")
+
+    from app.db.session import session_scope
+    from app.models.audit import AuditLog
+
+    with session_scope(initialized_db) as session:
+        audit = (
+            session.query(AuditLog)
+            .filter(AuditLog.action == "SALE_CANCEL", AuditLog.entite_id == sale.id)
+            .one()
+        )
+        assert audit.details is not None
+        assert "Motif visible dans l'audit" in audit.details
 
 
 # -- permissions ----------------------------------------------------------------
@@ -436,7 +512,7 @@ def test_vendeur_can_create_update_and_validate_but_not_cancel(login_as) -> None
     assert validated.statut == StatutOperation.VALIDEE
 
     with pytest.raises(PermissionDeniedError):
-        stack.sales.cancel_sale(sale.id)
+        stack.sales.cancel_sale(sale.id, "Motif de test valide")
 
 
 def test_administrateur_has_full_access(login_as) -> None:
@@ -446,7 +522,7 @@ def test_administrateur_has_full_access(login_as) -> None:
     sale = stack.sales.create_sale(date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("5"), Decimal("150"))])
     stack.sales.update_sale(sale.id, date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("6"), Decimal("150"))])
     stack.sales.validate_sale(sale.id)
-    cancelled = stack.sales.cancel_sale(sale.id)
+    cancelled = stack.sales.cancel_sale(sale.id, "Motif de test valide")
     assert cancelled.statut == StatutOperation.ANNULEE
 
 
@@ -601,7 +677,7 @@ def test_client_receivable_summary_excludes_cancelled_sales(login_as) -> None:
     client = stack.clients.create_client("Client Créance 2")
 
     validated = _create_validated_sale(stack, article, client_id=client.id)
-    stack.sales.cancel_sale(validated.id)
+    stack.sales.cancel_sale(validated.id, "Motif de test valide")
 
     summary = stack.sales.get_client_receivable_summary(client.id)
 
@@ -795,7 +871,7 @@ def test_payment_history_survives_cancellation(login_as) -> None:
     article = _make_article(stack, stock_initial=Decimal("50"))
     validated = _create_validated_sale(stack, article, paiement_initial=Decimal("100"))
 
-    stack.sales.cancel_sale(validated.id)
+    stack.sales.cancel_sale(validated.id, "Motif de test valide")
 
     history = stack.sales.list_payments(validated.id)
     assert len(history) == 1
@@ -868,7 +944,7 @@ def test_payment_on_cancelled_sale_is_rejected(login_as) -> None:
     stack, _ = login_as("Administrateur")
     article = _make_article(stack, stock_initial=Decimal("50"))
     validated = _create_validated_sale(stack, article)
-    stack.sales.cancel_sale(validated.id)
+    stack.sales.cancel_sale(validated.id, "Motif de test valide")
 
     with pytest.raises(ConflictError):
         stack.sales.record_payment(validated.id, Decimal("10"))

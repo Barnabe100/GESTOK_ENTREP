@@ -316,7 +316,7 @@ def test_cancel_exit_restores_stock_and_keeps_history(login_as) -> None:
     stack.exits.validate_exit(exit_.id)
     assert stack.articles.get_article(article.id).stock_actuel == Decimal("80")
 
-    cancelled = stack.exits.cancel_exit(exit_.id)
+    cancelled = stack.exits.cancel_exit(exit_.id, "Motif de test valide")
     assert cancelled.statut == StatutOperation.ANNULEE
 
     updated = stack.articles.get_article(article.id)
@@ -343,7 +343,7 @@ def test_cancel_exit_only_allowed_from_validee(login_as) -> None:
     exit_ = stack.exits.create_exit(motif.id, date(2026, 1, 1), [SortieLigneInput(article.id, Decimal("10"))])
 
     with pytest.raises(ConflictError):
-        stack.exits.cancel_exit(exit_.id)
+        stack.exits.cancel_exit(exit_.id, "Motif de test valide")
 
 
 # -- permissions ----------------------------------------------------------------
@@ -363,7 +363,7 @@ def test_gestionnaire_de_stock_can_create_and_validate_but_not_cancel(login_as) 
     stack.exits.validate_exit(exit_.id)
 
     with pytest.raises(PermissionDeniedError):
-        stack.exits.cancel_exit(exit_.id)
+        stack.exits.cancel_exit(exit_.id, "Motif de test valide")
 
 
 def test_vendeur_cannot_view_or_create_exits(login_as) -> None:
@@ -423,3 +423,82 @@ def test_create_exit_auto_generates_sequential_numero(login_as) -> None:
 
     assert first.numero == "SOR-000001"
     assert second.numero == "SOR-000002"
+
+
+# -- motif d'annulation obligatoire ------------------------------------------------
+
+
+def _make_validated_exit(stack, quantite=Decimal("10"), stock_initial=Decimal("100")):
+    motif = _make_motif(stack)
+    article = _make_article(stack, stock_initial=stock_initial)
+    exit_ = stack.exits.create_exit(
+        motif.id, date(2026, 1, 1), [SortieLigneInput(article.id, quantite)]
+    )
+    stack.exits.validate_exit(exit_.id)
+    return exit_, article
+
+
+def test_cancel_exit_without_reason_is_refused(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    exit_, _ = _make_validated_exit(stack)
+
+    with pytest.raises(ValidationError):
+        stack.exits.cancel_exit(exit_.id, None)
+
+
+def test_cancel_exit_with_blank_reason_is_refused(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    exit_, _ = _make_validated_exit(stack)
+
+    with pytest.raises(ValidationError):
+        stack.exits.cancel_exit(exit_.id, "")
+
+    with pytest.raises(ValidationError):
+        stack.exits.cancel_exit(exit_.id, "     ")
+
+
+def test_cancel_exit_with_too_short_reason_is_refused(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    exit_, _ = _make_validated_exit(stack)
+
+    with pytest.raises(ValidationError):
+        stack.exits.cancel_exit(exit_.id, "abcd")
+
+
+def test_cancel_exit_with_valid_reason_succeeds_and_persists_motif(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    exit_, article = _make_validated_exit(stack, quantite=Decimal("10"), stock_initial=Decimal("100"))
+
+    cancelled = stack.exits.cancel_exit(exit_.id, "Erreur de sélection de l'article")
+
+    assert cancelled.statut == StatutOperation.ANNULEE
+    assert cancelled.annulation_motif == "Erreur de sélection de l'article"
+
+    reloaded = stack.exits.get_exit(exit_.id)
+    assert reloaded.annulation_motif == "Erreur de sélection de l'article"
+
+    updated_article = stack.articles.get_article(article.id)
+    assert updated_article.stock_actuel == Decimal("100")
+
+    movements = stack.exits.get_exit_movements(exit_.id)
+    assert len(movements) == 2
+    assert movements[1].type == TypeMouvement.ANNULATION
+
+
+def test_cancel_exit_audit_contains_motif(login_as, initialized_db) -> None:
+    stack, _ = login_as("Administrateur")
+    exit_, _ = _make_validated_exit(stack)
+
+    stack.exits.cancel_exit(exit_.id, "Motif visible dans l'audit")
+
+    from app.db.session import session_scope
+    from app.models.audit import AuditLog
+
+    with session_scope(initialized_db) as session:
+        audit = (
+            session.query(AuditLog)
+            .filter(AuditLog.action == "STOCK_EXIT_CANCEL", AuditLog.entite_id == exit_.id)
+            .one()
+        )
+        assert audit.details is not None
+        assert "Motif visible dans l'audit" in audit.details

@@ -88,3 +88,29 @@ def test_detail_dialog_handles_missing_optional_fields(qtbot) -> None:
     )
     qtbot.addWidget(dialog)
     assert dialog is not None
+
+
+def test_detail_dialog_shows_motif_when_annulee(qtbot) -> None:
+    from PySide6.QtWidgets import QLabel
+
+    dialog = EntryDetailDialog(
+        _make_entry(statut=StatutOperation.ANNULEE, annulation_motif="Erreur de saisie de quantité"),
+        [], "XOF",
+    )
+    qtbot.addWidget(dialog)
+
+    labels = [label.text() for label in dialog.findChildren(QLabel)]
+    assert "Erreur de saisie de quantité" in labels
+
+
+def test_detail_dialog_hides_motif_row_when_not_annulee(qtbot) -> None:
+    from PySide6.QtWidgets import QFormLayout
+
+    dialog = EntryDetailDialog(_make_entry(statut=StatutOperation.VALIDEE), [], "XOF")
+    qtbot.addWidget(dialog)
+
+    form = dialog.findChild(QFormLayout)
+    row_labels = [
+        form.itemAt(i, QFormLayout.ItemRole.LabelRole).widget().text() for i in range(form.rowCount())
+    ]
+    assert "Motif d'annulation" not in row_labels

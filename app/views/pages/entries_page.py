@@ -16,6 +16,7 @@ from typing import Optional
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
+    QDialog,
     QHBoxLayout,
     QLineEdit,
     QMessageBox,
@@ -34,6 +35,7 @@ from app.services.settings.company_settings_service import get_effective_currenc
 from app.services.suppliers.supplier_service import SupplierService
 from app.utils.exceptions import AppError, ValidationError
 from app.utils.money import format_money
+from app.views.cancellation_reason_dialog import CancellationReasonDialog
 from app.views.common import confirm_action, parse_decimal, run_modal_form
 from app.views.entry_detail_dialog import EntryDetailDialog
 from app.views.entry_form_dialog import EntryFormDialog
@@ -360,17 +362,16 @@ class EntriesPage(QWidget):
         entry_id = self._selected_entry_id()
         if entry_id is None:
             return
-        if not confirm_action(
-            self, "Confirmation", "Voulez-vous vraiment annuler cette entrée validée ?"
-        ):
+        dialog = CancellationReasonDialog("cette entrée validée", parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        if self._cancel_selected(entry_id):
+        if self._cancel_selected(entry_id, dialog.reason()):
             self.refresh()
 
-    def _cancel_selected(self, entry_id: int) -> bool:
+    def _cancel_selected(self, entry_id: int, motif: str) -> bool:
         """Isolé de ``_on_cancel_clicked`` pour rester testable sans boîte modale."""
         try:
-            cancelled = self._entry_service.cancel_entry(entry_id)
+            cancelled = self._entry_service.cancel_entry(entry_id, motif)
             QMessageBox.information(
                 self, "Entrée annulée", f"L'entrée « {cancelled.numero} » a été annulée."
             )

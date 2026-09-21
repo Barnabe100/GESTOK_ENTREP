@@ -276,7 +276,7 @@ def test_cancel_entry_authorized(login_as) -> None:
     )
     stack.entries.validate_entry(entry.id)
 
-    cancelled = stack.entries.cancel_entry(entry.id)
+    cancelled = stack.entries.cancel_entry(entry.id, "Motif de test valide")
     assert cancelled.statut == StatutOperation.ANNULEE
 
     updated = stack.articles.get_article(article.id)
@@ -315,7 +315,7 @@ def test_cancel_entry_refused_when_it_would_cause_negative_stock(login_as, initi
         )
 
     with pytest.raises(ValidationError):
-        stack.entries.cancel_entry(entry.id)
+        stack.entries.cancel_entry(entry.id, "Motif de test valide")
 
     # Rien n'a été modifié : l'entrée reste validée, le stock reste à 4.
     reloaded_entry = stack.entries.get_entry(entry.id)
@@ -336,7 +336,7 @@ def test_cancel_entry_only_allowed_from_validee(login_as) -> None:
     )
 
     with pytest.raises(ConflictError):
-        stack.entries.cancel_entry(entry.id)
+        stack.entries.cancel_entry(entry.id, "Motif de test valide")
 
 
 # -- permissions ----------------------------------------------------------------
@@ -354,7 +354,7 @@ def test_gestionnaire_de_stock_can_create_and_validate_but_not_cancel(login_as) 
     stack.entries.validate_entry(entry.id)
 
     with pytest.raises(PermissionDeniedError):
-        stack.entries.cancel_entry(entry.id)
+        stack.entries.cancel_entry(entry.id, "Motif de test valide")
 
 
 def test_vendeur_cannot_view_or_create_entries(login_as) -> None:
@@ -422,3 +422,97 @@ def test_create_entry_auto_generates_sequential_numero(login_as) -> None:
 
     assert first.numero == "ENT-000001"
     assert second.numero == "ENT-000002"
+
+
+# -- motif d'annulation obligatoire ------------------------------------------------
+
+
+def _make_validated_entry(stack, quantite=Decimal("10")):
+    supplier = _make_supplier(stack)
+    article = _make_article(stack)
+    entry = stack.entries.create_entry(
+        supplier.id, date(2026, 1, 1),
+        [EntreeLigneInput(article.id, quantite, Decimal("100"))],
+    )
+    stack.entries.validate_entry(entry.id)
+    return entry, article
+
+
+def test_cancel_entry_without_reason_is_refused(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    entry, _ = _make_validated_entry(stack)
+
+    with pytest.raises(ValidationError):
+        stack.entries.cancel_entry(entry.id, None)
+
+
+def test_cancel_entry_with_blank_reason_is_refused(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    entry, _ = _make_validated_entry(stack)
+
+    with pytest.raises(ValidationError):
+        stack.entries.cancel_entry(entry.id, "")
+
+    with pytest.raises(ValidationError):
+        stack.entries.cancel_entry(entry.id, "     ")
+
+
+def test_cancel_entry_with_too_short_reason_is_refused(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    entry, _ = _make_validated_entry(stack)
+
+    with pytest.raises(ValidationError):
+        stack.entries.cancel_entry(entry.id, "abcd")
+
+    # 5 caractères après trim, mais uniquement grâce à des espaces internes :
+    # doit rester refusé, le décompte se fait après trim des extrémités.
+    with pytest.raises(ValidationError):
+        stack.entries.cancel_entry(entry.id, "  ab  ")
+
+
+def test_cancel_entry_with_valid_reason_succeeds_and_persists_motif(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    entry, article = _make_validated_entry(stack, quantite=Decimal("10"))
+
+    cancelled = stack.entries.cancel_entry(entry.id, "Erreur de saisie de quantité")
+
+    assert cancelled.statut == StatutOperation.ANNULEE
+    assert cancelled.annulation_motif == "Erreur de saisie de quantité"
+
+    reloaded = stack.entries.get_entry(entry.id)
+    assert reloaded.annulation_motif == "Erreur de saisie de quantité"
+
+    updated_article = stack.articles.get_article(article.id)
+    assert updated_article.stock_actuel == Decimal("0")
+
+    movements = stack.entries.get_entry_movements(entry.id)
+    assert len(movements) == 2
+    assert movements[1].type == TypeMouvement.ANNULATION
+
+
+def test_cancel_entry_reason_is_trimmed_before_persisting(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    entry, _ = _make_validated_entry(stack)
+
+    cancelled = stack.entries.cancel_entry(entry.id, "   Motif avec espaces   ")
+
+    assert cancelled.annulation_motif == "Motif avec espaces"
+
+
+def test_cancel_entry_audit_contains_motif(login_as, initialized_db) -> None:
+    stack, _ = login_as("Administrateur")
+    entry, _ = _make_validated_entry(stack)
+
+    stack.entries.cancel_entry(entry.id, "Motif visible dans l'audit")
+
+    from app.db.session import session_scope
+    from app.models.audit import AuditLog
+
+    with session_scope(initialized_db) as session:
+        audit = (
+            session.query(AuditLog)
+            .filter(AuditLog.action == "STOCK_ENTRY_CANCEL", AuditLog.entite_id == entry.id)
+            .one()
+        )
+        assert audit.details is not None
+        assert "Motif visible dans l'audit" in audit.details

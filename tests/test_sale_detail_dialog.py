@@ -148,3 +148,28 @@ def test_receipt_buttons_disabled_without_sale_view_permission(qtbot) -> None:
     qtbot.addWidget(dialog)
 
     assert dialog.export_a4_button.isEnabled() is False
+
+
+def test_detail_dialog_shows_motif_when_annulee(qtbot) -> None:
+    from PySide6.QtWidgets import QLabel
+
+    dialog = _build_dialog(
+        _make_sale(statut=StatutOperation.ANNULEE, annulation_motif="Client a annulé sa commande")
+    )
+    qtbot.addWidget(dialog)
+
+    labels = [label.text() for label in dialog.findChildren(QLabel)]
+    assert "Client a annulé sa commande" in labels
+
+
+def test_detail_dialog_hides_motif_row_when_not_annulee(qtbot) -> None:
+    from PySide6.QtWidgets import QFormLayout
+
+    dialog = _build_dialog(_make_sale(statut=StatutOperation.VALIDEE))
+    qtbot.addWidget(dialog)
+
+    form = dialog.findChild(QFormLayout)
+    row_labels = [
+        form.itemAt(i, QFormLayout.ItemRole.LabelRole).widget().text() for i in range(form.rowCount())
+    ]
+    assert "Motif d'annulation" not in row_labels

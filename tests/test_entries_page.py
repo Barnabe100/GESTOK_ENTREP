@@ -2,7 +2,7 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QDialog, QMessageBox
 
 from app.models.enums import StatutOperation
 from app.services.entries.entry_service import EntreeLigneInput
@@ -275,7 +275,7 @@ def test_cancel_selected_reverts_stock(qtbot, login_as) -> None:
     page = _build_page(stack)
     qtbot.addWidget(page)
 
-    result = page._cancel_selected(entry.id)
+    result = page._cancel_selected(entry.id, "Motif de test valide")
 
     assert result is True
     assert stack.articles.get_article(article.id).stock_actuel == Decimal("0")
@@ -294,7 +294,7 @@ def test_cancel_selected_denied_without_permission(qtbot, login_as) -> None:
     page = _build_page(gestionnaire_stack)
     qtbot.addWidget(page)
 
-    result = page._cancel_selected(entry.id)
+    result = page._cancel_selected(entry.id, "Motif de test valide")
 
     assert result is False
     assert admin_stack.entries.get_entry(entry.id).statut == StatutOperation.VALIDEE
@@ -320,3 +320,72 @@ def test_confirmation_dialog_no_cancels_validate(qtbot, login_as, monkeypatch) -
     page._on_validate_clicked()
 
     assert stack.entries.get_entry(entry.id).statut == StatutOperation.BROUILLON
+
+
+def test_on_cancel_clicked_opens_reason_dialog_and_passes_reason_to_service(
+    qtbot, login_as, monkeypatch
+) -> None:
+    """§7 : l'annulation ne s'exécute jamais directement au clic sur
+    « Annuler » — un dialogue de motif s'ouvre d'abord, et c'est son motif
+    saisi qui est transmis au service."""
+    stack, _ = login_as("Administrateur")
+    supplier = _make_supplier(stack)
+    article = _make_article(stack)
+    entry = stack.entries.create_entry(
+        supplier.id, date(2026, 1, 1), [EntreeLigneInput(article.id, Decimal("7"), Decimal("100"))]
+    )
+    stack.entries.validate_entry(entry.id)
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    class _FakeReasonDialog:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def exec(self) -> QDialog.DialogCode:
+            return QDialog.DialogCode.Accepted
+
+        def reason(self) -> str:
+            return "Motif saisi via le dialogue"
+
+    monkeypatch.setattr("app.views.pages.entries_page.CancellationReasonDialog", _FakeReasonDialog)
+
+    row = next(r for r in range(page.table.rowCount()) if page.table.item(r, 0).text() == entry.numero)
+    page.table.selectRow(row)
+    page._on_cancel_clicked()
+
+    reloaded = stack.entries.get_entry(entry.id)
+    assert reloaded.statut == StatutOperation.ANNULEE
+    assert reloaded.annulation_motif == "Motif saisi via le dialogue"
+
+
+def test_on_cancel_clicked_does_nothing_if_reason_dialog_rejected(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    supplier = _make_supplier(stack)
+    article = _make_article(stack)
+    entry = stack.entries.create_entry(
+        supplier.id, date(2026, 1, 1), [EntreeLigneInput(article.id, Decimal("7"), Decimal("100"))]
+    )
+    stack.entries.validate_entry(entry.id)
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    class _FakeReasonDialog:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def exec(self) -> QDialog.DialogCode:
+            return QDialog.DialogCode.Rejected
+
+        def reason(self) -> str:
+            return ""
+
+    monkeypatch.setattr("app.views.pages.entries_page.CancellationReasonDialog", _FakeReasonDialog)
+
+    row = next(r for r in range(page.table.rowCount()) if page.table.item(r, 0).text() == entry.numero)
+    page.table.selectRow(row)
+    page._on_cancel_clicked()
+
+    assert stack.entries.get_entry(entry.id).statut == StatutOperation.VALIDEE

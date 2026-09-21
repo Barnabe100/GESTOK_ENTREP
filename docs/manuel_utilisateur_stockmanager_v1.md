@@ -284,7 +284,7 @@ Chaque entrée validée augmente le stock de la quantité reçue et recalcule le
 
 ### Annulation
 
-Une entrée **déjà validée** (et seulement dans ce cas — un brouillon ne s'« annule » pas, il se modifie ou reste tel quel) peut être annulée. L'annulation génère, pour chaque ligne, un mouvement inverse (« Annulation ») qui retire du stock la quantité précédemment reçue, sans jamais recalculer rétroactivement le CMUP. L'entrée originale n'est jamais supprimée : elle passe au statut « Annulée » et reste consultable dans l'historique.
+Une entrée **déjà validée** (et seulement dans ce cas — un brouillon ne s'« annule » pas, il se modifie ou reste tel quel) peut être annulée. **Un motif d'annulation est désormais obligatoire** : une boîte de dialogue demande de saisir la raison de l'annulation (au moins 5 caractères, ni vide ni composée uniquement d'espaces) avant de confirmer — sans motif valide, l'annulation est refusée. L'annulation génère, pour chaque ligne, un mouvement inverse (« Annulation ») qui retire du stock la quantité précédemment reçue, sans jamais recalculer rétroactivement le CMUP. L'entrée originale n'est jamais supprimée : elle passe au statut « Annulée », son motif d'annulation est conservé définitivement et consultable dans le détail de l'entrée, et l'entrée reste consultable dans l'historique.
 
 ---
 
@@ -304,7 +304,7 @@ Même règle de date que pour les Entrées : aucune date future.
 
 ### Annulation
 
-Comme pour les Entrées : uniquement possible sur une sortie déjà validée. Génère un mouvement inverse restituant la quantité au stock, sans recalcul de CMUP. La sortie originale passe au statut « Annulée », jamais supprimée.
+Comme pour les Entrées : uniquement possible sur une sortie déjà validée, et **un motif d'annulation obligatoire** (au moins 5 caractères, ni vide ni composé uniquement d'espaces) est désormais demandé dans une boîte de dialogue avant confirmation. Génère un mouvement inverse restituant la quantité au stock, sans recalcul de CMUP. La sortie originale passe au statut « Annulée », son motif est conservé définitivement et consultable dans le détail de la sortie, et elle n'est jamais supprimée.
 
 ---
 
@@ -344,7 +344,7 @@ Une vente en brouillon peut être modifiée librement (toutes ses lignes et son 
 
 ### Annulation d'une vente validée
 
-Une vente déjà validée peut être annulée (jamais un brouillon, qui n'a pas besoin d'être « annulé »). L'annulation génère, pour chaque ligne, un mouvement inverse restituant la quantité au stock. La vente originale passe au statut « Annulée », jamais supprimée.
+Une vente déjà validée peut être annulée (jamais un brouillon, qui n'a pas besoin d'être « annulé »). **Un motif d'annulation est obligatoire** : une boîte de dialogue demande de saisir la raison de l'annulation (au moins 5 caractères, ni vide ni composée uniquement d'espaces) avant de confirmer — sans motif valide, l'annulation est refusée. L'annulation génère, pour chaque ligne, un mouvement inverse restituant la quantité au stock. La vente originale passe au statut « Annulée », son motif d'annulation est conservé définitivement et consultable dans le détail de la vente, et elle n'est jamais supprimée.
 
 **Important — effet sur les paiements déjà encaissés** : l'annulation d'une vente **ne modifie, ne supprime et ne rembourse jamais automatiquement les paiements déjà enregistrés**. Le montant payé et le statut de paiement restent figés à leur valeur au moment de l'annulation, comme trace historique de ce qui a réellement été perçu. Un éventuel remboursement reste une démarche à gérer manuellement en dehors de l'application (aucune écriture comptable de remboursement n'est générée).
 
@@ -653,6 +653,7 @@ Le reçu de vente documente **la transaction commerciale complète** (ce qui a �
 - **Pas de stock négatif** : toute opération (sortie, vente, ajustement d'inventaire, annulation) qui ferait passer le stock d'un article sous zéro est automatiquement refusée, quel que soit le rôle de l'utilisateur — sans exception ni contournement possible.
 - **Dates futures interdites** : la date d'une entrée, d'une sortie, d'une vente ou d'un inventaire ne peut jamais être postérieure à la date du jour.
 - **Opérations validées non supprimables** : une entrée, une sortie ou une vente validée ne peut plus être supprimée — seule son annulation (avec mouvement inverse) est possible. Seule une vente en **brouillon** peut être supprimée physiquement.
+- **Motif d'annulation obligatoire** : toute annulation (entrée, sortie ou vente validée) exige la saisie d'un motif explicite d'au moins 5 caractères — jamais vide, jamais un texte générique automatique. Ce motif est conservé définitivement et consultable dans le détail de l'opération annulée.
 - **Mouvements non supprimables** : le journal des mouvements de stock est immuable, aucune ligne n'y est jamais modifiée ni supprimée après création.
 - **Paiements immuables** : un paiement enregistré n'est jamais corrigé ni supprimé.
 - **Activation/désactivation des référentiels** : Articles, Catégories, Fournisseurs, Clients et Motifs de sortie ne se suppriment jamais physiquement — seule leur désactivation est possible, afin de préserver l'intégrité de tout l'historique qui s'appuie sur eux.
