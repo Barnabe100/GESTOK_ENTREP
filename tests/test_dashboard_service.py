@@ -12,7 +12,7 @@ from app.services.exits.exit_service import SortieLigneInput
 from app.services.inventory.inventory_service import InventaireLigneInput
 from app.services.licensing.license_payload import DEFAULT_FEATURES_BY_EDITION
 from app.services.sales.sale_service import VenteLigneInput
-from app.utils.exceptions import LicenseError, PermissionDeniedError
+from app.utils.exceptions import LicenseError, PermissionDeniedError, ValidationError
 
 
 def _setup_catalog(stack):
@@ -171,10 +171,15 @@ def test_activity_kpis_period_boundaries_are_inclusive(login_as) -> None:
 
 
 def test_activity_kpis_empty_period_returns_zero_without_error(login_as) -> None:
+    """Une période valide (jamais future, § lot dates) mais réellement vide
+    retourne des compteurs à zéro, jamais une exception — remplace l'ancien
+    ``far_future`` (désormais explicitement refusé, voir
+    ``test_period_validation_rejects_*`` ci-dessous) par une période passée
+    garantie sans aucune donnée."""
     stack, _ = login_as("Administrateur")
-    far_future = date.today() + timedelta(days=3650)
+    far_past = date(2000, 1, 1)
 
-    kpis = stack.dashboard.get_activity_kpis(far_future, far_future)
+    kpis = stack.dashboard.get_activity_kpis(far_past, far_past)
 
     assert kpis.entries_validated == 0
     assert kpis.exits_validated == 0
@@ -387,15 +392,43 @@ def test_catalog_kpis_partial_for_vendeur_without_category_and_supplier_view(log
 
 
 def test_stock_kpis_none_for_role_without_report_view(login_as) -> None:
+    """Sections hors du domaine Ventes (§ lot dates/permissions) : REPORT_VIEW
+    reste la seule voie d'accès, le Vendeur (qui ne l'a pas par défaut) en
+    reste donc exclu — comportement inchangé par ce lot."""
     stack, _ = login_as("Vendeur")
 
     assert stack.dashboard.get_stock_kpis() is None
-    assert stack.dashboard.get_activity_kpis(date.today(), date.today()) is None
-    assert stack.dashboard.get_sales_evolution(date.today(), date.today()) is None
     assert stack.dashboard.get_movement_breakdown(date.today(), date.today()) is None
     assert stack.dashboard.get_low_stock_top() is None
     assert stack.dashboard.get_stock_value_by_category() is None
     assert stack.dashboard.get_recent_activity() is None
+
+
+def test_activity_kpis_sales_fields_accessible_but_others_none_for_vendeur(login_as) -> None:
+    """§ lot dates/permissions : ``get_activity_kpis`` ne retourne plus
+    jamais ``None`` dans son ensemble — chaque champ est individuellement
+    ``None`` selon SA propre permission source. Le Vendeur a SALE_VIEW (donc
+    les champs de ventes sont renseignés, ici à 0 : base vide) mais pas
+    REPORT_VIEW (donc entrées/sorties/inventaires restent None)."""
+    stack, _ = login_as("Vendeur")
+
+    kpis = stack.dashboard.get_activity_kpis(date.today(), date.today())
+
+    assert kpis.entries_validated is None
+    assert kpis.exits_validated is None
+    assert kpis.inventories_validated is None
+    assert kpis.sales_validated == 0
+    assert kpis.sales_amount == Decimal("0")
+
+
+def test_sales_evolution_accessible_for_vendeur_via_sale_view(login_as) -> None:
+    """§ lot dates/permissions : SALE_VIEW suffit désormais, REPORT_VIEW
+    n'est plus l'unique porte d'entrée pour ce graphique."""
+    stack, _ = login_as("Vendeur")
+
+    evolution = stack.dashboard.get_sales_evolution(date.today(), date.today())
+
+    assert evolution == []  # SALE_VIEW présent : liste vide (aucune vente), jamais None
 
 
 def test_dashboard_still_accessible_for_vendeur_despite_partial_data(login_as) -> None:
@@ -449,3 +482,195 @@ def test_dashboard_requires_dashboard_view_permission_denies_role_without_it(log
     # Le contrôle réel (refus si la permission manque) est déjà couvert par
     # PermissionService/RBAC — voir tests/test_permission_service_licensing.py
     # et tests/test_navigation_filtering.py pour la matrice complète.
+
+
+# -- domaine Ventes du Dashboard : consultation globale, non filtrée (§C/§D) ----------
+
+
+def _make_sale_as(stack, article, quantite=Decimal("2"), prix=Decimal("150")):
+    sale = stack.sales.create_sale(date.today(), [VenteLigneInput(article.id, quantite, prix)])
+    return stack.sales.validate_sale(sale.id)
+
+
+def test_c_vendeur_sees_sales_kpis_from_other_vendeurs_too(login_as) -> None:
+    """§C : la consultation des ventes reste globale — les indicateurs de
+    ventes du Dashboard d'un Vendeur reflètent TOUTES les ventes validées
+    accessibles selon les permissions, jamais uniquement les siennes."""
+    admin_stack, _ = login_as("Administrateur")
+    category = admin_stack.categories.create_category("Boissons")
+    article = admin_stack.articles.create_article(
+        "ART-1", "Eau", category.id, "u", Decimal("10"), Decimal("15"), Decimal("5"), stock_initial=Decimal("50")
+    )
+
+    vendeur_y_stack, _ = login_as("Vendeur")
+    _make_sale_as(vendeur_y_stack, article, quantite=Decimal("2"), prix=Decimal("150"))  # vente de Y : 300
+
+    vendeur_x_stack, _ = login_as("Vendeur")
+    _make_sale_as(vendeur_x_stack, article, quantite=Decimal("1"), prix=Decimal("150"))  # vente de X : 150
+
+    kpis = vendeur_x_stack.dashboard.get_activity_kpis(date.today(), date.today())
+
+    # X voit le total des DEUX ventes (X + Y), jamais uniquement la sienne.
+    assert kpis.sales_validated == 2
+    assert kpis.sales_amount == Decimal("450.00")
+
+
+def test_d_sales_evolution_not_filtered_by_owner(login_as) -> None:
+    """§D : aucune restriction par ``user_id`` dans les consultations du
+    Dashboard — l'évolution des ventes d'un Vendeur inclut les ventes de
+    tous les vendeurs, jamais un ``WHERE vente.user_id = utilisateur_connecté``."""
+    admin_stack, _ = login_as("Administrateur")
+    category = admin_stack.categories.create_category("Boissons")
+    article = admin_stack.articles.create_article(
+        "ART-1", "Eau", category.id, "u", Decimal("10"), Decimal("15"), Decimal("5"), stock_initial=Decimal("50")
+    )
+
+    vendeur_y_stack, _ = login_as("Vendeur")
+    _make_sale_as(vendeur_y_stack, article)
+
+    vendeur_x_stack, _ = login_as("Vendeur")
+    _make_sale_as(vendeur_x_stack, article)
+
+    evolution = vendeur_x_stack.dashboard.get_sales_evolution(date.today(), date.today())
+
+    assert len(evolution) == 1  # même jour -> un seul point, agrégeant les DEUX ventes
+    assert evolution[0].amount == Decimal("600.00")  # 2 x (2 x 150)
+
+
+def test_f_gestionnaire_stock_dashboard_unaffected_by_sale_view_change(login_as) -> None:
+    """§F : non-régression — le Gestionnaire de stock n'a pas SALE_VIEW mais
+    continue de voir les indicateurs de ventes via REPORT_VIEW, exactement
+    comme avant ce lot (accès double SALE_VIEW OU REPORT_VIEW, jamais un
+    remplacement de REPORT_VIEW par SALE_VIEW)."""
+    admin_stack, _ = login_as("Administrateur")
+    category = admin_stack.categories.create_category("Boissons")
+    article = admin_stack.articles.create_article(
+        "ART-1", "Eau", category.id, "u", Decimal("10"), Decimal("15"), Decimal("5"), stock_initial=Decimal("50")
+    )
+    _make_sale_as(admin_stack, article)
+
+    stack, _ = login_as("Gestionnaire de stock")
+    assert stack.permissions.has_permission("SALE_VIEW") is False  # confirme l'absence par défaut
+    assert stack.permissions.has_permission("REPORT_VIEW") is True
+
+    kpis = stack.dashboard.get_activity_kpis(date.today(), date.today())
+    evolution = stack.dashboard.get_sales_evolution(date.today(), date.today())
+
+    assert kpis.sales_validated == 1
+    assert kpis.sales_amount == Decimal("300.00")
+    assert evolution is not None and len(evolution) == 1
+
+
+# -- contrôle de la période (§ lot dates) ------------------------------------------------
+
+
+def test_g_period_start_equals_end_equals_today_is_valid(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    today = date.today()
+
+    kpis = stack.dashboard.get_activity_kpis(today, today)  # ne doit pas lever
+
+    assert kpis.entries_validated == 0
+
+
+def test_h_period_start_before_end_before_today_is_valid(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    start = date.today() - timedelta(days=10)
+    end = date.today() - timedelta(days=5)
+
+    kpis = stack.dashboard.get_activity_kpis(start, end)  # ne doit pas lever
+
+    assert kpis.entries_validated == 0
+
+
+def test_i_period_start_equals_end_in_the_past_is_valid(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    d = date.today() - timedelta(days=3)
+
+    kpis = stack.dashboard.get_activity_kpis(d, d)  # ne doit pas lever
+
+    assert kpis.entries_validated == 0
+
+
+def test_j_period_start_after_end_is_rejected(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    today = date.today()
+
+    with pytest.raises(ValidationError):
+        stack.dashboard.get_activity_kpis(today, today - timedelta(days=1))
+
+
+def test_k_period_start_after_today_is_rejected(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    future = date.today() + timedelta(days=1)
+
+    with pytest.raises(ValidationError):
+        stack.dashboard.get_activity_kpis(future, future)
+
+
+def test_l_period_end_after_today_is_rejected(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    today = date.today()
+    future = today + timedelta(days=1)
+
+    with pytest.raises(ValidationError):
+        stack.dashboard.get_activity_kpis(today - timedelta(days=1), future)
+
+
+def test_m_period_straddling_today_with_end_in_future_is_rejected(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    today = date.today()
+
+    with pytest.raises(ValidationError):
+        stack.dashboard.get_activity_kpis(today - timedelta(days=5), today + timedelta(days=5))
+
+
+def test_period_validation_applies_to_sales_evolution_and_movement_breakdown_too(login_as) -> None:
+    """La validation de période n'est pas propre à ``get_activity_kpis`` —
+    chaque méthode acceptant une période la revérifie indépendamment
+    (défense en profondeur, même principe que le reste de l'application)."""
+    stack, _ = login_as("Administrateur")
+    today = date.today()
+    invalid_start = today + timedelta(days=1)
+
+    with pytest.raises(ValidationError):
+        stack.dashboard.get_sales_evolution(invalid_start, invalid_start)
+    with pytest.raises(ValidationError):
+        stack.dashboard.get_movement_breakdown(invalid_start, invalid_start)
+    with pytest.raises(ValidationError):
+        stack.dashboard.get_overview(invalid_start, invalid_start)
+
+
+def test_o_invalid_period_never_reaches_the_database(login_as, monkeypatch) -> None:
+    """§O : aucune requête métier n'est lancée pour une période invalide —
+    la validation lève AVANT toute ouverture de session/transaction."""
+    stack, _ = login_as("Administrateur")
+    today = date.today()
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("session_scope ne doit jamais être appelée pour une période invalide")
+
+    monkeypatch.setattr("app.services.dashboard.dashboard_service.session_scope", _fail_if_called)
+
+    with pytest.raises(ValidationError):
+        stack.dashboard.get_activity_kpis(today, today - timedelta(days=1))
+
+
+def test_p_sale_dated_exactly_the_last_day_of_period_is_included(login_as) -> None:
+    """§P : reproduit précisément le scénario audité — une vente datée
+    exactement du dernier jour de la période sélectionnée doit y être
+    incluse (borne ``date_to`` inclusive, voir ``VenteRepository.search``)."""
+    stack, _ = login_as("Administrateur")
+    category = stack.categories.create_category("Boissons")
+    article = stack.articles.create_article(
+        "ART-1", "Eau", category.id, "u", Decimal("10"), Decimal("15"), Decimal("5"), stock_initial=Decimal("50")
+    )
+    today = date.today()
+    sale = stack.sales.create_sale(today, [VenteLigneInput(article.id, Decimal("3"), Decimal("15"))])
+    stack.sales.validate_sale(sale.id)
+
+    period_from = today - timedelta(days=21)  # ex. "2026-09-01" pour aujourd'hui "2026-09-22"
+    kpis = stack.dashboard.get_activity_kpis(period_from, today)
+
+    assert kpis.sales_validated == 1
+    assert kpis.sales_amount == Decimal("45.00")

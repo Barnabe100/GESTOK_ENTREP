@@ -948,3 +948,346 @@ def test_payment_on_cancelled_sale_is_rejected(login_as) -> None:
 
     with pytest.raises(ConflictError):
         stack.sales.record_payment(validated.id, Decimal("10"))
+
+
+# -- règle de propriété Vendeur (lot dédié) --------------------------------------------
+#
+# Un vendeur peut CONSULTER les ventes de n'importe quel autre vendeur (jamais
+# filtrées), mais ne peut effectuer une action sensible (modification,
+# suppression, validation, annulation, paiement) que sur une vente qu'il a
+# lui-même créée (Vente.user_id). Cette restriction ne s'applique jamais à un
+# utilisateur sans le rôle Vendeur, ni à un titulaire du rôle Vendeur dont un
+# AUTRE rôle lui accorde déjà, indépendamment, la permission requise.
+
+
+def _sale_by(stack, article, quantite=Decimal("5"), prix=Decimal("150")):
+    """Crée une vente en brouillon avec ``stack`` (donc ``user_id`` =
+    l'utilisateur connecté sur ``stack``)."""
+    return stack.sales.create_sale(date(2026, 1, 1), [VenteLigneInput(article.id, quantite, prix)])
+
+
+def _validated_sale_by(stack, article, quantite=Decimal("5"), prix=Decimal("150")):
+    sale = _sale_by(stack, article, quantite, prix)
+    return stack.sales.validate_sale(sale.id)
+
+
+# -- A/B : consultation jamais filtrée -----------------------------------------------
+
+
+def test_a_vendeur_can_view_own_sale(login_as) -> None:
+    admin_stack, _ = login_as("Administrateur")
+    article = _make_article(admin_stack, stock_initial=Decimal("50"))
+
+    stack, _ = login_as("Vendeur")
+    sale = _sale_by(stack, article)
+
+    viewed = stack.sales.get_sale(sale.id)
+    assert viewed.id == sale.id
+
+
+def test_b_vendeur_can_view_another_vendeur_sale(login_as) -> None:
+    admin_stack, _ = login_as("Administrateur")
+    article = _make_article(admin_stack, stock_initial=Decimal("50"))
+
+    vendeur_y_stack, _ = login_as("Vendeur")
+    sale_y = _sale_by(vendeur_y_stack, article)
+
+    vendeur_x_stack, _ = login_as("Vendeur")
+    viewed = vendeur_x_stack.sales.get_sale(sale_y.id)
+
+    assert viewed.id == sale_y.id
+
+
+def test_l_list_sales_is_never_filtered_by_owner(login_as) -> None:
+    """§L : la liste générale des ventes n'est jamais restreinte aux seules
+    ventes de l'utilisateur connecté, quel que soit son rôle."""
+    admin_stack, _ = login_as("Administrateur")
+    article = _make_article(admin_stack, stock_initial=Decimal("50"))
+
+    vendeur_y_stack, _ = login_as("Vendeur")
+    sale_y = _sale_by(vendeur_y_stack, article)
+
+    vendeur_z_stack, _ = login_as("Vendeur")
+    sale_z = _sale_by(vendeur_z_stack, article)
+
+    vendeur_x_stack, _ = login_as("Vendeur")
+    sale_x = _sale_by(vendeur_x_stack, article)
+
+    visible_ids = {s.id for s in vendeur_x_stack.sales.list_sales()}
+    assert {sale_x.id, sale_y.id, sale_z.id}.issubset(visible_ids)
+
+
+# -- C/D : modification --------------------------------------------------------------
+
+
+def test_c_vendeur_can_update_own_sale(login_as) -> None:
+    admin_stack, _ = login_as("Administrateur")
+    article = _make_article(admin_stack, stock_initial=Decimal("50"))
+
+    stack, _ = login_as("Vendeur")
+    sale = _sale_by(stack, article)
+
+    updated = stack.sales.update_sale(
+        sale.id, date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("6"), Decimal("150"))]
+    )
+    assert updated.lignes[0].quantite == Decimal("6")
+
+
+def test_d_vendeur_cannot_update_another_vendeur_sale(login_as) -> None:
+    admin_stack, _ = login_as("Administrateur")
+    article = _make_article(admin_stack, stock_initial=Decimal("50"))
+
+    vendeur_y_stack, _ = login_as("Vendeur")
+    sale_y = _sale_by(vendeur_y_stack, article)
+
+    vendeur_x_stack, _ = login_as("Vendeur")
+    with pytest.raises(PermissionDeniedError):
+        vendeur_x_stack.sales.update_sale(
+            sale_y.id, date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("9"), Decimal("150"))]
+        )
+
+    # §K : aucune modification n'a eu lieu.
+    unchanged = admin_stack.sales.get_sale(sale_y.id)
+    assert unchanged.lignes[0].quantite == Decimal("5")
+
+
+def test_d_vendeur_cannot_delete_another_vendeur_draft_sale(login_as) -> None:
+    admin_stack, _ = login_as("Administrateur")
+    article = _make_article(admin_stack, stock_initial=Decimal("50"))
+
+    vendeur_y_stack, _ = login_as("Vendeur")
+    sale_y = _sale_by(vendeur_y_stack, article)
+
+    vendeur_x_stack, _ = login_as("Vendeur")
+    with pytest.raises(PermissionDeniedError):
+        vendeur_x_stack.sales.delete_sale(sale_y.id)
+
+    # §K : la vente existe toujours.
+    assert admin_stack.sales.get_sale(sale_y.id) is not None
+
+
+def test_g_vendeur_cannot_validate_another_vendeur_draft_sale(login_as) -> None:
+    """§G : la règle de propriété couvre bien TOUTES les actions sensibles,
+    pas seulement modification/annulation — ici la validation."""
+    admin_stack, _ = login_as("Administrateur")
+    article = _make_article(admin_stack, stock_initial=Decimal("50"))
+
+    vendeur_y_stack, _ = login_as("Vendeur")
+    sale_y = _sale_by(vendeur_y_stack, article)
+
+    vendeur_x_stack, _ = login_as("Vendeur")
+    with pytest.raises(PermissionDeniedError):
+        vendeur_x_stack.sales.validate_sale(sale_y.id)
+
+    # §K : toujours en brouillon, aucun mouvement de stock généré.
+    unchanged = admin_stack.sales.get_sale(sale_y.id)
+    assert unchanged.statut == StatutOperation.BROUILLON
+    assert admin_stack.sales.get_sale_movements(sale_y.id) == []
+
+
+def test_g_vendeur_cannot_record_payment_on_another_vendeur_sale(login_as) -> None:
+    admin_stack, _ = login_as("Administrateur")
+    article = _make_article(admin_stack, stock_initial=Decimal("50"))
+
+    vendeur_y_stack, _ = login_as("Vendeur")
+    validated_y = _validated_sale_by(vendeur_y_stack, article)
+
+    vendeur_x_stack, _ = login_as("Vendeur")
+    with pytest.raises(PermissionDeniedError):
+        vendeur_x_stack.sales.record_payment(validated_y.id, Decimal("50"))
+
+    # §K : aucun paiement enregistré.
+    unchanged = admin_stack.sales.get_sale(validated_y.id)
+    assert unchanged.montant_paye == Decimal("0")
+    assert admin_stack.sales.list_payments(validated_y.id) == []
+
+
+# -- E/F : annulation (motif obligatoire déjà en place, testé pour non-régression) ----
+
+
+def _grant_sale_cancel_to_vendeur(stack) -> None:
+    """Octroie SALE_CANCEL au rôle Vendeur — seul moyen de tester
+    significativement §E/§F (le Vendeur n'a pas SALE_CANCEL par défaut dans
+    la matrice de référence), sans jamais toucher au code de permission_map
+    ni au seed lui-même (modification en base, comme le ferait un
+    administrateur réel depuis l'écran Rôles)."""
+    role_id = next(r.id for r in stack.roles.list_roles() if r.nom == "Vendeur")
+    current_codes = stack.roles.get_role_permissions(role_id)
+    stack.roles.update_role_permissions(role_id, current_codes + ["SALE_CANCEL"])
+
+
+def test_e_vendeur_can_cancel_own_sale_when_permission_granted(login_as) -> None:
+    admin_stack, _ = login_as("Administrateur")
+    article = _make_article(admin_stack, stock_initial=Decimal("50"))
+    _grant_sale_cancel_to_vendeur(admin_stack)
+
+    stack, _ = login_as("Vendeur")
+    validated = _validated_sale_by(stack, article)
+
+    cancelled = stack.sales.cancel_sale(validated.id, "Motif de test valide")
+    assert cancelled.statut == StatutOperation.ANNULEE
+
+
+def test_f_vendeur_cannot_cancel_another_vendeur_sale_even_with_permission(login_as) -> None:
+    admin_stack, _ = login_as("Administrateur")
+    article = _make_article(admin_stack, stock_initial=Decimal("50"))
+    _grant_sale_cancel_to_vendeur(admin_stack)
+
+    vendeur_y_stack, _ = login_as("Vendeur")
+    validated_y = _validated_sale_by(vendeur_y_stack, article)
+
+    vendeur_x_stack, _ = login_as("Vendeur")
+    with pytest.raises(PermissionDeniedError):
+        vendeur_x_stack.sales.cancel_sale(validated_y.id, "Motif de test valide")
+
+    # §K : ni statut, ni stock, ni audit métier modifiés.
+    unchanged = admin_stack.sales.get_sale(validated_y.id)
+    assert unchanged.statut == StatutOperation.VALIDEE
+    assert unchanged.annulation_motif is None
+    updated_article = admin_stack.articles.get_article(article.id)
+    assert updated_article.stock_actuel == Decimal("45")  # 50 - 5, inchangé depuis la validation
+
+    from app.db.session import session_scope as _session_scope
+    from app.models.audit import AuditLog
+
+    with _session_scope(None) as session:
+        cancel_entries = (
+            session.query(AuditLog)
+            .filter(AuditLog.action == "SALE_CANCEL", AuditLog.entite_id == validated_y.id)
+            .count()
+        )
+        assert cancel_entries == 0
+
+
+def test_m_cancellation_motif_still_mandatory_for_own_sale(login_as) -> None:
+    """§M : la règle de propriété ne doit jamais court-circuiter le motif
+    d'annulation obligatoire — sur sa PROPRE vente, un motif absent reste
+    refusé par ValidationError (pas par PermissionDeniedError)."""
+    admin_stack, _ = login_as("Administrateur")
+    article = _make_article(admin_stack, stock_initial=Decimal("50"))
+    _grant_sale_cancel_to_vendeur(admin_stack)
+
+    stack, _ = login_as("Vendeur")
+    validated = _validated_sale_by(stack, article)
+
+    with pytest.raises(ValidationError):
+        stack.sales.cancel_sale(validated.id, "")
+
+    unchanged = stack.sales.get_sale(validated.id)
+    assert unchanged.statut == StatutOperation.VALIDEE
+
+
+# -- H/I : rôles supérieurs, non affectés par la restriction --------------------------
+
+
+def test_h_gestionnaire_stock_with_granted_permission_acts_on_any_sale(login_as) -> None:
+    """§H : un Gestionnaire de stock n'a pas le rôle Vendeur — la
+    restriction de propriété ne s'applique donc jamais à lui, quelle que
+    soit la vente ciblée, dès lors que la permission RBAC est présente."""
+    admin_stack, _ = login_as("Administrateur")
+    article = _make_article(admin_stack, stock_initial=Decimal("50"))
+    role_id = next(r.id for r in admin_stack.roles.list_roles() if r.nom == "Gestionnaire de stock")
+    current_codes = admin_stack.roles.get_role_permissions(role_id)
+    admin_stack.roles.update_role_permissions(
+        role_id, current_codes + ["SALE_VIEW", "SALE_CANCEL"]
+    )
+
+    vendeur_y_stack, _ = login_as("Vendeur")
+    validated_y = _validated_sale_by(vendeur_y_stack, article)
+
+    gestionnaire_stack, _ = login_as("Gestionnaire de stock")
+    cancelled = gestionnaire_stack.sales.cancel_sale(validated_y.id, "Motif de test valide")
+    assert cancelled.statut == StatutOperation.ANNULEE
+
+
+def test_i_administrateur_acts_on_another_users_sale(login_as) -> None:
+    """§I : comportement déjà existant, préservé — un Administrateur agit
+    sur la vente de n'importe qui, sans jamais être concerné par la
+    restriction (pas le rôle Vendeur)."""
+    admin_stack, _ = login_as("Administrateur")
+    article = _make_article(admin_stack, stock_initial=Decimal("50"))
+
+    vendeur_stack, _ = login_as("Vendeur")
+    validated = _validated_sale_by(vendeur_stack, article)
+
+    cancelled = admin_stack.sales.cancel_sale(validated.id, "Motif de test valide")
+    assert cancelled.statut == StatutOperation.ANNULEE
+
+
+# -- J : utilisateur multi-rôles -------------------------------------------------------
+
+
+def test_j_vendeur_plus_gestionnaire_stock_still_restricted_by_default(login_as, make_user) -> None:
+    """§J (cas 1/2) : par défaut, le rôle Gestionnaire de stock n'accorde
+    AUCUNE permission de vente (voir app/db/seed.py) — un utilisateur
+    Vendeur + Gestionnaire de stock ne dispose donc que des permissions de
+    vente du rôle Vendeur, et reste soumis à la restriction de propriété
+    exactement comme un Vendeur seul."""
+    admin_stack, _ = login_as("Administrateur")
+    article = _make_article(admin_stack, stock_initial=Decimal("50"))
+
+    vendeur_y_stack, _ = login_as("Vendeur")
+    sale_y = _sale_by(vendeur_y_stack, article)
+
+    multi_stack, _ = login_as(["Vendeur", "Gestionnaire de stock"])
+    with pytest.raises(PermissionDeniedError):
+        multi_stack.sales.update_sale(
+            sale_y.id, date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("9"), Decimal("150"))]
+        )
+
+
+def test_j_vendeur_plus_gestionnaire_stock_bypasses_restriction_when_other_role_grants_it(
+    login_as,
+) -> None:
+    """§J (cas 2/2) : si le rôle Gestionnaire de stock se voit accorder
+    SALE_CANCEL (configuration administrative), un utilisateur cumulant
+    Vendeur + Gestionnaire de stock n'est PLUS soumis à la restriction de
+    propriété pour cette permission précise — c'est le rôle Gestionnaire de
+    stock qui la lui accorde, indépendamment de son rôle Vendeur (jamais un
+    contournement du RBAC : la permission vient réellement d'un autre rôle)."""
+    admin_stack, _ = login_as("Administrateur")
+    article = _make_article(admin_stack, stock_initial=Decimal("50"))
+    role_id = next(r.id for r in admin_stack.roles.list_roles() if r.nom == "Gestionnaire de stock")
+    current_codes = admin_stack.roles.get_role_permissions(role_id)
+    admin_stack.roles.update_role_permissions(role_id, current_codes + ["SALE_CANCEL"])
+
+    vendeur_y_stack, _ = login_as("Vendeur")
+    validated_y = _validated_sale_by(vendeur_y_stack, article)
+
+    multi_stack, _ = login_as(["Vendeur", "Gestionnaire de stock"])
+    cancelled = multi_stack.sales.cancel_sale(validated_y.id, "Motif de test valide")
+    assert cancelled.statut == StatutOperation.ANNULEE
+
+
+# -- can_manage_sale (support UI, confort uniquement) ----------------------------------
+
+
+def test_can_manage_sale_true_for_own_sale(login_as) -> None:
+    admin_stack, _ = login_as("Administrateur")
+    article = _make_article(admin_stack, stock_initial=Decimal("50"))
+
+    stack, _ = login_as("Vendeur")
+    sale = _sale_by(stack, article)
+
+    assert stack.sales.can_manage_sale(sale.id, "SALE_UPDATE") is True
+
+
+def test_can_manage_sale_false_for_another_vendeur_sale(login_as) -> None:
+    admin_stack, _ = login_as("Administrateur")
+    article = _make_article(admin_stack, stock_initial=Decimal("50"))
+
+    vendeur_y_stack, _ = login_as("Vendeur")
+    sale_y = _sale_by(vendeur_y_stack, article)
+
+    vendeur_x_stack, _ = login_as("Vendeur")
+    assert vendeur_x_stack.sales.can_manage_sale(sale_y.id, "SALE_UPDATE") is False
+
+
+def test_can_manage_sale_false_without_underlying_permission(login_as) -> None:
+    admin_stack, _ = login_as("Administrateur")
+    article = _make_article(admin_stack, stock_initial=Decimal("50"))
+
+    stack, _ = login_as("Vendeur")
+    sale = _sale_by(stack, article)
+
+    assert stack.sales.can_manage_sale(sale.id, "SALE_CANCEL") is False  # pas la permission RBAC

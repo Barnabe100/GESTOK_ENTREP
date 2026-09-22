@@ -202,21 +202,36 @@ class SalesPage(QWidget):
 
     def _update_action_buttons(self) -> None:
         statut = self._selected_statut()
+        sale_id = self._selected_sale_id()
         is_brouillon = statut == StatutOperation.BROUILLON
         is_validee = statut == StatutOperation.VALIDEE
 
         self.edit_button.setEnabled(
-            statut is not None and is_brouillon and self._permissions.has_permission("SALE_UPDATE")
+            statut is not None and is_brouillon and self._can_manage_selected(sale_id, "SALE_UPDATE")
         )
         self.delete_button.setEnabled(
-            statut is not None and is_brouillon and self._permissions.has_permission("SALE_UPDATE")
+            statut is not None and is_brouillon and self._can_manage_selected(sale_id, "SALE_UPDATE")
         )
         self.validate_button.setEnabled(
-            statut is not None and is_brouillon and self._permissions.has_permission("SALE_VALIDATE")
+            statut is not None and is_brouillon and self._can_manage_selected(sale_id, "SALE_VALIDATE")
         )
         self.cancel_button.setEnabled(
-            statut is not None and is_validee and self._permissions.has_permission("SALE_CANCEL")
+            statut is not None and is_validee and self._can_manage_selected(sale_id, "SALE_CANCEL")
         )
+
+    def _can_manage_selected(self, sale_id: Optional[int], permission_code: str) -> bool:
+        """Confort d'interface uniquement (bouton désactivé) — n'est jamais
+        ce qui empêche un contournement : ``SaleService`` revérifie la
+        permission ET la règle de propriété Vendeur à chaque appel direct.
+        Réutilise ``SaleService.can_manage_sale`` (aucune logique dupliquée)
+        pour qu'un vendeur ne voie même pas un bouton actif pour une vente
+        appartenant à un autre vendeur."""
+        if sale_id is None:
+            return False
+        try:
+            return self._sale_service.can_manage_sale(sale_id, permission_code)
+        except AppError:
+            return False
 
     # -- chargement des listes pour les formulaires -------------------------
 
@@ -462,6 +477,15 @@ class SalesPage(QWidget):
     def _on_cancel_clicked(self) -> None:
         sale_id = self._selected_sale_id()
         if sale_id is None:
+            return
+        # Pré-vérification (règle de propriété Vendeur) : évite de demander
+        # un motif de saisie pour un refus déjà certain. Confort uniquement —
+        # SaleService.cancel_sale revérifie de toute façon la même règle.
+        if not self._can_manage_selected(sale_id, "SALE_CANCEL"):
+            QMessageBox.warning(
+                self, "Action refusée",
+                "Vous ne pouvez pas annuler la vente d'un autre vendeur.",
+            )
             return
         dialog = CancellationReasonDialog("cette vente validée", parent=self)
         if dialog.exec() != QDialog.DialogCode.Accepted:

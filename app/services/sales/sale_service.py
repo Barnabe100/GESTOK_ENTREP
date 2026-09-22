@@ -32,7 +32,18 @@ Cycle de vie : BROUILLON -> VALIDEE -> (ANNULEE).
   (quantité inverse, positive : restaure le stock) ; la vente originale est
   conservée (jamais supprimée), et une vente déjà ANNULEE ne peut pas être
   annulée une seconde fois.
-"""
+
+Règle de propriété Vendeur (lot dédié) : un utilisateur ayant le rôle
+Vendeur peut CONSULTER les ventes de n'importe quel autre vendeur (jamais
+filtrées, voir ``list_sales``), mais ne peut effectuer une action sensible
+(``update_sale``, ``delete_sale``, ``validate_sale``, ``cancel_sale``,
+``record_payment``) que sur une vente qu'il a lui-même créée
+(``Vente.user_id``, colonne déjà existante, jamais une nouvelle colonne).
+Cette restriction ne s'applique JAMAIS à un utilisateur qui n'a pas le rôle
+Vendeur, et ne s'applique pas non plus à un titulaire du rôle Vendeur dont
+un AUTRE rôle lui accorde déjà, indépendamment, la permission requise —
+voir ``_sale_ownership_restriction_applies`` : c'est une clause additionnelle
+propre au rôle Vendeur, jamais un contournement du RBAC existant."""
 from __future__ import annotations
 
 import json
@@ -56,6 +67,7 @@ from app.models.enums import (
 )
 from app.models.movement import MouvementStock
 from app.models.payment import Paiement
+from app.models.user import User
 from app.repositories.article_repository import ArticleRepository
 from app.repositories.client_repository import ClientRepository
 from app.repositories.mouvement_repository import MouvementRepository
@@ -64,7 +76,7 @@ from app.services.auth.permission_service import PermissionService
 from app.services.stock.movement_summary import MouvementSummary
 from app.services.stock.stock_service import StockService
 from app.utils.dates import validate_not_future_date
-from app.utils.exceptions import ConflictError, NotFoundError, ValidationError
+from app.utils.exceptions import ConflictError, NotFoundError, PermissionDeniedError, ValidationError
 from app.utils.logging_config import get_logger
 from app.utils.money import round_money
 
@@ -283,6 +295,11 @@ def _compute_statut_paiement(total: Decimal, montant_paye: Decimal) -> StatutPai
 
 
 class SaleService:
+    # Rôle système concerné par la restriction de propriété (§ lot dédié) —
+    # référence par nom, même convention que ``_ROLE_ADMINISTRATEUR`` dans
+    # ``UserService`` pour une règle métier attachée à un rôle système fixe.
+    _ROLE_VENDEUR = "Vendeur"
+
     def __init__(self, permission_service: PermissionService, settings: Optional[Settings] = None) -> None:
         self._permissions = permission_service
         self._settings = settings
@@ -291,6 +308,69 @@ class SaleService:
     def _acting_user_id(self) -> Optional[int]:
         current_user = self._permissions.current_user
         return current_user.id if current_user else None
+
+    def _sale_ownership_restriction_applies(self, session, permission_code: str) -> bool:
+        """Détermine si la règle de propriété Vendeur s'applique à l'action
+        courante (voir docstring de module).
+
+        S'applique seulement si :
+          - l'utilisateur connecté a le rôle Vendeur ;
+          - ET aucun de ses AUTRES rôles ne lui accorde déjà, indépendamment,
+            ``permission_code`` — sinon ce second rôle couvre déjà l'action
+            sans restriction de propriété (§ « rôles supérieurs » du lot :
+            jamais un contournement du système de permissions, seulement
+            une clause additionnelle propre au rôle Vendeur).
+
+        Les permissions de ``CurrentUser`` sont une union déjà fusionnée
+        (voir le lot multi-rôles) : impossible d'y retrouver quel rôle a
+        accordé quelle permission. Cette méthode relit donc ``user.roles``
+        en base pour recalculer, sans le rôle Vendeur, l'ensemble des
+        permissions des AUTRES rôles de l'utilisateur."""
+        current_user = self._permissions.current_user
+        if current_user is None or self._ROLE_VENDEUR not in current_user.role_names:
+            return False
+        user = session.get(User, current_user.id)
+        other_roles_permission_codes = {
+            permission.code
+            for role in user.roles
+            if role.nom != self._ROLE_VENDEUR
+            for permission in role.permissions
+        }
+        return permission_code not in other_roles_permission_codes
+
+    def _enforce_sale_ownership(self, session, vente: Vente, permission_code: str) -> None:
+        """Lève ``PermissionDeniedError`` si la règle de propriété Vendeur
+        s'applique et que ``vente`` n'a pas été créée par l'utilisateur
+        connecté — jamais atteinte si la vérification ci-dessus détermine
+        que la restriction ne s'applique pas (rôle non-Vendeur, ou un autre
+        rôle accorde déjà la permission)."""
+        if not self._sale_ownership_restriction_applies(session, permission_code):
+            return
+        current_user = self._permissions.current_user
+        if vente.user_id != current_user.id:
+            raise PermissionDeniedError(
+                "Un vendeur ne peut pas effectuer cette action sur une vente créée par un autre vendeur."
+            )
+
+    def can_manage_sale(self, sale_id: int, permission_code: str) -> bool:
+        """Indique si l'utilisateur connecté pourrait effectuer une action
+        nécessitant ``permission_code`` sur ``sale_id``, compte tenu de la
+        règle de propriété Vendeur — SANS effectuer l'action ni lever
+        d'exception. Réservé à des contrôles de confort côté UI (éviter
+        d'ouvrir inutilement un dialogue de saisie, ex. le motif
+        d'annulation, quand le refus est déjà certain) : l'application
+        réelle de la règle reste toujours dans les méthodes d'action
+        elles-mêmes, jamais uniquement ici."""
+        if not self._permissions.has_permission(permission_code):
+            return False
+        with session_scope(self._settings) as session:
+            vente = VenteRepository(session).get_by_id(sale_id)
+            if vente is None:
+                return False
+            if not self._sale_ownership_restriction_applies(session, permission_code):
+                return True
+            current_user = self._permissions.current_user
+            return current_user is not None and vente.user_id == current_user.id
 
     def _audit(self, session, action: str, sale_id: Optional[int], details: Optional[str] = None) -> None:
         session.add(
@@ -470,6 +550,7 @@ class SaleService:
             vente = vente_repo.get_by_id(sale_id)
             if vente is None:
                 raise NotFoundError(f"Vente {sale_id} introuvable.")
+            self._enforce_sale_ownership(session, vente, "SALE_UPDATE")
             if vente.statut != StatutOperation.BROUILLON:
                 raise ConflictError("Seule une vente en brouillon peut être modifiée.")
 
@@ -499,6 +580,7 @@ class SaleService:
             vente = vente_repo.get_by_id(sale_id)
             if vente is None:
                 raise NotFoundError(f"Vente {sale_id} introuvable.")
+            self._enforce_sale_ownership(session, vente, "SALE_UPDATE")
             if vente.statut != StatutOperation.BROUILLON:
                 raise ConflictError("Seule une vente en brouillon peut être supprimée.")
 
@@ -548,6 +630,7 @@ class SaleService:
             vente = vente_repo.get_by_id(sale_id)
             if vente is None:
                 raise NotFoundError(f"Vente {sale_id} introuvable.")
+            self._enforce_sale_ownership(session, vente, "SALE_VALIDATE")
             if vente.statut != StatutOperation.BROUILLON:
                 raise ConflictError("Seule une vente en brouillon peut être validée.")
             if not vente.lignes:
@@ -622,7 +705,6 @@ class SaleService:
         gérer manuellement par le client de l'application. Voir le rapport
         de ce lot pour la justification complète de ce choix."""
         self._permissions.require_permission("SALE_CANCEL")
-        motif = _validate_annulation_motif(motif)
         acting_user_id = self._acting_user_id()
 
         with session_scope(self._settings) as session:
@@ -633,8 +715,14 @@ class SaleService:
             vente = vente_repo.get_by_id(sale_id)
             if vente is None:
                 raise NotFoundError(f"Vente {sale_id} introuvable.")
+            # Ordre volontaire (permission -> propriété -> motif -> annulation,
+            # § lot dédié) : la règle de propriété est vérifiée avant même
+            # d'exiger un motif valide, pour qu'un refus lié à la propriété
+            # ne soit jamais masqué par une erreur de motif.
+            self._enforce_sale_ownership(session, vente, "SALE_CANCEL")
             if vente.statut != StatutOperation.VALIDEE:
                 raise ConflictError("Seule une vente validée peut être annulée.")
+            motif = _validate_annulation_motif(motif)
 
             for ligne in vente.lignes:
                 article = article_repo.get_by_id(ligne.article_id)
@@ -696,6 +784,7 @@ class SaleService:
             vente = vente_repo.get_by_id(sale_id)
             if vente is None:
                 raise NotFoundError(f"Vente {sale_id} introuvable.")
+            self._enforce_sale_ownership(session, vente, "SALE_PAYMENT_CREATE")
             if vente.statut != StatutOperation.VALIDEE:
                 raise ConflictError("Seule une vente validée peut recevoir un paiement.")
 

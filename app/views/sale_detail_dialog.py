@@ -308,7 +308,7 @@ class SaleDetailDialog(QDialog):
             self._sale_service is not None
             and sale.statut == StatutOperation.VALIDEE
             and sale.reste_a_payer > 0
-            and self._permissions.has_permission("SALE_PAYMENT_CREATE")
+            and self._sale_service.can_manage_sale(self._sale_id, "SALE_PAYMENT_CREATE")
         )
         self.record_payment_button.setEnabled(can_pay)
         self.export_payment_receipt_button.setEnabled(len(self._payments) > 0)

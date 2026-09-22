@@ -95,6 +95,7 @@ def build_service_registry(
     )
     report_service = ReportService(permission_service, settings)
     backup_service = BackupService(permission_service, settings)
+    sale_service = SaleService(permission_service, settings)
 
     return ServiceRegistry(
         auth=auth_service,
@@ -107,14 +108,14 @@ def build_service_registry(
         articles=ArticleService(permission_service, settings),
         entries=EntryService(permission_service, settings),
         exits=ExitService(permission_service, settings),
-        sales=SaleService(permission_service, settings),
+        sales=sale_service,
         inventory=InventoryService(permission_service, settings),
         movements=MovementService(permission_service, settings),
         reports=report_service,
         backups=backup_service,
         licenses=license_service,
         activation=activation_service,
-        dashboard=DashboardService(permission_service, report_service, settings),
+        dashboard=DashboardService(permission_service, report_service, sale_service, settings),
         parameters=CompanySettingsService(permission_service, settings),
         documents=ReceiptService(permission_service, settings),
         audit=AuditService(permission_service, settings),

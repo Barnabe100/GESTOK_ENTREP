@@ -467,3 +467,150 @@ def test_scanning_barcode_in_sale_form_adds_line_and_can_be_validated(qtbot, log
     validated = stack.sales.validate_sale(created.id)
     assert validated.statut == StatutOperation.VALIDEE
     assert stack.articles.get_article(article.id).stock_actuel == Decimal("19")
+
+
+# -- règle de propriété Vendeur (lot dédié) ---------------------------------------------
+
+
+def _grant_sale_cancel_to_vendeur(stack) -> None:
+    role_id = next(r.id for r in stack.roles.list_roles() if r.nom == "Vendeur")
+    current_codes = stack.roles.get_role_permissions(role_id)
+    stack.roles.update_role_permissions(role_id, current_codes + ["SALE_CANCEL"])
+
+
+def test_action_buttons_disabled_for_another_vendeur_draft_sale(qtbot, login_as) -> None:
+    admin_stack, _ = login_as("Administrateur")
+    article = _make_article(admin_stack)
+
+    vendeur_y_stack, _ = login_as("Vendeur")
+    sale_y = vendeur_y_stack.sales.create_sale(
+        date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("5"), Decimal("150"))]
+    )
+
+    vendeur_x_stack, _ = login_as("Vendeur")
+    page = _build_page(vendeur_x_stack)
+    qtbot.addWidget(page)
+    row = next(r for r in range(page.table.rowCount()) if page.table.item(r, 0).text() == sale_y.numero)
+    page.table.selectRow(row)
+
+    assert page.edit_button.isEnabled() is False
+    assert page.delete_button.isEnabled() is False
+    assert page.validate_button.isEnabled() is False
+
+
+def test_action_buttons_enabled_for_own_draft_sale(qtbot, login_as) -> None:
+    admin_stack, _ = login_as("Administrateur")
+    article = _make_article(admin_stack)
+
+    stack, _ = login_as("Vendeur")
+    sale = stack.sales.create_sale(date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("5"), Decimal("150"))])
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    row = next(r for r in range(page.table.rowCount()) if page.table.item(r, 0).text() == sale.numero)
+    page.table.selectRow(row)
+
+    assert page.edit_button.isEnabled() is True
+    assert page.delete_button.isEnabled() is True
+    assert page.validate_button.isEnabled() is True
+
+
+def test_cancel_button_disabled_for_another_vendeur_validated_sale(qtbot, login_as) -> None:
+    admin_stack, _ = login_as("Administrateur")
+    article = _make_article(admin_stack)
+    _grant_sale_cancel_to_vendeur(admin_stack)
+
+    vendeur_y_stack, _ = login_as("Vendeur")
+    sale_y = vendeur_y_stack.sales.create_sale(
+        date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("5"), Decimal("150"))]
+    )
+    vendeur_y_stack.sales.validate_sale(sale_y.id)
+
+    vendeur_x_stack, _ = login_as("Vendeur")
+    page = _build_page(vendeur_x_stack)
+    qtbot.addWidget(page)
+    row = next(r for r in range(page.table.rowCount()) if page.table.item(r, 0).text() == sale_y.numero)
+    page.table.selectRow(row)
+
+    assert page.cancel_button.isEnabled() is False
+
+
+def test_cancel_button_enabled_for_own_validated_sale_with_permission(qtbot, login_as) -> None:
+    admin_stack, _ = login_as("Administrateur")
+    article = _make_article(admin_stack)
+    _grant_sale_cancel_to_vendeur(admin_stack)
+
+    stack, _ = login_as("Vendeur")
+    sale = stack.sales.create_sale(date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("5"), Decimal("150"))])
+    stack.sales.validate_sale(sale.id)
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    row = next(r for r in range(page.table.rowCount()) if page.table.item(r, 0).text() == sale.numero)
+    page.table.selectRow(row)
+
+    assert page.cancel_button.isEnabled() is True
+
+
+def test_on_cancel_clicked_does_not_open_reason_dialog_for_another_vendeur_sale(
+    qtbot, login_as, monkeypatch
+) -> None:
+    """Confort UI (§ lot dédié) : le dialogue de saisie du motif ne doit pas
+    s'ouvrir lorsque le refus est déjà certain — même si le bouton était
+    force-activé (contournement direct de ``_on_cancel_clicked``, même
+    principe que les tests de non-contournement déjà présents pour
+    d'autres écrans, ex. ``test_users_page.py``). La protection réelle
+    reste côté service (voir ``tests/test_sale_service.py``), pas ce
+    confort d'interface."""
+    admin_stack, _ = login_as("Administrateur")
+    article = _make_article(admin_stack)
+    _grant_sale_cancel_to_vendeur(admin_stack)
+
+    vendeur_y_stack, _ = login_as("Vendeur")
+    sale_y = vendeur_y_stack.sales.create_sale(
+        date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("5"), Decimal("150"))]
+    )
+    vendeur_y_stack.sales.validate_sale(sale_y.id)
+
+    vendeur_x_stack, _ = login_as("Vendeur")
+    page = _build_page(vendeur_x_stack)
+    qtbot.addWidget(page)
+
+    dialog_opened = {"value": False}
+
+    def _fake_exec(self):
+        dialog_opened["value"] = True
+        return QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr("app.views.cancellation_reason_dialog.CancellationReasonDialog.exec", _fake_exec)
+
+    row = next(r for r in range(page.table.rowCount()) if page.table.item(r, 0).text() == sale_y.numero)
+    page.table.selectRow(row)
+    page.cancel_button.setEnabled(True)  # contournement direct, comme un bouton non rafraîchi
+    page._on_cancel_clicked()
+
+    assert dialog_opened["value"] is False
+    assert vendeur_x_stack.sales.get_sale(sale_y.id).statut == StatutOperation.VALIDEE
+
+
+def test_record_payment_button_disabled_for_another_vendeur_sale(qtbot, login_as) -> None:
+    from app.views.sale_detail_dialog import SaleDetailDialog
+
+    admin_stack, _ = login_as("Administrateur")
+    article = _make_article(admin_stack)
+
+    vendeur_y_stack, _ = login_as("Vendeur")
+    sale_y = vendeur_y_stack.sales.create_sale(
+        date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("5"), Decimal("150"))]
+    )
+    validated_y = vendeur_y_stack.sales.validate_sale(sale_y.id)
+
+    vendeur_x_stack, _ = login_as("Vendeur")
+    sale_for_dialog = vendeur_x_stack.sales.get_sale(validated_y.id)
+    dialog = SaleDetailDialog(
+        sale_for_dialog, [], "EUR", vendeur_x_stack.documents, vendeur_x_stack.permissions,
+        sale_service=vendeur_x_stack.sales, parent=None,
+    )
+    qtbot.addWidget(dialog)
+
+    assert dialog.record_payment_button.isEnabled() is False

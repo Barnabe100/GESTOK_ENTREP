@@ -537,6 +537,10 @@ def test_existing_sales_amount_kpi_unaffected_by_new_sales_count_kpi(qtbot, logi
 
 
 def test_secondary_kpi_cards_show_dash_without_report_view(qtbot, login_as) -> None:
+    """§ lot dates/permissions : entrées/sorties/inventaires restent « — »
+    pour un Vendeur (pas de REPORT_VIEW), mais « Ventes (période) » est
+    désormais renseignée (SALE_VIEW, présent par défaut chez le Vendeur) —
+    ici « 0 » puisque la base de test ne contient aucune vente."""
     stack, _ = login_as("Vendeur")
     page = _build_page(stack)
     qtbot.addWidget(page)
@@ -544,7 +548,7 @@ def test_secondary_kpi_cards_show_dash_without_report_view(qtbot, login_as) -> N
     assert page.kpi_stock_quantity_label.text() == "—"
     assert page.kpi_entries_label.text() == "—"
     assert page.kpi_exits_label.text() == "—"
-    assert page.kpi_sales_count_label.text() == "—"
+    assert page.kpi_sales_count_label.text() == "0"
     assert page.kpi_inventories_label.text() == "—"
 
 
@@ -647,3 +651,119 @@ def test_refresh_reloads_currency_and_updates_displayed_amounts(qtbot, login_as)
     assert "€" in page.kpi_stock_value_label.text()
     assert "FCFA" not in page.kpi_stock_value_label.text()
     assert page._currency_code == "EUR"
+
+
+# -- contrôle des dates dans l'UI (§ lot dates) -----------------------------------------
+
+
+def test_date_edits_cannot_be_set_beyond_today(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    today_qdate = QDate.currentDate()
+    assert page.date_from_edit.maximumDate() == today_qdate
+    assert page.date_to_edit.maximumDate() == today_qdate
+
+
+def test_n_changing_start_date_updates_end_date_minimum(qtbot, login_as) -> None:
+    """§N : le minimum de la date de fin suit la date de début choisie."""
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    new_start = QDate(2026, 3, 15)
+    page.date_from_edit.setDate(new_start)
+
+    assert page.date_to_edit.minimumDate() == new_start
+
+
+def test_end_date_cannot_be_set_below_start_date(qtbot, login_as) -> None:
+    """Qt ajuste automatiquement la valeur courante de la date de fin si
+    elle tombe sous le nouveau minimum — jamais de période incohérente
+    sélectionnable via l'interface."""
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    page.date_from_edit.setDate(QDate(2026, 6, 1))
+    page.date_to_edit.setDate(QDate(2026, 1, 1))  # antérieure au nouveau minimum
+
+    assert page.date_to_edit.date() >= page.date_from_edit.date()
+
+
+# -- distinction permission manquante / aucune donnée (§ lot dates/permissions, §Q) -----
+
+
+def _strip_report_view_from_consultation(stack) -> None:
+    """Retire REPORT_VIEW du rôle Consultation (qui n'a pas SALE_VIEW par
+    défaut, voir seed.py) pour obtenir, le temps de ce test, un rôle sans
+    aucune des deux voies d'accès au domaine Ventes du Dashboard —
+    modification en base comme le ferait un administrateur réel depuis
+    l'écran Rôles, jamais du seed lui-même ni de la matrice de référence."""
+    role_id = next(r.id for r in stack.roles.list_roles() if r.nom == "Consultation")
+    current_codes = stack.roles.get_role_permissions(role_id)
+    stack.roles.update_role_permissions(role_id, [c for c in current_codes if c != "REPORT_VIEW"])
+
+
+def test_q_sales_chart_shows_permission_message_when_sale_view_missing(qtbot, login_as) -> None:
+    """§Q : le message affiché quand ni SALE_VIEW ni REPORT_VIEW ne sont
+    présents ne doit jamais être « Aucune vente sur cette période. » (qui
+    affirmerait à tort qu'il n'existe aucune donnée)."""
+    admin_stack, _ = login_as("Administrateur")
+    _strip_report_view_from_consultation(admin_stack)
+
+    stack, _ = login_as("Consultation")  # ni SALE_VIEW ni REPORT_VIEW (retiré ci-dessus)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.sales_chart_view.isHidden() is True
+    assert page.sales_empty_label.isHidden() is False
+    assert page.sales_empty_label.text() == "Vous n'avez pas la permission de consulter cette information."
+    assert page.sales_empty_label.text() != "Aucune vente sur cette période."
+
+
+def test_q_sales_chart_shows_no_data_message_when_permission_present_but_period_empty(
+    qtbot, login_as
+) -> None:
+    """§Q : à l'inverse, quand la permission est présente mais qu'il
+    n'existe réellement aucune vente, le message « Aucune vente sur cette
+    période. » reste affiché — jamais le message de permission manquante."""
+    stack, _ = login_as("Vendeur")  # a SALE_VIEW, base de test vide
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.sales_empty_label.isHidden() is False
+    assert page.sales_empty_label.text() == "Aucune vente sur cette période."
+
+
+def test_q_movement_chart_shows_permission_message_for_vendeur(qtbot, login_as) -> None:
+    """Le Vendeur n'a pas REPORT_VIEW : le graphique des mouvements doit
+    afficher le message de permission manquante, jamais « Aucun mouvement
+    sur cette période. » (qui laisserait croire à tort qu'il n'existe
+    réellement aucun mouvement)."""
+    stack, _ = login_as("Vendeur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.movement_empty_label.text() == "Vous n'avez pas la permission de consulter cette information."
+
+
+def test_f_gestionnaire_stock_sales_kpi_still_visible(qtbot, login_as) -> None:
+    """§F : non-régression UI — le Gestionnaire de stock continue de voir
+    les indicateurs de ventes (via REPORT_VIEW), le Dashboard n'a pas changé
+    pour lui."""
+    admin_stack, _ = login_as("Administrateur")
+    category = admin_stack.categories.create_category("Boissons")
+    article = admin_stack.articles.create_article(
+        "ART-1", "Eau", category.id, "u", Decimal("10"), Decimal("15"), Decimal("5"), stock_initial=Decimal("50")
+    )
+    sale = admin_stack.sales.create_sale(date.today(), [VenteLigneInput(article.id, Decimal("2"), Decimal("150"))])
+    admin_stack.sales.validate_sale(sale.id)
+
+    stack, _ = login_as("Gestionnaire de stock")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.kpi_sales_count_label.text() == "1"
+    assert page.kpi_sales_label.text() != "—"

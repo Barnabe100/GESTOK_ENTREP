@@ -48,6 +48,13 @@ from app.utils.money import format_money
 from app.utils.quantity import format_quantity
 from app.views.common import date_to_qdate
 
+# Message affiché à la place d'un graphique/tableau lorsque la section est
+# vide parce que la permission source manque — jamais confondu avec
+# l'absence réelle de données sur la période (§ lot dates/permissions) :
+# une absence de permission n'est jamais présentée comme une absence de
+# données.
+_PERMISSION_MISSING_MESSAGE = "Vous n'avez pas la permission de consulter cette information."
+
 # Permissions requises pour chaque accès rapide (§12) — jamais affiché si
 # l'utilisateur courant ne les a pas, indépendamment de DASHBOARD_VIEW.
 _NAVIGATION_TARGETS: list[tuple[str, str, str, Optional[str]]] = [
@@ -123,6 +130,7 @@ class DashboardPage(QWidget):
         layout.addLayout(self._build_recent_activity_box())
 
         period_from, period_to = default_period()
+        self._refresh_date_bounds()
         self.date_from_edit.setDate(date_to_qdate(period_from))
         self.date_to_edit.setDate(date_to_qdate(period_to))
 
@@ -137,6 +145,11 @@ class DashboardPage(QWidget):
         self.date_from_edit = QDateEdit(self)
         self.date_from_edit.setCalendarPopup(True)
         self.date_from_edit.setDisplayFormat("yyyy-MM-dd")
+        # Quand la date de début change, la date de fin ne doit jamais
+        # pouvoir devenir antérieure (§ lot dates) — QDateEdit ajuste
+        # automatiquement sa valeur courante si elle tombe sous le nouveau
+        # minimum, aucune logique de correction manuelle nécessaire ici.
+        self.date_from_edit.dateChanged.connect(self._on_date_from_changed)
         row.addWidget(self.date_from_edit)
         row.addWidget(QLabel("au", self))
         self.date_to_edit = QDateEdit(self)
@@ -147,6 +160,20 @@ class DashboardPage(QWidget):
         row.addWidget(self.refresh_button)
         row.addStretch(1)
         return row
+
+    def _on_date_from_changed(self, new_date) -> None:
+        self.date_to_edit.setMinimumDate(new_date)
+
+    def _refresh_date_bounds(self) -> None:
+        """``date_debut``/``date_fin`` ne peuvent jamais dépasser aujourd'hui
+        (§ lot dates), et ``date_fin`` ne peut jamais être antérieure à
+        ``date_debut``. Recalculé à chaque appel — jamais une date du jour
+        figée à la construction — pour rester exact si le Dashboard reste
+        ouvert d'un jour sur l'autre."""
+        today_qdate = date_to_qdate(date.today())
+        self.date_from_edit.setMaximumDate(today_qdate)
+        self.date_to_edit.setMaximumDate(today_qdate)
+        self.date_to_edit.setMinimumDate(self.date_from_edit.date())
 
     def _build_kpi_card(self, title: str) -> tuple[QGroupBox, QLabel]:
         card = QGroupBox(title, self)
@@ -321,6 +348,9 @@ class DashboardPage(QWidget):
         # devise dans Paramètres pendant que le Dashboard est déjà ouvert se
         # reflète dès le prochain « Actualiser », sans avoir à rouvrir la page.
         self._currency_code = get_effective_currency()
+        # Recalculé à chaque rafraîchissement, jamais une date du jour figée
+        # (§ lot dates) : reste exact si la page reste ouverte plusieurs jours.
+        self._refresh_date_bounds()
         period_from, period_to = self._read_period()
 
         try:
@@ -360,31 +390,45 @@ class DashboardPage(QWidget):
             self.low_stock_alert_label.setText("")
             self.out_of_stock_alert_label.setText("")
 
+        # Chaque indicateur d'activité (§ lot dates/permissions) est
+        # individuellement `None` si sa permission source manque (voir
+        # ActivityKpis) — jamais un bloc "tout ou rien" : les indicateurs de
+        # ventes (SALE_VIEW) peuvent être disponibles même quand
+        # entrées/sorties/inventaires (REPORT_VIEW) ne le sont pas, et
+        # inversement.
         activity = overview.activity
-        if activity is not None:
-            self.kpi_sales_label.setText(format_money(activity.sales_amount, self._currency_code))
-            self.kpi_entries_label.setText(str(activity.entries_validated))
-            self.kpi_exits_label.setText(str(activity.exits_validated))
-            self.kpi_sales_count_label.setText(str(activity.sales_validated))
-            self.kpi_inventories_label.setText(str(activity.inventories_validated))
-        else:
-            self.kpi_sales_label.setText("—")
-            self.kpi_entries_label.setText("—")
-            self.kpi_exits_label.setText("—")
-            self.kpi_sales_count_label.setText("—")
-            self.kpi_inventories_label.setText("—")
+        self.kpi_sales_label.setText(
+            format_money(activity.sales_amount, self._currency_code) if activity.sales_amount is not None else "—"
+        )
+        self.kpi_entries_label.setText(
+            str(activity.entries_validated) if activity.entries_validated is not None else "—"
+        )
+        self.kpi_exits_label.setText(str(activity.exits_validated) if activity.exits_validated is not None else "—")
+        self.kpi_sales_count_label.setText(
+            str(activity.sales_validated) if activity.sales_validated is not None else "—"
+        )
+        self.kpi_inventories_label.setText(
+            str(activity.inventories_validated) if activity.inventories_validated is not None else "—"
+        )
 
-        self._apply_sales_chart(overview.sales_evolution or [])
-        self._apply_movement_chart(overview.movement_breakdown or {})
-        self._apply_category_value_chart(overview.stock_value_by_category or [])
-        self._apply_low_stock_table(overview.low_stock_top or [])
-        self._apply_recent_activity_table(overview.recent_activity or [])
+        # `None` (permission manquante) et liste/dict vide (aucune donnée
+        # réelle sur la période) ne doivent jamais être confondus (§ lot
+        # dates/permissions) : la distinction est transmise telle quelle,
+        # jamais aplatie ici — chaque `_apply_*` choisit le message adapté.
+        self._apply_sales_chart(overview.sales_evolution)
+        self._apply_movement_chart(overview.movement_breakdown)
+        self._apply_category_value_chart(overview.stock_value_by_category)
+        self._apply_low_stock_table(overview.low_stock_top)
+        self._apply_recent_activity_table(overview.recent_activity)
 
-    def _apply_sales_chart(self, points) -> None:
+    def _apply_sales_chart(self, points: Optional[list]) -> None:
         has_data = bool(points)
         self.sales_chart_view.setVisible(has_data)
         self.sales_empty_label.setVisible(not has_data)
         if not has_data:
+            self.sales_empty_label.setText(
+                _PERMISSION_MISSING_MESSAGE if points is None else "Aucune vente sur cette période."
+            )
             return
 
         # Conservé pour le tooltip (§Lot D.1) : retrouve la valeur Decimal
@@ -427,11 +471,14 @@ class DashboardPage(QWidget):
         text = f"{point.label} : {format_money(point.amount, self._currency_code)}"
         QToolTip.showText(QCursor.pos(), text, self.sales_chart_view)
 
-    def _apply_movement_chart(self, breakdown: dict[TypeMouvement, int]) -> None:
+    def _apply_movement_chart(self, breakdown: Optional[dict[TypeMouvement, int]]) -> None:
         has_data = bool(breakdown)
         self.movement_chart_view.setVisible(has_data)
         self.movement_empty_label.setVisible(not has_data)
         if not has_data:
+            self.movement_empty_label.setText(
+                _PERMISSION_MISSING_MESSAGE if breakdown is None else "Aucun mouvement sur cette période."
+            )
             return
 
         chart = QChart()
@@ -453,11 +500,14 @@ class DashboardPage(QWidget):
             return
         QToolTip.showText(QCursor.pos(), slice_.label(), self.movement_chart_view)
 
-    def _apply_category_value_chart(self, category_values) -> None:
+    def _apply_category_value_chart(self, category_values: Optional[list]) -> None:
         has_data = bool(category_values)
         self.category_value_chart_view.setVisible(has_data)
         self.category_value_empty_label.setVisible(not has_data)
         if not has_data:
+            self.category_value_empty_label.setText(
+                _PERMISSION_MISSING_MESSAGE if category_values is None else "Aucune donnée de stock par catégorie."
+            )
             return
 
         self._category_chart_rows = category_values
@@ -494,11 +544,16 @@ class DashboardPage(QWidget):
         text = f"{row.category_nom} : {format_money(row.valeur_stock, self._currency_code)}"
         QToolTip.showText(QCursor.pos(), text, self.category_value_chart_view)
 
-    def _apply_low_stock_table(self, rows) -> None:
+    def _apply_low_stock_table(self, rows: Optional[list]) -> None:
         has_data = bool(rows)
         self.low_stock_table.setVisible(has_data)
         self.low_stock_empty_label.setVisible(not has_data)
+        if not has_data:
+            self.low_stock_empty_label.setText(
+                _PERMISSION_MISSING_MESSAGE if rows is None else "Aucun article en stock faible."
+            )
 
+        rows = rows or []
         self.low_stock_table.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
             self.low_stock_table.setItem(row_index, 0, QTableWidgetItem(row.reference))
@@ -508,11 +563,16 @@ class DashboardPage(QWidget):
                 QTableWidgetItem(f"{format_quantity(row.stock_actuel)} / {format_quantity(row.stock_min)}"),
             )
 
-    def _apply_recent_activity_table(self, rows) -> None:
+    def _apply_recent_activity_table(self, rows: Optional[list]) -> None:
         has_data = bool(rows)
         self.recent_activity_table.setVisible(has_data)
         self.recent_activity_empty_label.setVisible(not has_data)
+        if not has_data:
+            self.recent_activity_empty_label.setText(
+                _PERMISSION_MISSING_MESSAGE if rows is None else "Aucune activité récente."
+            )
 
+        rows = rows or []
         self.recent_activity_table.setRowCount(len(rows))
         for row_index, movement in enumerate(rows):
             self.recent_activity_table.setItem(
