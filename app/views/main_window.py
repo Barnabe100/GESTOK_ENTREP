@@ -239,7 +239,7 @@ class MainWindow(QMainWindow):
         if module_name == "Audit":
             return AuditPage(self._services.audit, self._permissions)
         if module_name == "Licences":
-            return LicensesPage(self._services.licenses, self._permissions)
+            return LicensesPage(self._services.licenses, self._services.activation, self._permissions)
         return PlaceholderPage(module_name)
 
     def _build_top_bar(self, parent: QWidget) -> QWidget:

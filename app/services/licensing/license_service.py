@@ -201,7 +201,63 @@ class LicenseService:
         licence falsifiée ou modifiée sans re-signature est refusée sans
         jamais être enregistrée (§5, §16)."""
         self._permissions.require_permission("LICENSE_ACTIVATE")
+        payload_dict, signature_raw, payload = self._validate_and_parse(file_content)
 
+        statut = (
+            StatutLicence.EXPIREE if (payload.expires_at and payload.expires_at < date.today())
+            else StatutLicence.ACTIVE
+        )
+
+        with session_scope(self._settings) as session:
+            LicenceRepository(session).add(
+                Licence(
+                    client=payload.client, produit=payload.product, edition=payload.edition,
+                    date_emission=payload.issued_at, date_expiration=payload.expires_at,
+                    max_users=payload.max_users, max_postes=payload.max_devices, statut=statut,
+                    payload_json=json.dumps(payload_dict), signature=signature_raw,
+                )
+            )
+
+        self._audit(
+            "LICENSE_ACTIVATE_SUCCESS", ResultatAudit.SUCCES,
+            details=f"license_id={payload.license_id} client={payload.client} edition={payload.edition.value}",
+        )
+        logger.info(
+            "Licence activée : %s (client=%s, édition=%s).", payload.license_id, payload.client, payload.edition.value
+        )
+        return self.evaluate()
+
+    def validate_license_content(self, file_content: str) -> LicensePayload:
+        """Valide intégralement un contenu de licence (structure d'enveloppe,
+        signature Ed25519, cohérence du payload) SANS l'enregistrer.
+
+        Utilisé par ``ActivationService`` en mode SERVER : la validation
+        locale doit être complète avant toute sollicitation d'un futur
+        serveur TechNova, mais rien ne doit être persisté avant son
+        autorisation (le serveur pourra encore refuser, ex. quota
+        ``max_devices``) — voir l'architecture LOCAL/SERVER. Mêmes règles,
+        mêmes messages d'erreur, même journalisation d'audit que
+        ``activate_license`` : les deux méthodes partagent le même cœur de
+        validation (``_validate_and_parse``), jamais dupliqué."""
+        self._permissions.require_permission("LICENSE_ACTIVATE")
+        _, _, payload = self._validate_and_parse(file_content)
+        return payload
+
+    def get_device_id(self) -> str:
+        """Identifiant local de cet appareil (§11), sans vérification de
+        permission dédiée : ce n'est pas une donnée de licence sensible,
+        seulement un identifiant technique local — réutilisé par
+        ``ActivationService`` pour le futur flux SERVER. Pour l'affichage
+        UI, voir ``LicenseInfo.device_id`` via ``get_info()`` (protégé par
+        ``LICENSE_VIEW``)."""
+        with session_scope(self._settings) as session:
+            return self._ensure_device_id(session)
+
+    def _validate_and_parse(self, file_content: str) -> tuple[dict, str, LicensePayload]:
+        """Cœur de validation partagé par ``activate_license`` et
+        ``validate_license_content`` — jamais dupliqué. Comportement et
+        messages d'erreur strictement identiques à avant l'extraction de
+        cette méthode."""
         try:
             envelope = json.loads(file_content)
         except (TypeError, ValueError) as exc:
@@ -242,29 +298,7 @@ class LicenseService:
             self._audit("LICENSE_ACTIVATE_FAILURE", ResultatAudit.ECHEC, details=str(exc))
             raise ValidationError(f"Licence invalide : {exc}") from exc
 
-        statut = (
-            StatutLicence.EXPIREE if (payload.expires_at and payload.expires_at < date.today())
-            else StatutLicence.ACTIVE
-        )
-
-        with session_scope(self._settings) as session:
-            LicenceRepository(session).add(
-                Licence(
-                    client=payload.client, produit=payload.product, edition=payload.edition,
-                    date_emission=payload.issued_at, date_expiration=payload.expires_at,
-                    max_users=payload.max_users, max_postes=payload.max_devices, statut=statut,
-                    payload_json=json.dumps(payload_dict), signature=signature_raw,
-                )
-            )
-
-        self._audit(
-            "LICENSE_ACTIVATE_SUCCESS", ResultatAudit.SUCCES,
-            details=f"license_id={payload.license_id} client={payload.client} edition={payload.edition.value}",
-        )
-        logger.info(
-            "Licence activée : %s (client=%s, édition=%s).", payload.license_id, payload.client, payload.edition.value
-        )
-        return self.evaluate()
+        return payload_dict, signature_raw, payload
 
     # -- limite d'utilisateurs (§12) ----------------------------------------------
 

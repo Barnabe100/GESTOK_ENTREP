@@ -612,6 +612,15 @@ L'activation se fait en important un fichier de licence (`.lic`) fourni par l'é
 
 L'écran Licence (menu dédié) affiche l'édition active, sa date d'expiration (ou « Sans expiration »), le nombre maximum d'utilisateurs et de postes autorisés, et propose un bouton « Importer / activer une licence… ».
 
+### Mode d'activation (LOCAL / SERVER)
+
+L'écran Licence propose également un **mode d'activation**, avec deux valeurs possibles :
+
+- **LOCAL** (mode par défaut, sélectionné automatiquement) : c'est le fonctionnement décrit ci-dessus — activation par fichier `.lic`, entièrement hors ligne. **C'est le seul mode réellement opérationnel dans cette version.**
+- **SERVER** : mode préparé pour un futur serveur TechNova, qui permettra notamment l'application réelle de la limite de postes (`max_devices`). **Ce mode n'est pas encore opérationnel** : le serveur TechNova n'existe pas à ce jour. Toute tentative d'activation en mode SERVER se conclut par un message explicite (« Le serveur TechNova n'est pas encore configuré. ») — jamais par une fausse réussite.
+
+Le mode sélectionné est propre à chaque installation (pas au fichier de licence lui-même) et reste inchangé d'une session à l'autre. Basculer en mode SERVER aujourd'hui ne permet donc pas d'activer une licence — il faut repasser en LOCAL pour toute activation réelle, tant que le serveur TechNova n'est pas disponible.
+
 ---
 
 ## 20. Paramètres

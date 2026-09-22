@@ -56,3 +56,11 @@ class LicenseError(AppError):
     (ou aucune licence valide n'est présente) — distincte de
     ``PermissionDeniedError`` : l'utilisateur peut avoir la permission RBAC
     requise et se voir néanmoins refuser l'accès faute de droit de licence."""
+
+
+class LicenseServerUnavailableError(LicenseError):
+    """Le mode d'activation SERVER est sélectionné mais aucun serveur
+    TechNova n'est encore configuré/implémenté (voir
+    ``app.services.licensing.license_server_client``) — une tentative
+    d'activation en mode SERVER ne doit jamais être confondue avec une
+    activation réussie, même si la licence est valide localement."""

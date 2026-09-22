@@ -6,10 +6,17 @@ côté service et revalide systématiquement la signature — cette page ne fait
 qu'afficher l'état retourné et proposer l'import d'un fichier. La clé privée
 n'est jamais manipulée ici (ni nulle part côté client) : seule une clé
 publique embarquée sert à vérifier une licence déjà signée.
-"""
+
+L'activation elle-même passe désormais par :class:`ActivationService`, qui
+choisit entre le mode LOCAL (comportement ci-dessus, inchangé) et un futur
+mode SERVER (activation via un serveur TechNova non encore implémenté — voir
+``license_server_client.py``). Cette page se contente d'afficher le mode
+courant et de proposer son changement ; elle ne contient aucune logique de
+validation ou de comptage."""
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
+    QComboBox,
     QFileDialog,
     QFormLayout,
     QGroupBox,
@@ -21,6 +28,8 @@ from PySide6.QtWidgets import (
 )
 
 from app.services.auth.permission_service import PermissionService
+from app.services.licensing.activation_mode import ActivationMode
+from app.services.licensing.activation_service import ActivationService
 from app.services.licensing.license_service import LicenseInfo, LicenseService, LicenseState
 from app.utils.exceptions import AppError
 
@@ -32,20 +41,33 @@ _STATE_LABELS = {
     LicenseState.CORRUPTED: "Corrompue",
 }
 
+_MODE_LABELS = {
+    ActivationMode.LOCAL: "LOCAL",
+    ActivationMode.SERVER: "SERVER",
+}
+
+_MODE_DESCRIPTIONS = {
+    ActivationMode.LOCAL: "Activation hors ligne",
+    ActivationMode.SERVER: "Activation via serveur TechNova — Internet requis",
+}
+
 
 class LicensesPage(QWidget):
     def __init__(
         self,
         license_service: LicenseService,
+        activation_service: ActivationService,
         permission_service: PermissionService,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._license_service = license_service
+        self._activation_service = activation_service
         self._permissions = permission_service
 
         layout = QVBoxLayout(self)
         layout.addWidget(self._build_status_group())
+        layout.addWidget(self._build_mode_group())
 
         self.activate_button = QPushButton("Importer / activer une licence…", self)
         self.activate_button.setEnabled(self._permissions.has_permission("LICENSE_ACTIVATE"))
@@ -83,6 +105,23 @@ class LicensesPage(QWidget):
 
         return group
 
+    def _build_mode_group(self) -> QGroupBox:
+        group = QGroupBox("Mode d'activation", self)
+        layout = QVBoxLayout(group)
+
+        self.mode_combo = QComboBox(self)
+        for mode in (ActivationMode.LOCAL, ActivationMode.SERVER):
+            self.mode_combo.addItem(_MODE_LABELS[mode], mode)
+        self.mode_combo.setEnabled(self._permissions.has_permission("LICENSE_ACTIVATE"))
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
+        layout.addWidget(self.mode_combo)
+
+        self.mode_description_label = QLabel(self)
+        self.mode_description_label.setWordWrap(True)
+        layout.addWidget(self.mode_description_label)
+
+        return group
+
     def refresh(self) -> None:
         try:
             info = self._license_service.get_info()
@@ -90,6 +129,24 @@ class LicensesPage(QWidget):
             self._apply_empty(str(exc))
             return
         self._apply_info(info)
+        self._refresh_mode()
+
+    def _refresh_mode(self) -> None:
+        """Synchronise le sélecteur avec le mode réellement stocké (jamais
+        l'inverse) — signaux bloqués le temps de la synchronisation pour ne
+        pas redéclencher ``_on_mode_changed`` (et donc ``set_mode``) à
+        chaque rafraîchissement."""
+        try:
+            mode = self._activation_service.get_mode()
+        except AppError:
+            mode = ActivationMode.LOCAL
+
+        self.mode_combo.blockSignals(True)
+        index = self.mode_combo.findData(mode)
+        if index >= 0:
+            self.mode_combo.setCurrentIndex(index)
+        self.mode_combo.blockSignals(False)
+        self.mode_description_label.setText(_MODE_DESCRIPTIONS[mode])
 
     def _apply_empty(self, message: str) -> None:
         self.state_label.setText(message)
@@ -112,6 +169,23 @@ class LicensesPage(QWidget):
         self.features_label.setText(", ".join(sorted(info.features)) if info.features else "—")
         self.device_id_label.setText(info.device_id or "—")
 
+    def _on_mode_changed(self, index: int) -> None:
+        data = self.mode_combo.itemData(index)
+        if data is None:
+            return
+        # PySide6 déballe un ``str`` (même sous-classé, comme ActivationMode)
+        # stocké comme donnée d'item en simple ``str`` Python — reconstruire
+        # explicitement le membre d'énumération plutôt que de faire
+        # confiance au type retourné par itemData().
+        mode = ActivationMode(data)
+        try:
+            self._activation_service.set_mode(mode)
+        except AppError as exc:
+            QMessageBox.warning(self, "Changement de mode refusé", str(exc))
+            self._refresh_mode()
+            return
+        self.mode_description_label.setText(_MODE_DESCRIPTIONS[mode])
+
     def _on_activate_clicked(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Sélectionner un fichier de licence", "", "Licences StockManager (*.lic *.json);;Tous les fichiers (*)"
@@ -131,7 +205,7 @@ class LicensesPage(QWidget):
             return False
 
         try:
-            self._license_service.activate_license(content)
+            self._activation_service.activate(content)
         except AppError as exc:
             QMessageBox.warning(self, "Activation refusée", str(exc))
             return False

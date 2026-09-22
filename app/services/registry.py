@@ -25,7 +25,9 @@ from app.services.entries.entry_service import EntryService
 from app.services.exit_reasons.exit_reason_service import ExitReasonService
 from app.services.exits.exit_service import ExitService
 from app.services.inventory.inventory_service import InventoryService
+from app.services.licensing.activation_service import ActivationService
 from app.services.licensing.feature_gate import FeatureGate
+from app.services.licensing.license_server_client import UnconfiguredLicenseServerClient
 from app.services.licensing.license_service import LicenseService
 from app.services.licensing.permission_map import PERMISSION_TO_FEATURE
 from app.services.licensing.public_key import PRODUCTION_PUBLIC_KEY_BYTES
@@ -58,6 +60,7 @@ class ServiceRegistry:
     reports: ReportService
     backups: BackupService
     licenses: LicenseService
+    activation: ActivationService
     dashboard: DashboardService
     parameters: CompanySettingsService
     documents: ReceiptService
@@ -82,6 +85,14 @@ def build_service_registry(
     permission_service = PermissionService(auth_service, permission_to_feature=PERMISSION_TO_FEATURE)
     license_service = LicenseService(permission_service, settings, public_key_bytes=license_public_key_bytes)
     permission_service.set_feature_gate(FeatureGate(license_service))
+    # ActivationService orchestre le CHOIX de mode (LOCAL/SERVER) autour de
+    # LicenseService, qui reste l'unique autorité de validation
+    # cryptographique — une seule instance de LicenseService, jamais
+    # dupliquée. UnconfiguredLicenseServerClient est la seule implémentation
+    # de LicenseServerClient tant que le serveur TechNova n'existe pas.
+    activation_service = ActivationService(
+        license_service, UnconfiguredLicenseServerClient(), permission_service, settings
+    )
     report_service = ReportService(permission_service, settings)
     backup_service = BackupService(permission_service, settings)
 
@@ -102,6 +113,7 @@ def build_service_registry(
         reports=report_service,
         backups=backup_service,
         licenses=license_service,
+        activation=activation_service,
         dashboard=DashboardService(permission_service, report_service, settings),
         parameters=CompanySettingsService(permission_service, settings),
         documents=ReceiptService(permission_service, settings),
