@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.views.common import build_required_field_legend, required_label
+from app.views.password_line_edit import PasswordLineEdit
 
 
 class CreateUserDialog(QDialog):
@@ -47,12 +48,10 @@ class CreateUserDialog(QDialog):
         self.username_edit.setText(initial_username)
         form.addRow(required_label("Nom d'utilisateur"), self.username_edit)
 
-        self.password_edit = QLineEdit(self)
-        self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.password_edit = PasswordLineEdit(self)
         form.addRow(required_label("Mot de passe"), self.password_edit)
 
-        self.confirm_password_edit = QLineEdit(self)
-        self.confirm_password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.confirm_password_edit = PasswordLineEdit(self)
         form.addRow(required_label("Confirmer le mot de passe"), self.confirm_password_edit)
 
         layout.addLayout(form)

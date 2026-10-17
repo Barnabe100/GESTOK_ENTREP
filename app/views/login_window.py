@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 
 from app.services.auth.auth_service import AuthService
 from app.utils.exceptions import AccountDisabledError, AuthenticationError
+from app.views.password_line_edit import PasswordLineEdit
 
 
 class LoginWindow(QDialog):
@@ -40,9 +41,8 @@ class LoginWindow(QDialog):
         form = QFormLayout()
         self.username_edit = QLineEdit(self)
         self.username_edit.setPlaceholderText("Identifiant")
-        self.password_edit = QLineEdit(self)
+        self.password_edit = PasswordLineEdit(self)
         self.password_edit.setPlaceholderText("Mot de passe")
-        self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
         form.addRow("Utilisateur", self.username_edit)
         form.addRow("Mot de passe", self.password_edit)
         layout.addLayout(form)

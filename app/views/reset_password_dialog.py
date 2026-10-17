@@ -16,13 +16,13 @@ from PySide6.QtWidgets import (
     QDialog,
     QFormLayout,
     QLabel,
-    QLineEdit,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
 from app.views.common import build_required_field_legend, required_label
+from app.views.password_line_edit import PasswordLineEdit
 
 
 class ResetPasswordDialog(QDialog):
@@ -35,10 +35,8 @@ class ResetPasswordDialog(QDialog):
         layout = QVBoxLayout(self)
 
         form = QFormLayout()
-        self.password_edit = QLineEdit(self)
-        self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.confirm_password_edit = QLineEdit(self)
-        self.confirm_password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.password_edit = PasswordLineEdit(self)
+        self.confirm_password_edit = PasswordLineEdit(self)
         form.addRow(required_label("Nouveau mot de passe"), self.password_edit)
         form.addRow(required_label("Confirmer le nouveau mot de passe"), self.confirm_password_edit)
         layout.addLayout(form)

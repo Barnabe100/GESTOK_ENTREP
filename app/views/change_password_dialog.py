@@ -10,7 +10,6 @@ from PySide6.QtWidgets import (
     QDialog,
     QFormLayout,
     QLabel,
-    QLineEdit,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -18,6 +17,7 @@ from PySide6.QtWidgets import (
 
 from app.services.auth.auth_service import AuthService
 from app.utils.exceptions import AppError
+from app.views.password_line_edit import PasswordLineEdit
 
 
 class ChangePasswordDialog(QDialog):
@@ -43,12 +43,9 @@ class ChangePasswordDialog(QDialog):
             layout.addWidget(notice)
 
         form = QFormLayout()
-        self.old_password_edit = QLineEdit(self)
-        self.old_password_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.new_password_edit = QLineEdit(self)
-        self.new_password_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.confirm_password_edit = QLineEdit(self)
-        self.confirm_password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.old_password_edit = PasswordLineEdit(self)
+        self.new_password_edit = PasswordLineEdit(self)
+        self.confirm_password_edit = PasswordLineEdit(self)
         form.addRow("Mot de passe actuel", self.old_password_edit)
         form.addRow("Nouveau mot de passe", self.new_password_edit)
         form.addRow("Confirmer le nouveau mot de passe", self.confirm_password_edit)
