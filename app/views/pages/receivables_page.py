@@ -5,6 +5,13 @@ jamais une architecture parallèle ni un nouveau modèle de lecture. Ne
 prétend à aucun tableau de bord financier complet (§5.7) : seulement une
 liste filtrable des ventes non intégralement soldées, plus un raccourci
 vers la créance totale d'un client sélectionné.
+
+Par défaut, la liste exclut les ventes intégralement payées (filtre
+« En cours ») puisqu'il s'agit d'un écran de créances, pas d'un
+historique complet des ventes. Ce filtre par défaut est appliqué
+côté vue uniquement (``SaleService.list_sales`` reste inchangé, partagé
+avec l'écran Ventes) : un filtre explicite « Payée » — ou « Toutes
+(non annulées) » — reste disponible pour afficher les ventes payées.
 """
 from __future__ import annotations
 
@@ -32,7 +39,15 @@ from app.views.optional_date_edit import OptionalDateEdit
 
 _COLUMNS = ["Client", "Référence vente", "Date", "Montant total", "Montant payé", "Reste à payer", "Statut"]
 
+_EN_COURS = object()
+"""Sentinel du filtre par défaut : ventes validées non intégralement payées
+(non payées + partiellement payées). Distinct de ``None`` (qui désigne
+« toutes, sans filtre de statut de paiement ») et de tout membre de
+``StatutPaiement`` — jamais transmis à ``SaleService.list_sales``, géré
+uniquement dans ``ReceivablesPage.refresh``."""
+
 _STATUT_PAIEMENT_FILTERS = [
+    ("En cours (non payées + partiellement payées)", _EN_COURS),
     ("Toutes (non annulées)", None),
     ("Non payée", StatutPaiement.NON_PAYEE),
     ("Partiellement payée", StatutPaiement.PARTIELLEMENT_PAYEE),
@@ -125,7 +140,9 @@ class ReceivablesPage(QWidget):
 
     def refresh(self) -> None:
         client_id = self.client_filter_combo.currentData()
-        statut_paiement = self.statut_paiement_combo.currentData()
+        statut_paiement_filter = self.statut_paiement_combo.currentData()
+        exclude_payee = statut_paiement_filter is _EN_COURS
+        statut_paiement = None if exclude_payee else statut_paiement_filter
         date_from = self.date_from_edit.date_or_none()
         date_to = self.date_to_edit.date_or_none()
 
@@ -140,6 +157,9 @@ class ReceivablesPage(QWidget):
             )
         except AppError:
             sales = []
+
+        if exclude_payee:
+            sales = [sale for sale in sales if sale.statut_paiement != StatutPaiement.PAYEE]
 
         self.table.setRowCount(len(sales))
         for row, sale in enumerate(sales):

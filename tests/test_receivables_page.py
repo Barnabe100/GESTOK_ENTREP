@@ -56,6 +56,13 @@ def test_receivables_page_reflects_payment_made_after_page_was_built(qtbot, logi
 
     page = _build_page(stack)
     qtbot.addWidget(page)
+    # Ce test porte sur la réactivité de refresh(), pas sur le filtre par
+    # défaut : on sélectionne explicitement « Toutes » pour continuer à voir
+    # la vente une fois qu'elle passera à Payée (le filtre par défaut
+    # « En cours » l'exclurait alors — comportement attendu, couvert par
+    # test_receivables_page_default_excludes_fully_paid_sales).
+    all_index = page.statut_paiement_combo.findData(None)
+    page.statut_paiement_combo.setCurrentIndex(all_index)
     assert page.table.item(0, 4).text() == "0 FCFA"
     assert page.table.item(0, 6).text() == "Non payée"
 
@@ -155,3 +162,77 @@ def test_receivables_page_search_filters_by_numero(qtbot, login_as) -> None:
 
     assert page.table.rowCount() == 1
     assert page.table.item(0, 1).text() == v1.numero
+
+
+# -- filtre par défaut « créances » (exclusion des ventes payées) -----------------
+
+
+def test_default_statut_paiement_filter_is_en_cours(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.statut_paiement_combo.currentIndex() == 0
+    assert "en cours" in page.statut_paiement_combo.currentText().lower()
+
+
+def test_receivables_page_default_excludes_fully_paid_sales(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    _validated_sale(stack, article, paiement_initial=Decimal("300"))  # PAYEE (2 * 150)
+    _validated_sale(stack, article, paiement_initial=Decimal("150"))  # PARTIELLEMENT_PAYEE
+    _validated_sale(stack, article)  # NON_PAYEE
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.table.rowCount() == 2
+    statuses = {page.table.item(row, 6).text() for row in range(page.table.rowCount())}
+    assert statuses == {"Partiellement payée", "Non payée"}
+
+
+def test_receivables_page_explicit_payee_filter_still_shows_fully_paid_sales(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    _validated_sale(stack, article, paiement_initial=Decimal("300"))  # PAYEE
+    _validated_sale(stack, article)  # NON_PAYEE
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    assert page.table.rowCount() == 1  # exclue par défaut
+
+    index = page.statut_paiement_combo.findData(StatutPaiement.PAYEE)
+    page.statut_paiement_combo.setCurrentIndex(index)
+
+    assert page.table.rowCount() == 1
+    assert page.table.item(0, 6).text() == "Payée"
+
+
+def test_receivables_page_toutes_filter_includes_fully_paid_sales(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    _validated_sale(stack, article, paiement_initial=Decimal("300"))  # PAYEE
+    _validated_sale(stack, article)  # NON_PAYEE
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    index = page.statut_paiement_combo.findData(None)
+    page.statut_paiement_combo.setCurrentIndex(index)
+
+    assert page.table.rowCount() == 2
+
+
+def test_receivables_page_default_still_excludes_cancelled_sales(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    cancelled = _validated_sale(stack, article)
+    stack.sales.cancel_sale(cancelled.id, "Motif de test valide")
+    _validated_sale(stack, article)  # NON_PAYEE, non annulée
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.table.rowCount() == 1
+    assert page.table.item(0, 6).text() == "Non payée"

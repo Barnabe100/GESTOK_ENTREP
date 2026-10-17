@@ -74,6 +74,12 @@ def test_navigating_to_receivables_refreshes_payment_made_on_another_page(qtbot,
     # première fois, avec la vente encore non payée à ce moment.
     window.navigation_list.setCurrentRow(receivables_index)
     receivables_page = window.page_stack.widget(receivables_index)
+    # Ce test porte sur la réactivité de la navigation, pas sur le filtre
+    # par défaut : on sélectionne explicitement « Toutes » pour continuer à
+    # voir la vente une fois qu'elle passera à Payée (le filtre par défaut
+    # « En cours » l'exclurait alors).
+    all_index = receivables_page.statut_paiement_combo.findData(None)
+    receivables_page.statut_paiement_combo.setCurrentIndex(all_index)
     assert receivables_page.table.item(0, 6).text() == "Non payée"
 
     # Le paiement est enregistré « ailleurs » (ex. depuis SaleDetailDialog
