@@ -18,11 +18,60 @@ Règles fondamentales (cahier des charges, phase StockService) :
    seule transaction atomique : tout réussit, ou tout est annulé par un
    rollback (cf. §4 du cahier des charges de cette phase).
 
-3. **Stock jamais négatif, sans exception.** Avant toute écriture,
-   ``apply_movement`` calcule ``stock_après = stock_avant + quantité`` (la
-   quantité étant signée : positive pour une augmentation, négative pour
-   une diminution) et refuse l'opération si ce résultat est négatif — quel
-   que soit le rôle de l'utilisateur, aucun contournement n'est prévu.
+3. **Stock jamais négatif, sans exception, y compris sous accès concurrent.**
+   ``apply_movement`` n'affecte jamais ``Article.stock_actuel`` par une
+   simple affectation Python (``article.stock_actuel = ...``) calculée à
+   partir d'une valeur déjà chargée en mémoire : une telle lecture-puis-
+   écriture perdrait silencieusement une mise à jour si deux appels
+   concurrents (deux ventes validées presque simultanément sur le même
+   article, par exemple) lisaient tous les deux l'ancienne valeur avant que
+   l'un des deux n'écrive la sienne — le second écraserait alors le
+   résultat du premier, bien que les deux ``MouvementStock`` aient été
+   créés correctement (défaut constaté et corrigé dans ce lot : audit
+   global, finding P0-1).
+
+   À la place, la variation de stock est appliquée par une unique
+   instruction SQL ``UPDATE ... SET stock_actuel = stock_actuel + :delta
+   WHERE id = :id AND stock_actuel + :delta >= -ε`` (voir
+   ``_NEGATIVE_STOCK_EPSILON`` ci-dessous pour ε), avec ``RETURNING`` pour
+   récupérer en un seul aller-retour la valeur réellement appliquée. SQLite
+   n'autorise qu'un seul écrivain à la fois sur une base donnée : la
+   clause ``WHERE`` est donc évaluée par le moteur sur la valeur réellement
+   présente en base au moment de l'écriture, jamais sur une valeur Python
+   obsolète — deux appels concurrents sur le même article sont strictement
+   sérialisés par SQLite lui-même (le second attend la fin de la
+   transaction du premier, grâce au verrou d'écriture acquis dès la
+   première instruction d'écriture de cette transaction — voir
+   ``app/db/session.py`` : aucun ``isolation_level``/``busy_timeout``
+   personnalisé n'est nécessaire, le délai d'attente par défaut du module
+   ``sqlite3`` de Python, 5 secondes, suffit largement aux transactions
+   courtes de cette application). Si la clause ``WHERE`` ne trouve aucune
+   ligne correspondante, c'est que l'opération ferait réellement passer le
+   stock sous zéro (évalué sur la valeur à jour) : ``ValidationError`` est
+   alors levée, sans qu'aucune écriture n'ait eu lieu.
+
+   ``ε = _NEGATIVE_STOCK_EPSILON`` est une marge strictement défensive
+   (0,0005, soit la moitié de la plus petite quantité représentable à la
+   précision de ce projet, 3 décimales) contre un bruit flottant résiduel
+   **côté moteur SQLite** lors de l'évaluation de cette clause ``WHERE``
+   (SQLite stocke les colonnes ``Numeric`` en ``REAL``, IEEE 754 — vérifié
+   empiriquement sans aucune perte de précision observée sur plusieurs cas
+   limites, dont l'épuisement exact à zéro d'une quantité fractionnaire,
+   mais conservée par prudence). Elle ne sert jamais à arrondir une valeur
+   persistée ou affichée, et ne relâche jamais la règle métier elle-même
+   (toujours « jamais négatif », la marge ne pouvant absorber qu'une
+   fraction infime d'une unité, jamais une quantité réellement négative).
+
+   Le CMUP (règle 4 ci-dessous), lui, **n'est jamais calculé en SQL** : SQLite
+   ne fait pas d'arithmétique décimale exacte ni du ``ROUND_HALF_UP``. Les
+   valeurs ``stock_avant``/``cmup_avant`` nécessaires à son calcul sont
+   obtenues par le ``RETURNING`` de la même instruction (donc garanties à
+   jour, sans lecture Python préalable), puis le calcul proprement dit est
+   fait en ``Decimal`` pur (``compute_new_cmup``, inchangé) avant d'être
+   réécrit par une seconde instruction ``UPDATE``, elle-même protégée par
+   le même verrou d'écriture SQLite déjà acquis par la première instruction
+   de cette transaction — aucun autre écrivain ne peut s'intercaler entre
+   les deux.
 
 4. **CMUP recalculé uniquement sur une ENTRÉE.** Le Coût Moyen Unitaire
    Pondéré n'est recalculé que pour les mouvements de type ``ENTREE``, selon
@@ -46,6 +95,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Optional
 
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.models.catalog import Article
@@ -53,6 +103,9 @@ from app.models.enums import TypeMouvement
 from app.models.movement import MouvementStock
 from app.utils.exceptions import ValidationError
 from app.utils.money import round_money
+
+# Voir règle 3 de la docstring de module.
+_NEGATIVE_STOCK_EPSILON = Decimal("0.0005")
 
 
 class StockService:
@@ -90,25 +143,53 @@ class StockService:
         type de mouvement au-delà du recalcul du CMUP (règle 4 ci-dessus).
 
         Lève :class:`ValidationError` si l'opération ferait passer le stock
-        en négatif — avant toute écriture, sans exception de rôle.
+        en négatif — avant toute écriture, sans exception de rôle, et de
+        façon sûre sous accès concurrent (voir règle 3 de la docstring de
+        module : mise à jour SQL atomique et conditionnelle, jamais une
+        lecture-puis-écriture Python).
         """
-        stock_avant = article.stock_actuel
-        stock_apres = stock_avant + quantite_signee
+        if type_mouvement == TypeMouvement.ENTREE and quantite_signee <= 0:
+            # Erreur de saisie pure (aucun appelant réel n'envoie une
+            # quantité non positive pour une ENTREE) : autant la détecter
+            # avant de solliciter la base, elle n'a pas besoin d'être
+            # évaluée atomiquement.
+            raise ValidationError("Une entrée doit avoir une quantité strictement positive.")
 
-        if stock_apres < 0:
+        result = session.execute(
+            update(Article)
+            .where(
+                Article.id == article.id,
+                Article.stock_actuel + quantite_signee >= -_NEGATIVE_STOCK_EPSILON,
+            )
+            .values(stock_actuel=Article.stock_actuel + quantite_signee)
+            .returning(Article.stock_actuel, Article.cout_moyen_pondere)
+        )
+        row = result.first()
+        if row is None:
+            # La clause WHERE a bloqué l'écriture : l'opération ferait
+            # réellement passer le stock sous zéro, évalué sur la valeur à
+            # jour (jamais une valeur Python potentiellement obsolète) —
+            # relecture uniquement pour un message d'erreur exact, sans
+            # écriture.
+            stock_actuel_reel = session.scalar(select(Article.stock_actuel).where(Article.id == article.id))
+            stock_apres_refuse = stock_actuel_reel + quantite_signee
             raise ValidationError(
                 f"Cette opération est refusée : le stock de « {article.reference} » "
-                f"deviendrait négatif ({stock_apres})."
+                f"deviendrait négatif ({stock_apres_refuse})."
             )
+
+        stock_apres, cmup_avant = row
+        stock_avant = stock_apres - quantite_signee
 
         if type_mouvement == TypeMouvement.ENTREE:
-            if quantite_signee <= 0:
-                raise ValidationError("Une entrée doit avoir une quantité strictement positive.")
-            article.cout_moyen_pondere = self.compute_new_cmup(
-                stock_avant, article.cout_moyen_pondere, quantite_signee, cout_unitaire or Decimal("0")
-            )
+            nouveau_cmup = self.compute_new_cmup(stock_avant, cmup_avant, quantite_signee, cout_unitaire or Decimal("0"))
+            session.execute(update(Article).where(Article.id == article.id).values(cout_moyen_pondere=nouveau_cmup))
 
-        article.stock_actuel = stock_apres
+        # Resynchronise l'objet ORM déjà détenu par l'appelant (modifié
+        # jusqu'ici uniquement via des instructions SQL Core, jamais par
+        # affectation Python) — les appelants lisent ``article.stock_actuel``
+        # immédiatement après cet appel.
+        session.refresh(article)
 
         movement = MouvementStock(
             article_id=article.id,
