@@ -250,6 +250,161 @@ def test_export_to_writes_csv_file(qtbot, login_as, tmp_path) -> None:
     assert "Référence" in content
 
 
+# -- export Excel -------------------------------------------------------------
+
+
+def test_export_xlsx_button_disabled_without_permission(qtbot, login_as) -> None:
+    stack, _ = login_as("Consultation")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.export_xlsx_button.isEnabled() is False
+
+
+def test_export_xlsx_button_enabled_with_permission(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.export_xlsx_button.isEnabled() is True
+
+
+def test_export_xlsx_to_writes_valid_file_without_affecting_csv(qtbot, login_as, tmp_path) -> None:
+    import openpyxl
+
+    stack, _ = login_as("Administrateur")
+    _make_article(stack, stock_initial=Decimal("10"))
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    out_file = tmp_path / "export.xlsx"
+    result = page._export_xlsx_to(str(out_file))
+
+    assert result is True
+    assert out_file.exists()
+    workbook = openpyxl.load_workbook(out_file)
+    sheet = workbook.active
+    headers = [cell.value for cell in sheet[1]]
+    assert "Référence" in headers
+    assert "Valeur stock" in headers
+
+    # L'export CSV reste utilisable sans aucune interférence (deux exports
+    # indépendants, voir Lot 6).
+    out_csv = tmp_path / "export.csv"
+    assert page._export_to(str(out_csv)) is True
+    assert out_csv.exists()
+
+
+def test_export_xlsx_stores_amounts_and_quantities_as_real_numbers(qtbot, login_as, tmp_path) -> None:
+    import openpyxl
+
+    stack, _ = login_as("Administrateur")
+    _make_article(stack, stock_initial=Decimal("10.5"))
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    out_file = tmp_path / "export.xlsx"
+    page._export_xlsx_to(str(out_file))
+
+    workbook = openpyxl.load_workbook(out_file)
+    sheet = workbook.active
+    headers = [cell.value for cell in sheet[1]]
+    stock_col = headers.index("Stock actuel") + 1
+    cmup_col = headers.index("CMUP") + 1
+    valeur_col = headers.index("Valeur stock") + 1
+
+    assert float(sheet.cell(row=2, column=stock_col).value) == 10.5
+    assert sheet.cell(row=2, column=stock_col).data_type == "n"
+    assert sheet.cell(row=2, column=cmup_col).data_type == "n"
+    assert sheet.cell(row=2, column=valeur_col).data_type == "n"
+    # Montants : format de cellule Excel dédié (pas le format général) —
+    # devise par défaut XOF, sans décimales (voir money_decimal_places).
+    assert sheet.cell(row=2, column=cmup_col).number_format == "#,##0"
+    assert sheet.cell(row=2, column=valeur_col).number_format == "#,##0"
+
+
+def test_export_xlsx_headers_match_displayed_table(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    _make_article(stack, stock_initial=Decimal("10"))
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    displayed_headers = [page.table.horizontalHeaderItem(i).text() for i in range(page.table.columnCount())]
+    assert page._current_headers == displayed_headers
+    assert len(page._current_rows_raw) == page.table.rowCount()
+    assert len(page._current_column_formats) == len(displayed_headers)
+
+
+def test_export_xlsx_with_empty_report_still_succeeds(qtbot, login_as, tmp_path) -> None:
+    import openpyxl
+
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page.report_combo.setCurrentText("Stock faible")  # aucun article créé -> rapport vide
+
+    assert page.table.rowCount() == 0
+
+    out_file = tmp_path / "export.xlsx"
+    result = page._export_xlsx_to(str(out_file))
+
+    assert result is True
+    workbook = openpyxl.load_workbook(out_file)
+    sheet = workbook.active
+    assert sheet.max_row == 1  # en-têtes uniquement
+
+
+def test_export_xlsx_with_no_data_shows_information_message_and_writes_nothing(qtbot, login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._current_headers = []
+
+    out_file = tmp_path / "export.xlsx"
+    page._on_export_xlsx_clicked()
+
+    assert not out_file.exists()
+
+
+def test_export_xlsx_reports_errors_from_denied_permission(qtbot, login_as, tmp_path) -> None:
+    stack, _ = login_as("Consultation")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    out_file = tmp_path / "export.xlsx"
+    result = page._export_xlsx_to(str(out_file))
+
+    assert result is False
+    assert not out_file.exists()
+
+
+def test_movements_report_xlsx_export_has_money_format_on_cout_unitaire(qtbot, login_as, tmp_path) -> None:
+    import openpyxl
+
+    stack, _ = login_as("Administrateur")
+    supplier = stack.suppliers.create_supplier("F")
+    article = _make_article(stack, stock_initial=Decimal("0"))
+    entry = stack.entries.create_entry(supplier.id, date(2026, 1, 1), [EntreeLigneInput(article.id, Decimal("10"), Decimal("100"))])
+    stack.entries.validate_entry(entry.id)
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page.report_combo.setCurrentText("Mouvements")
+
+    out_file = tmp_path / "export.xlsx"
+    page._export_xlsx_to(str(out_file))
+
+    workbook = openpyxl.load_workbook(out_file)
+    sheet = workbook.active
+    headers = [cell.value for cell in sheet[1]]
+    cout_col = headers.index("Coût unitaire") + 1
+    assert sheet.cell(row=2, column=cout_col).data_type == "n"
+    assert float(sheet.cell(row=2, column=cout_col).value) == 100
+
+
 def test_reports_never_modify_stock(qtbot, login_as) -> None:
     stack, _ = login_as("Administrateur")
     article = _make_article(stack, stock_initial=Decimal("42"))

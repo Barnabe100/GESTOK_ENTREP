@@ -1,12 +1,9 @@
 """Export CSV générique, réutilisable par tous les rapports.
 
-Utilise uniquement le module standard ``csv`` : aucune dépendance lourde
-(openpyxl, reportlab, ...) n'est ajoutée pour cette phase (§8 du cahier des
-charges de la phase Rapports). Les exports Excel/PDF pourront être ajoutés
-ultérieurement en suivant la même interface (en-têtes + lignes déjà
-formatées en texte), sans modifier les rapports eux-mêmes — seule une
-nouvelle fonction ``export_rows_to_xlsx``/``export_rows_to_pdf`` serait à
-ajouter dans ce module.
+Utilise uniquement le module standard ``csv``. L'export Excel (voir
+``app.utils.xlsx_export.export_rows_to_xlsx``) suit la même convention
+qu'``export_document_to_pdf`` (``pdf_export.py``) : un module dédié par
+format de sortie, plutôt qu'un seul fichier regroupant tous les formats.
 """
 from __future__ import annotations
 

@@ -507,6 +507,49 @@ def test_report_export_writes_csv(login_as, tmp_path) -> None:
     assert "ART-1;10" in content
 
 
+# -- export Excel -------------------------------------------------------------
+
+
+def test_report_export_xlsx_permission_enforced(login_as, tmp_path) -> None:
+    stack, _ = login_as("Consultation")  # REPORT_VIEW mais pas REPORT_EXPORT
+
+    with pytest.raises(PermissionDeniedError):
+        stack.reports.export_to_xlsx(tmp_path / "out.xlsx", ["A"], [[1]])
+
+
+def test_report_export_writes_xlsx(login_as, tmp_path) -> None:
+    import openpyxl
+
+    stack, _ = login_as("Administrateur")
+    out_file = tmp_path / "export.xlsx"
+
+    stack.reports.export_to_xlsx(
+        out_file, ["Référence", "Stock"], [["ART-1", Decimal("10")], ["ART-2", Decimal("5")]]
+    )
+
+    assert out_file.exists()
+    workbook = openpyxl.load_workbook(out_file)
+    sheet = workbook.active
+    assert [cell.value for cell in sheet[1]] == ["Référence", "Stock"]
+    assert sheet["B2"].value == 10
+    assert sheet["B2"].data_type == "n"
+
+
+def test_report_export_xlsx_applies_column_formats(login_as, tmp_path) -> None:
+    import openpyxl
+
+    stack, _ = login_as("Administrateur")
+    out_file = tmp_path / "export.xlsx"
+
+    stack.reports.export_to_xlsx(
+        out_file, ["Désignation", "Montant"], [["Article", Decimal("1500")]], column_formats=[None, "#,##0.00"]
+    )
+
+    workbook = openpyxl.load_workbook(out_file)
+    sheet = workbook.active
+    assert sheet["B2"].number_format == "#,##0.00"
+
+
 # -- lecture seule ----------------------------------------------------------------------
 
 

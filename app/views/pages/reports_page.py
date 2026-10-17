@@ -14,9 +14,20 @@ champs pertinents pour le rapport choisi sont visibles, et un tableau dont
 les colonnes sont reconstruites à chaque rafraîchissement — plutôt que neuf
 pages quasi identiques, pour rester simple à maintenir (§7 : « interface
 fluide et lisible », pas de graphiques dans cette phase).
+
+Export : deux boutons indépendants, CSV (``_export_to``, texte déjà formaté
+pour l'affichage — ``ReportService.export_to_csv``) et Excel
+(``_export_xlsx_to``, valeurs réellement typées pour des montants/quantités
+triables et calculables dans Excel — ``ReportService.export_to_xlsx``), tous
+deux soumis à la permission ``REPORT_EXPORT``. Chaque ``_refresh_*`` alimente
+donc ``_set_table`` avec, en plus des lignes déjà formatées en texte pour le
+tableau Qt et le CSV, les mêmes lignes en valeurs typées (``_current_rows_raw``)
+et les formats de cellule associés (``_current_column_formats``) pour l'Excel.
 """
 from __future__ import annotations
 
+import re
+import unicodedata
 from datetime import date
 from decimal import Decimal
 from typing import Optional
@@ -46,7 +57,7 @@ from app.services.exit_reasons.exit_reason_service import ExitReasonService
 from app.services.reports.report_service import ReportService
 from app.services.settings.company_settings_service import get_effective_currency
 from app.utils.exceptions import AppError, ValidationError
-from app.utils.money import format_money
+from app.utils.money import format_money, money_decimal_places
 from app.utils.quantity import format_quantity
 from app.views.optional_date_edit import OptionalDateEdit
 
@@ -72,6 +83,20 @@ _STATUT_OPERATION_LABELS = {
 _STATUT_INVENTAIRE_LABELS = {StatutInventaire.BROUILLON: "Brouillon", StatutInventaire.VALIDE: "Validé"}
 
 
+def _money_number_format(currency_code: str) -> str:
+    """Format de cellule Excel pour un montant dans cette devise — même
+    convention de décimales que :func:`format_money` (voir
+    :func:`app.utils.money.money_decimal_places`)."""
+    return "#,##0" if money_decimal_places(currency_code) == 0 else "#,##0.00"
+
+
+def _slugify_report_name(report_name: str) -> str:
+    """Nom de fichier par défaut lisible (sans accent ni espace) pour les
+    boîtes de dialogue d'export — ex. « État du stock » -> « etat_du_stock »."""
+    ascii_text = unicodedata.normalize("NFKD", report_name).encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"[^a-z0-9]+", "_", ascii_text.lower()).strip("_")
+
+
 class ReportsPage(QWidget):
     def __init__(
         self,
@@ -92,6 +117,8 @@ class ReportsPage(QWidget):
 
         self._current_headers: list[str] = []
         self._current_rows_as_text: list[list[str]] = []
+        self._current_rows_raw: list[list[object]] = []
+        self._current_column_formats: list[Optional[str]] = []
 
         layout = QVBoxLayout(self)
 
@@ -115,6 +142,9 @@ class ReportsPage(QWidget):
         self.export_button = QPushButton("Exporter CSV", self)
         self.export_button.setEnabled(self._permissions.has_permission("REPORT_EXPORT"))
         button_row.addWidget(self.export_button)
+        self.export_xlsx_button = QPushButton("Exporter Excel", self)
+        self.export_xlsx_button.setEnabled(self._permissions.has_permission("REPORT_EXPORT"))
+        button_row.addWidget(self.export_xlsx_button)
         button_row.addStretch(1)
         layout.addLayout(button_row)
 
@@ -132,6 +162,7 @@ class ReportsPage(QWidget):
         self.refresh_button.clicked.connect(self.refresh)
         self.reset_button.clicked.connect(self._on_reset_filters_clicked)
         self.export_button.clicked.connect(self._on_export_clicked)
+        self.export_xlsx_button.clicked.connect(self._on_export_xlsx_clicked)
 
         self._reload_category_combo()
         self._reload_article_combo()
@@ -305,9 +336,17 @@ class ReportsPage(QWidget):
             self._current_headers, self._current_rows_as_text = [], []
             QMessageBox.warning(self, "Rapport indisponible", str(exc))
 
-    def _set_table(self, headers: list[str], rows: list[list[str]]) -> None:
+    def _set_table(
+        self,
+        headers: list[str],
+        rows: list[list[str]],
+        rows_raw: Optional[list[list[object]]] = None,
+        column_formats: Optional[list[Optional[str]]] = None,
+    ) -> None:
         self._current_headers = headers
         self._current_rows_as_text = rows
+        self._current_rows_raw = rows_raw if rows_raw is not None else rows
+        self._current_column_formats = column_formats if column_formats is not None else [None] * len(headers)
         self.table.setColumnCount(len(headers))
         self.table.setHorizontalHeaderLabels(headers)
         self.table.setRowCount(len(rows))
@@ -323,21 +362,33 @@ class ReportsPage(QWidget):
         )
         headers = ["Référence", "Désignation", "Catégorie", "Fournisseur", "Unité",
                    "Stock actuel", "Stock min", "Stock max", "CMUP", "Valeur stock", "Statut"]
-        self._set_table(headers, [
-            [r.reference, r.designation, r.category_nom, r.fournisseur_nom or "—", r.unite,
-             format_quantity(r.stock_actuel), format_quantity(r.stock_min),
-             format_quantity(r.stock_max) if r.stock_max is not None else "—",
-             format_money(r.cout_moyen_pondere, self._currency_code),
-             format_money(r.valeur_stock, self._currency_code),
-             "Actif" if r.actif else "Inactif"]
-            for r in rows
-        ])
+        money_format = _money_number_format(self._currency_code)
+        self._set_table(
+            headers,
+            [
+                [r.reference, r.designation, r.category_nom, r.fournisseur_nom or "—", r.unite,
+                 format_quantity(r.stock_actuel), format_quantity(r.stock_min),
+                 format_quantity(r.stock_max) if r.stock_max is not None else "—",
+                 format_money(r.cout_moyen_pondere, self._currency_code),
+                 format_money(r.valeur_stock, self._currency_code),
+                 "Actif" if r.actif else "Inactif"]
+                for r in rows
+            ],
+            [
+                [r.reference, r.designation, r.category_nom, r.fournisseur_nom or "—", r.unite,
+                 r.stock_actuel, r.stock_min, r.stock_max, r.cout_moyen_pondere, r.valeur_stock,
+                 "Actif" if r.actif else "Inactif"]
+                for r in rows
+            ],
+            [None, None, None, None, None, None, None, None, money_format, money_format, None],
+        )
         self.summary_label.setText(f"{len(rows)} article(s)")
 
     def _refresh_low_stock(self) -> None:
         rows = self._report_service.get_low_stock(
             search=self.search_edit.text(), category_id=self.category_combo.currentData()
         )
+        money_format = _money_number_format(self._currency_code)
         self._set_table(
             ["Référence", "Désignation", "Stock actuel", "Stock min", "CMUP", "Valeur stock"],
             [
@@ -346,6 +397,11 @@ class ReportsPage(QWidget):
                  format_money(r.valeur_stock, self._currency_code)]
                 for r in rows
             ],
+            [
+                [r.reference, r.designation, r.stock_actuel, r.stock_min, r.cout_moyen_pondere, r.valeur_stock]
+                for r in rows
+            ],
+            [None, None, None, None, money_format, money_format],
         )
         self.summary_label.setText(f"{len(rows)} article(s) en stock faible")
 
@@ -353,6 +409,7 @@ class ReportsPage(QWidget):
         rows = self._report_service.get_out_of_stock(
             search=self.search_edit.text(), category_id=self.category_combo.currentData()
         )
+        money_format = _money_number_format(self._currency_code)
         self._set_table(
             ["Référence", "Désignation", "Stock actuel", "Stock min", "CMUP", "Valeur stock"],
             [
@@ -361,6 +418,11 @@ class ReportsPage(QWidget):
                  format_money(r.valeur_stock, self._currency_code)]
                 for r in rows
             ],
+            [
+                [r.reference, r.designation, r.stock_actuel, r.stock_min, r.cout_moyen_pondere, r.valeur_stock]
+                for r in rows
+            ],
+            [None, None, None, None, money_format, money_format],
         )
         self.summary_label.setText(f"{len(rows)} article(s) en rupture")
 
@@ -370,6 +432,7 @@ class ReportsPage(QWidget):
             category_id=self.category_combo.currentData(),
             include_inactive=self.include_inactive_checkbox.isChecked(),
         )
+        money_format = _money_number_format(self._currency_code)
         self._set_table(
             ["Référence", "Désignation", "Catégorie", "Stock actuel", "CMUP", "Valeur stock"],
             [
@@ -378,6 +441,11 @@ class ReportsPage(QWidget):
                  format_money(r.valeur_stock, self._currency_code)]
                 for r in report.rows
             ],
+            [
+                [r.reference, r.designation, r.category_nom, r.stock_actuel, r.cout_moyen_pondere, r.valeur_stock]
+                for r in report.rows
+            ],
+            [None, None, None, None, money_format, money_format],
         )
         self.summary_label.setText(f"Valeur totale du stock : {format_money(report.total, self._currency_code)}")
 
@@ -388,6 +456,7 @@ class ReportsPage(QWidget):
             article_id=self.article_combo.currentData(),
             type_mouvement=self.type_mouvement_combo.currentData(),
         )
+        money_format = _money_number_format(self._currency_code)
         self._set_table(
             ["Date/heure", "Article", "Type", "Quantité", "Stock avant", "Stock après",
              "Coût unitaire", "Utilisateur", "Commentaire"],
@@ -398,12 +467,19 @@ class ReportsPage(QWidget):
                  m.username, m.commentaire or "—"]
                 for m in movements
             ],
+            [
+                [m.date_heure.strftime("%Y-%m-%d %H:%M"), m.article_reference, m.type.value,
+                 m.quantite, m.stock_avant, m.stock_apres, m.cout_unitaire, m.username, m.commentaire or "—"]
+                for m in movements
+            ],
+            [None, None, None, None, None, None, money_format, None, None],
         )
         self.summary_label.setText(f"{len(movements)} mouvement(s)")
 
     def _refresh_entries(self) -> None:
         date_from, date_to = self._read_period()
         entries = self._report_service.get_entries(date_from=date_from, date_to=date_to, statut=self.statut_combo.currentData())
+        money_format = _money_number_format(self._currency_code)
         self._set_table(
             ["Numéro", "Date", "Fournisseur", "Utilisateur", "Statut", "Montant", "Lignes"],
             [
@@ -412,6 +488,12 @@ class ReportsPage(QWidget):
                  format_money(e.total, self._currency_code), str(len(e.lignes))]
                 for e in entries
             ],
+            [
+                [e.numero, str(e.date), e.fournisseur_nom, e.username,
+                 _STATUT_OPERATION_LABELS.get(e.statut, str(e.statut)), e.total, len(e.lignes)]
+                for e in entries
+            ],
+            [None, None, None, None, None, money_format, None],
         )
         self.summary_label.setText(f"{len(entries)} entrée(s)")
 
@@ -421,6 +503,7 @@ class ReportsPage(QWidget):
             date_from=date_from, date_to=date_to,
             motif_id=self.motif_combo.currentData(), statut=self.statut_combo.currentData(),
         )
+        money_format = _money_number_format(self._currency_code)
         self._set_table(
             ["Numéro", "Date", "Motif", "Utilisateur", "Statut", "Montant", "Lignes"],
             [
@@ -429,12 +512,19 @@ class ReportsPage(QWidget):
                  format_money(s.total, self._currency_code), str(len(s.lignes))]
                 for s in exits
             ],
+            [
+                [s.numero, str(s.date), s.motif_libelle, s.username,
+                 _STATUT_OPERATION_LABELS.get(s.statut, str(s.statut)), s.total, len(s.lignes)]
+                for s in exits
+            ],
+            [None, None, None, None, None, money_format, None],
         )
         self.summary_label.setText(f"{len(exits)} sortie(s)")
 
     def _refresh_sales(self) -> None:
         date_from, date_to = self._read_period()
         sales = self._report_service.get_sales(date_from=date_from, date_to=date_to, statut=self.statut_combo.currentData())
+        money_format = _money_number_format(self._currency_code)
         self._set_table(
             ["Numéro", "Date", "Utilisateur", "Statut", "Montant", "Lignes"],
             [
@@ -442,6 +532,12 @@ class ReportsPage(QWidget):
                  format_money(v.total, self._currency_code), str(len(v.lignes))]
                 for v in sales
             ],
+            [
+                [v.numero, str(v.date), v.username, _STATUT_OPERATION_LABELS.get(v.statut, str(v.statut)),
+                 v.total, len(v.lignes)]
+                for v in sales
+            ],
+            [None, None, None, None, money_format, None],
         )
         total_ca = sum((v.total for v in sales if v.statut == StatutOperation.VALIDEE), Decimal("0"))
         self.summary_label.setText(
@@ -458,6 +554,11 @@ class ReportsPage(QWidget):
                 [i.numero, str(i.date), i.username, _STATUT_INVENTAIRE_LABELS.get(i.statut, str(i.statut)),
                  str(i.nombre_lignes), str(i.nombre_ecarts_positifs), str(i.nombre_ecarts_negatifs),
                  format_quantity(i.quantite_totale_ajustee)]
+                for i in inventories
+            ],
+            [
+                [i.numero, str(i.date), i.username, _STATUT_INVENTAIRE_LABELS.get(i.statut, str(i.statut)),
+                 i.nombre_lignes, i.nombre_ecarts_positifs, i.nombre_ecarts_negatifs, i.quantite_totale_ajustee]
                 for i in inventories
             ],
         )
@@ -480,6 +581,32 @@ class ReportsPage(QWidget):
         try:
             self._report_service.export_to_csv(file_path, self._current_headers, self._current_rows_as_text)
             QMessageBox.information(self, "Export CSV", "Le rapport a été exporté avec succès.")
+        except AppError as exc:
+            QMessageBox.warning(self, "Export refusé", str(exc))
+            return False
+        return True
+
+    # -- export Excel -------------------------------------------------------------
+
+    def _on_export_xlsx_clicked(self) -> None:
+        if not self._current_headers:
+            QMessageBox.information(self, "Export Excel", "Aucune donnée à exporter.")
+            return
+        default_name = f"{_slugify_report_name(self.report_combo.currentText())}_{date.today().isoformat()}.xlsx"
+        file_path, _filter = QFileDialog.getSaveFileName(self, "Exporter le rapport", default_name, "Excel (*.xlsx)")
+        if not file_path:
+            return
+        self._export_xlsx_to(file_path)
+
+    def _export_xlsx_to(self, file_path: str) -> bool:
+        """Isolé de ``_on_export_xlsx_clicked`` pour rester testable sans
+        boîte de dialogue modale de sélection de fichier (même principe que
+        ``_export_to`` pour le CSV)."""
+        try:
+            self._report_service.export_to_xlsx(
+                file_path, self._current_headers, self._current_rows_raw, self._current_column_formats
+            )
+            QMessageBox.information(self, "Export Excel", "Le rapport a été exporté avec succès.")
         except AppError as exc:
             QMessageBox.warning(self, "Export refusé", str(exc))
             return False

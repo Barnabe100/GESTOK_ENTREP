@@ -60,6 +60,7 @@ from app.services.sales.sale_service import VenteSummary
 from app.services.stock.movement_summary import MouvementSummary
 from app.utils.csv_export import export_rows_to_csv
 from app.utils.money import round_money
+from app.utils.xlsx_export import CellValue, export_rows_to_xlsx
 
 
 @dataclass(frozen=True)
@@ -290,3 +291,18 @@ class ReportService:
         consulter les rapports sans pouvoir les exporter (ex. Consultation)."""
         self._permissions.require_permission("REPORT_EXPORT")
         export_rows_to_csv(file_path, headers, rows)
+
+    def export_to_xlsx(
+        self,
+        file_path: Union[str, Path],
+        headers: Sequence[str],
+        rows: Sequence[Sequence[CellValue]],
+        column_formats: Optional[Sequence[Optional[str]]] = None,
+    ) -> None:
+        """Export Excel (.xlsx) d'un rapport déjà construit — complément
+        d'``export_to_csv`` sous la même permission ``REPORT_EXPORT``.
+        Contrairement à ``export_to_csv``, ``rows`` contient ici des valeurs
+        réellement typées (pas du texte déjà formaté) pour que les
+        montants/quantités restent exploitables dans Excel (tri, calculs)."""
+        self._permissions.require_permission("REPORT_EXPORT")
+        export_rows_to_xlsx(file_path, headers, rows, column_formats)

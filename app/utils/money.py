@@ -25,6 +25,14 @@ def round_money(amount: Decimal) -> Decimal:
     return amount.quantize(CENTS, rounding=ROUND_HALF_UP)
 
 
+def money_decimal_places(currency_code: str) -> int:
+    """Nombre de décimales d'affichage pour cette devise (0 pour XOF/XAF, 2
+    sinon) — même convention que :func:`format_money`, réutilisée pour
+    construire les formats de cellule Excel des montants (voir
+    ``app.utils.xlsx_export``)."""
+    return 0 if currency_code.upper() in _ZERO_DECIMAL_CURRENCIES else 2
+
+
 def format_money(amount: Decimal, currency_code: str) -> str:
     """Formate un montant pour l'affichage, selon les conventions de la devise.
 

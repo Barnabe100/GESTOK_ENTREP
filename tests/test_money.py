@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from app.utils.money import format_money, round_money
+from app.utils.money import format_money, money_decimal_places, round_money
 
 
 def test_round_money_applies_half_up() -> None:
@@ -23,3 +23,15 @@ def test_format_money_eur_keeps_two_decimals() -> None:
 
 def test_format_money_unknown_currency_uses_code_as_symbol() -> None:
     assert format_money(Decimal("10.00"), "GBP") == "10.00 GBP"
+
+
+def test_money_decimal_places_zero_decimal_currencies() -> None:
+    assert money_decimal_places("XOF") == 0
+    assert money_decimal_places("XAF") == 0
+    assert money_decimal_places("xof") == 0  # insensible à la casse, comme format_money
+
+
+def test_money_decimal_places_other_currencies() -> None:
+    assert money_decimal_places("EUR") == 2
+    assert money_decimal_places("USD") == 2
+    assert money_decimal_places("GBP") == 2
