@@ -40,6 +40,40 @@ class TypeMouvement(str, enum.Enum):
     VENTE = "VENTE"
     AJUSTEMENT = "AJUSTEMENT"
     ANNULATION = "ANNULATION"
+    # Module Locations : LOCATION_SORTIE au départ (quantité négative),
+    # LOCATION_RETOUR à chaque retour en bon état remis en stock (quantité
+    # positive) — jamais pour une quantité immobilisée, qui ne redevient
+    # jamais disponible (voir app.models.rental). Ni l'un ni l'autre ne
+    # recalcule le CMUP (seule ENTREE le fait, règle StockService n°4).
+    LOCATION_SORTIE = "LOCATION_SORTIE"
+    LOCATION_RETOUR = "LOCATION_RETOUR"
+
+
+class ModeGestionArticle(str, enum.Enum):
+    """Mode de gestion d'un article (voir app.models.catalog.Article) : VENTE
+    (par défaut, vendu normalement via le module Ventes) ou LOCATION (loué
+    via le module Locations) — mutuellement exclusifs (décision métier
+    explicite du lot Locations) : un article en mode LOCATION ne peut pas
+    être vendu via SaleService tant qu'il n'a pas été rebasculé en VENTE."""
+
+    VENTE = "VENTE"
+    LOCATION = "LOCATION"
+
+
+class StatutLocation(str, enum.Enum):
+    """Locations : cycle de vie BROUILLON -> CONFIRMEE -> EN_COURS ->
+    RETOURNEE, ou BROUILLON/CONFIRMEE -> ANNULEE (jamais après le départ —
+    décision métier explicite de ce lot : une fois le stock physiquement
+    sorti, seule une suite de retours peut clore la location). Pas de statut
+    distinct pour un retour partiel : une location reste EN_COURS jusqu'à ce
+    que toutes ses lignes soient intégralement retournées (bon état +
+    immobilisée), voir LocationService."""
+
+    BROUILLON = "BROUILLON"
+    CONFIRMEE = "CONFIRMEE"
+    EN_COURS = "EN_COURS"
+    RETOURNEE = "RETOURNEE"
+    ANNULEE = "ANNULEE"
 
 
 class ResultatAudit(str, enum.Enum):

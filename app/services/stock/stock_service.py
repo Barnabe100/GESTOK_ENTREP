@@ -4,7 +4,8 @@ Règles fondamentales (cahier des charges, phase StockService) :
 
 1. **Point de passage unique.** Toute variation du stock d'un article —
    quelle qu'en soit l'origine (entrée, sortie, vente, ajustement
-   d'inventaire, annulation) — doit passer par :meth:`StockService.apply_movement`.
+   d'inventaire, annulation, départ/retour de location) — doit passer par
+   :meth:`StockService.apply_movement`.
    Aucune vue, aucun repository, aucun autre service ne doit écrire
    directement dans ``Article.stock_actuel``.
 
@@ -77,6 +78,7 @@ class StockService:
         sortie_ligne_id: Optional[int] = None,
         vente_ligne_id: Optional[int] = None,
         inventaire_ligne_id: Optional[int] = None,
+        location_ligne_id: Optional[int] = None,
         mouvement_origine_id: Optional[int] = None,
     ) -> MouvementStock:
         """Applique un mouvement de stock sur ``article`` et l'enregistre.
@@ -119,6 +121,7 @@ class StockService:
             sortie_ligne_id=sortie_ligne_id,
             vente_ligne_id=vente_ligne_id,
             inventaire_ligne_id=inventaire_ligne_id,
+            location_ligne_id=location_ligne_id,
             mouvement_origine_id=mouvement_origine_id,
             user_id=user_id,
             commentaire=commentaire,

@@ -7,7 +7,7 @@ relation (``configure_mappers()``).
 from app.models.base import Base
 from app.models.rbac import Permission, Role, role_permissions, user_roles
 from app.models.user import User
-from app.models.catalog import Article, Category, ExitReason, Supplier
+from app.models.catalog import Article, ArticleModeGestionChangement, Category, ExitReason, Supplier
 from app.models.client import Client
 from app.models.documents import (
     Entree,
@@ -24,6 +24,7 @@ from app.models.audit import AuditLog
 from app.models.parameter import Parametre
 from app.models.license import Licence
 from app.models.account_recovery import AdminRecoveryCode
+from app.models.rental import Location, LocationLigne, LocationPaiement, LocationRetour
 
 __all__ = [
     "Base",
@@ -37,6 +38,7 @@ __all__ = [
     "ExitReason",
     "Client",
     "Article",
+    "ArticleModeGestionChangement",
     "Entree",
     "EntreeLigne",
     "Sortie",
@@ -51,4 +53,8 @@ __all__ = [
     "Parametre",
     "Licence",
     "AdminRecoveryCode",
+    "Location",
+    "LocationLigne",
+    "LocationRetour",
+    "LocationPaiement",
 ]

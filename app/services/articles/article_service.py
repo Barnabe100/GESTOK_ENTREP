@@ -31,8 +31,9 @@ from sqlalchemy.exc import IntegrityError
 from app.config.settings import Settings
 from app.db.session import session_scope
 from app.models.audit import AuditLog
-from app.models.catalog import Article
-from app.models.enums import ResultatAudit, StatutActifInactif, TypeMouvement
+from app.models.catalog import Article, ArticleModeGestionChangement
+from app.models.enums import ModeGestionArticle, ResultatAudit, StatutActifInactif, TypeMouvement
+from app.models.rental import LocationLigne
 from app.repositories.article_repository import ArticleRepository
 from app.repositories.category_repository import CategoryRepository
 from app.repositories.supplier_repository import SupplierRepository
@@ -80,6 +81,11 @@ class ArticleSummary:
     actif: bool
     date_creation: datetime
     date_modification: datetime
+    # Module Locations (lot dédié) : VENTE pour tout article préexistant à ce
+    # lot (défaut inchangé). tarif_location_jour reste None tant que l'article
+    # n'a jamais été configuré pour la location.
+    mode_gestion: ModeGestionArticle = ModeGestionArticle.VENTE
+    tarif_location_jour: Optional[Decimal] = None
 
     @property
     def en_rupture(self) -> bool:
@@ -116,6 +122,8 @@ class ArticleSummary:
             actif=article.statut == StatutActifInactif.ACTIF,
             date_creation=article.date_creation,
             date_modification=article.date_modification,
+            mode_gestion=article.mode_gestion,
+            tarif_location_jour=article.tarif_location_jour,
         )
 
 
@@ -143,6 +151,12 @@ def _validate_money(value: Decimal, field_label: str) -> Decimal:
     if value < 0:
         raise ValidationError(f"Le champ « {field_label} » ne peut pas être négatif.")
     return value
+
+
+def _validate_optional_money(value: Optional[Decimal], field_label: str) -> Optional[Decimal]:
+    if value is None:
+        return None
+    return _validate_money(value, field_label)
 
 
 def _validate_quantity(value: Decimal, field_label: str) -> Decimal:
@@ -233,12 +247,16 @@ class ArticleService:
         description: Optional[str] = None,
         code_barres: Optional[str] = None,
         stock_initial: Decimal = Decimal("0"),
+        tarif_location_jour: Optional[Decimal] = None,
     ) -> ArticleSummary:
         """Crée un article. ``stock_initial`` n'est pas une écriture directe du
         stock : s'il est positif, un mouvement d'ajustement traçable est créé
         dans la même transaction (voir §9 du cahier des charges de cette
         phase) et le CMUP initial est fixé au prix d'achat renseigné, en
-        l'absence de tout historique."""
+        l'absence de tout historique. ``mode_gestion`` démarre toujours à
+        VENTE (voir ``switch_mode_gestion`` pour la bascule vers LOCATION,
+        lot dédié) ; ``tarif_location_jour`` peut néanmoins être pré-rempli
+        dès la création, sans effet tant que l'article reste en mode VENTE."""
         self._permissions.require_permission("ARTICLE_CREATE")
 
         reference = _validate_text(reference, "référence", MAX_REFERENCE_LENGTH)
@@ -254,6 +272,7 @@ class ArticleService:
         description = _validate_optional_text(description, "description", MAX_DESCRIPTION_LENGTH)
         code_barres = _validate_optional_text(code_barres, "code-barres", MAX_BARCODE_LENGTH)
         stock_initial = _validate_quantity(stock_initial, "stock initial")
+        tarif_location_jour = _validate_optional_money(tarif_location_jour, "tarif de location journalier")
 
         acting_user_id = self._acting_user_id()
 
@@ -303,6 +322,7 @@ class ArticleService:
                 description=description,
                 code_barres=code_barres,
                 statut=StatutActifInactif.ACTIF,
+                tarif_location_jour=tarif_location_jour,
             )
             session.add(article)
             try:
@@ -345,11 +365,14 @@ class ArticleService:
         emplacement=_UNSET,
         description=_UNSET,
         code_barres=_UNSET,
+        tarif_location_jour=_UNSET,
     ) -> ArticleSummary:
         """Modifie un article. N'accepte volontairement aucun paramètre
         ``stock_actuel`` ni ``cout_moyen_pondere`` : ces valeurs restent
-        pilotées exclusivement par les opérations de stock. Les champs
-        optionnels non fournis conservent leur valeur actuelle."""
+        pilotées exclusivement par les opérations de stock, ni aucun
+        paramètre ``mode_gestion`` (voir ``switch_mode_gestion``, auditée et
+        historisée séparément). Les champs optionnels non fournis conservent
+        leur valeur actuelle."""
         self._permissions.require_permission("ARTICLE_UPDATE")
 
         reference = _validate_text(reference, "référence", MAX_REFERENCE_LENGTH)
@@ -366,6 +389,8 @@ class ArticleService:
             description = _validate_optional_text(description, "description", MAX_DESCRIPTION_LENGTH)
         if code_barres is not _UNSET:
             code_barres = _validate_optional_text(code_barres, "code-barres", MAX_BARCODE_LENGTH)
+        if tarif_location_jour is not _UNSET:
+            tarif_location_jour = _validate_optional_money(tarif_location_jour, "tarif de location journalier")
 
         with session_scope(self._settings) as session:
             article_repo = ArticleRepository(session)
@@ -435,6 +460,8 @@ class ArticleService:
                 article.description = description
             if code_barres is not _UNSET:
                 article.code_barres = code_barres
+            if tarif_location_jour is not _UNSET:
+                article.tarif_location_jour = tarif_location_jour
 
             try:
                 session.flush()
@@ -455,6 +482,65 @@ class ArticleService:
         """Désactivation (jamais de suppression physique)."""
         self._permissions.require_permission("ARTICLE_DEACTIVATE")
         return self._set_status(article_id, StatutActifInactif.INACTIF, "ARTICLE_DEACTIVATE")
+
+    def switch_mode_gestion(self, article_id: int, nouveau_mode: ModeGestionArticle) -> ArticleSummary:
+        """Bascule ``Article.mode_gestion`` entre VENTE et LOCATION —
+        mutuellement exclusifs (décision métier du lot Locations), jamais
+        via ``update_article`` : cette action est historisée séparément dans
+        ``ArticleModeGestionChangement`` (jamais modifiée ni supprimée
+        ensuite). Refuse de rebasculer un article de LOCATION vers VENTE
+        tant qu'il reste concerné par une ligne de location physiquement en
+        cours (``qte_en_location`` non nulle) : éviterait une incohérence
+        (article de nouveau vendable alors qu'il est encore physiquement
+        loué). ``qte_reservee`` n'entre volontairement pas en jeu ici : elle
+        est purement informative avant le départ (voir
+        ``app.models.rental``), sans effet physique — un brouillon ou une
+        confirmation n'empêche donc jamais cette bascule, à l'identique
+        d'une vente en brouillon qui ne bloque rien non plus."""
+        self._permissions.require_permission("ARTICLE_UPDATE")
+        acting_user_id = self._acting_user_id()
+
+        with session_scope(self._settings) as session:
+            repo = ArticleRepository(session)
+            article = repo.get_by_id(article_id)
+            if article is None:
+                raise NotFoundError(f"Article {article_id} introuvable.")
+
+            ancien_mode = article.mode_gestion
+            if ancien_mode == nouveau_mode:
+                raise ValidationError(f"L'article est déjà en mode « {nouveau_mode.value} ».")
+
+            if ancien_mode == ModeGestionArticle.LOCATION:
+                has_active_line = (
+                    session.query(LocationLigne)
+                    .filter(LocationLigne.article_id == article_id, LocationLigne.qte_en_location > 0)
+                    .first()
+                    is not None
+                )
+                if has_active_line:
+                    raise ConflictError(
+                        "Impossible de rebasculer cet article en mode Vente : il est concerné "
+                        "par une location physiquement en cours."
+                    )
+
+            article.mode_gestion = nouveau_mode
+            session.add(
+                ArticleModeGestionChangement(
+                    article_id=article.id,
+                    ancien_mode=ancien_mode,
+                    nouveau_mode=nouveau_mode,
+                    user_id=acting_user_id,
+                )
+            )
+            session.flush()
+
+            self._audit(session, "ARTICLE_MODE_GESTION_CHANGE", article.id)
+            summary = ArticleSummary.from_model(article)
+
+        logger.info(
+            "Mode de gestion changé : article id=%s, %s -> %s", article_id, ancien_mode.value, nouveau_mode.value
+        )
+        return summary
 
     def _set_status(self, article_id: int, statut: StatutActifInactif, action: str) -> ArticleSummary:
         with session_scope(self._settings) as session:

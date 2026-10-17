@@ -5,15 +5,17 @@ from app.views.main_window import MainWindow
 EXPECTED_MODULES_BY_ROLE = {
     "Administrateur": {
         "Dashboard", "Articles", "Catégories", "Fournisseurs", "Motifs de sortie", "Entrées",
-        "Sorties", "Clients", "Ventes", "Créances", "Mouvements", "Inventaires", "Rapports",
+        "Sorties", "Clients", "Ventes", "Créances", "Locations", "Mouvements", "Inventaires", "Rapports",
         "Utilisateurs", "Rôles", "Paramètres", "Sauvegardes", "Audit", "Licences",
     },
     "Gestionnaire de stock": {
         "Dashboard", "Articles", "Catégories", "Fournisseurs", "Entrées", "Sorties",
-        "Clients", "Mouvements", "Inventaires", "Rapports",
+        "Clients", "Locations", "Mouvements", "Inventaires", "Rapports",
     },
-    "Vendeur": {"Dashboard", "Articles", "Clients", "Ventes", "Créances"},
-    "Consultation": {"Dashboard", "Articles", "Catégories", "Fournisseurs", "Mouvements", "Rapports"},
+    "Vendeur": {"Dashboard", "Articles", "Clients", "Ventes", "Créances", "Locations"},
+    "Consultation": {
+        "Dashboard", "Articles", "Catégories", "Fournisseurs", "Locations", "Mouvements", "Rapports"
+    },
 }
 
 

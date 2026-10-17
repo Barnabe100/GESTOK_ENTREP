@@ -90,6 +90,18 @@ class ArticleFormDialog(QDialog):
         self.prix_vente_edit.setText(_as_text(initial.get("prix_vente"), default="0"))
         form.addRow(required_label("Prix de vente"), self.prix_vente_edit)
 
+        # Module Locations (lot dédié) : tarif catalogue journalier de
+        # location, sans objet tant que l'article reste en mode Vente (voir
+        # ArticlesPage, bouton « Mode de gestion… », pour la bascule
+        # elle-même). Toujours affiché pour rester modifiable à l'avance,
+        # avant même de basculer l'article en mode Location.
+        self.tarif_location_jour_edit = QLineEdit(self)
+        self.tarif_location_jour_edit.setText(
+            _as_text(initial.get("tarif_location_jour")) if initial.get("tarif_location_jour") is not None else ""
+        )
+        self.tarif_location_jour_edit.setPlaceholderText("Sans objet en mode Vente")
+        form.addRow("Tarif de location (par jour)", self.tarif_location_jour_edit)
+
         self.stock_min_edit = QLineEdit(self)
         self.stock_min_edit.setText(
             format_quantity(initial["stock_min"]) if initial.get("stock_min") is not None else "0"
@@ -178,6 +190,7 @@ class ArticleFormDialog(QDialog):
             "code_barres": self.code_barres_edit.text(),
             "description": self.description_edit.toPlainText(),
             "stock_initial": self.stock_initial_edit.text() if self.stock_initial_edit else "0",
+            "tarif_location_jour": self.tarif_location_jour_edit.text(),
         }
 
     def set_error(self, message: str) -> None:

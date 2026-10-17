@@ -1,14 +1,19 @@
+from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import CheckConstraint, ForeignKey, Integer, String
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
-from app.models.enums import StatutActifInactif
-from app.models.mixins import TimestampMixin
+from app.models.enums import ModeGestionArticle, StatutActifInactif
+from app.models.mixins import TimestampMixin, utcnow
 from app.models.types import MONEY, QUANTITY
+
+_MODE_GESTION_ARTICLE_TYPE = SAEnum(
+    ModeGestionArticle, native_enum=False, length=20, name="mode_gestion_article"
+)
 
 
 class Category(TimestampMixin, Base):
@@ -114,6 +119,19 @@ class Article(TimestampMixin, Base):
         default=StatutActifInactif.ACTIF,
         nullable=False,
     )
+    # Module Locations (lot dédié) : VENTE par défaut (comportement inchangé
+    # pour tout article existant) — bascule explicite et mutuellement
+    # exclusive vers LOCATION via ArticleService, jamais modifiée ailleurs ;
+    # chaque changement est historisé dans ArticleModeGestionChangement.
+    mode_gestion: Mapped[ModeGestionArticle] = mapped_column(
+        _MODE_GESTION_ARTICLE_TYPE, default=ModeGestionArticle.VENTE, nullable=False
+    )
+    # Tarif catalogue journalier de location — None tant que l'article n'a
+    # jamais été configuré pour la location. Pré-remplit (mais ne contraint
+    # jamais) LocationLigne.tarif_jour, à l'identique de prix_vente vis-à-vis
+    # de VenteLigne.prix_unitaire (une vraie saisie historisée par ligne,
+    # jamais recalculée rétroactivement si ce tarif catalogue change).
+    tarif_location_jour: Mapped[Optional[Decimal]] = mapped_column(MONEY, nullable=True)
 
     category: Mapped["Category"] = relationship("Category", back_populates="articles")
     fournisseur_principal: Mapped[Optional["Supplier"]] = relationship(
@@ -122,3 +140,27 @@ class Article(TimestampMixin, Base):
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"Article(id={self.id!r}, reference={self.reference!r})"
+
+
+class ArticleModeGestionChangement(Base):
+    """Historique immuable des changements de ``Article.mode_gestion``
+    (VENTE <-> LOCATION) — jamais modifié ni supprimé après création, à
+    l'identique de MouvementStock/Paiement pour leurs propres journaux."""
+
+    __tablename__ = "article_mode_gestion_changements"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    article_id: Mapped[int] = mapped_column(ForeignKey("articles.id"), nullable=False, index=True)
+    ancien_mode: Mapped[ModeGestionArticle] = mapped_column(_MODE_GESTION_ARTICLE_TYPE, nullable=False)
+    nouveau_mode: Mapped[ModeGestionArticle] = mapped_column(_MODE_GESTION_ARTICLE_TYPE, nullable=False)
+    date_heure: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+
+    article: Mapped["Article"] = relationship("Article")
+    user: Mapped["User"] = relationship("User")
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return (
+            f"ArticleModeGestionChangement(article_id={self.article_id!r}, "
+            f"{self.ancien_mode!r} -> {self.nouveau_mode!r})"
+        )

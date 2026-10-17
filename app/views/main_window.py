@@ -45,6 +45,7 @@ from app.views.pages.exit_reasons_page import ExitReasonsPage
 from app.views.pages.exits_page import ExitsPage
 from app.views.pages.inventories_page import InventoriesPage
 from app.views.pages.licenses_page import LicensesPage
+from app.views.pages.locations_page import LocationsPage
 from app.views.pages.mouvements_page import MouvementsPage
 from app.views.pages.placeholder_page import PlaceholderPage
 from app.views.pages.receivables_page import ReceivablesPage
@@ -77,6 +78,7 @@ NAVIGATION_MODULES: list[str] = [
     "Clients",
     "Ventes",
     "Créances",
+    "Locations",
     "Mouvements",
     "Inventaires",
     "Rapports",
@@ -101,6 +103,7 @@ NAVIGATION_PERMISSIONS: dict[str, str] = {
     # Réutilise SALE_VIEW (pas de nouvelle permission dédiée à la lecture des
     # créances, qui n'est qu'une vue filtrée des ventes déjà consultables).
     "Créances": "SALE_VIEW",
+    "Locations": "LOCATION_VIEW",
     "Mouvements": "STOCK_MOVEMENT_VIEW",
     "Inventaires": "INVENTORY_VIEW",
     "Rapports": "REPORT_VIEW",
@@ -223,6 +226,10 @@ class MainWindow(QMainWindow):
             )
         if module_name == "Créances":
             return ReceivablesPage(self._services.sales, self._services.clients, self._permissions)
+        if module_name == "Locations":
+            return LocationsPage(
+                self._services.rentals, self._services.articles, self._services.clients, self._permissions
+            )
         if module_name == "Mouvements":
             return MouvementsPage(self._services.movements, self._permissions)
         if module_name == "Inventaires":

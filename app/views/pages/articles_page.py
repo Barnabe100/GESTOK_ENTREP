@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.models.enums import ModeGestionArticle
 from app.services.articles.article_service import ArticleService
 from app.services.auth.permission_service import PermissionService
 from app.services.categories.category_service import CategoryService
@@ -43,6 +44,7 @@ from app.utils.money import format_money
 from app.utils.quantity import format_quantity
 from app.views.article_detail_dialog import ArticleDetailDialog
 from app.views.article_form_dialog import ArticleFormDialog
+from app.views.article_mode_gestion_dialog import ArticleModeGestionDialog
 from app.views.common import confirm_action, parse_decimal, parse_optional_decimal, run_modal_form
 
 _COLUMNS = [
@@ -114,6 +116,13 @@ class ArticlesPage(QWidget):
         )
         toolbar.addWidget(self.toggle_button)
 
+        # Module Locations (lot dédié) : bascule VENTE <-> LOCATION, action
+        # distincte de « Modifier » (auditée séparément, voir ArticleService.
+        # switch_mode_gestion) — même permission ARTICLE_UPDATE.
+        self.mode_gestion_button = QPushButton("Mode de gestion…", self)
+        self.mode_gestion_button.setEnabled(self._permissions.has_permission("ARTICLE_UPDATE"))
+        toolbar.addWidget(self.mode_gestion_button)
+
         layout.addLayout(toolbar)
 
         self.table = QTableWidget(0, len(_COLUMNS), self)
@@ -132,6 +141,7 @@ class ArticlesPage(QWidget):
         self.edit_button.clicked.connect(self._on_edit_clicked)
         self.detail_button.clicked.connect(self._on_detail_clicked)
         self.toggle_button.clicked.connect(self._on_toggle_clicked)
+        self.mode_gestion_button.clicked.connect(self._on_mode_gestion_clicked)
 
         self.refresh()
 
@@ -278,6 +288,7 @@ class ArticlesPage(QWidget):
             "emplacement": full.emplacement,
             "code_barres": full.code_barres,
             "description": full.description,
+            "tarif_location_jour": full.tarif_location_jour,
         }
 
     def _open_form(
@@ -313,6 +324,9 @@ class ArticlesPage(QWidget):
             prix_vente = parse_decimal(values["prix_vente"], "prix de vente")
             stock_min = parse_decimal(values["stock_min"], "stock minimum")
             stock_max = parse_optional_decimal(values["stock_max"], "stock maximum")
+            tarif_location_jour = parse_optional_decimal(
+                values.get("tarif_location_jour", ""), "tarif de location journalier"
+            )
 
             if article_id is None:
                 stock_initial = parse_decimal(values["stock_initial"], "stock initial")
@@ -330,6 +344,7 @@ class ArticlesPage(QWidget):
                     description=values["description"],
                     code_barres=values["code_barres"],
                     stock_initial=stock_initial,
+                    tarif_location_jour=tarif_location_jour,
                 )
                 QMessageBox.information(
                     self, "Article créé", f"L'article « {created.reference} » a été créé."
@@ -349,6 +364,7 @@ class ArticlesPage(QWidget):
                     emplacement=values["emplacement"],
                     description=values["description"],
                     code_barres=values["code_barres"],
+                    tarif_location_jour=tarif_location_jour,
                 )
                 QMessageBox.information(
                     self, "Article modifié", f"L'article « {updated.reference} » a été modifié."
@@ -412,6 +428,40 @@ class ArticlesPage(QWidget):
                 QMessageBox.information(
                     self, "Article activé", f"L'article « {updated.reference} » a été activé."
                 )
+        except AppError as exc:
+            QMessageBox.warning(self, "Opération refusée", str(exc))
+            return False
+        return True
+
+    # -- mode de gestion (module Locations, lot dédié) -----------------------------
+
+    def _on_mode_gestion_clicked(self) -> None:
+        article_id = self._selected_article_id()
+        if article_id is None:
+            return
+        article = self._load_article_for_detail(article_id)
+        if article is None:
+            return
+
+        def factory() -> ArticleModeGestionDialog:
+            return ArticleModeGestionDialog(article.reference, article.mode_gestion, parent=self)
+
+        def submit(dialog: ArticleModeGestionDialog) -> bool:
+            return self._submit_mode_gestion(article_id, dialog.nouveau_mode())
+
+        run_modal_form(factory, submit)
+        self.refresh()
+
+    def _submit_mode_gestion(self, article_id: int, nouveau_mode: ModeGestionArticle) -> bool:
+        """Isolé de ``_on_mode_gestion_clicked`` pour rester testable sans
+        dialogue modal."""
+        try:
+            updated = self._article_service.switch_mode_gestion(article_id, nouveau_mode)
+            QMessageBox.information(
+                self, "Mode de gestion modifié",
+                f"L'article « {updated.reference} » est maintenant en mode "
+                f"{'Location' if nouveau_mode == ModeGestionArticle.LOCATION else 'Vente'}.",
+            )
         except AppError as exc:
             QMessageBox.warning(self, "Opération refusée", str(exc))
             return False

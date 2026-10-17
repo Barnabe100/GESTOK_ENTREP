@@ -15,7 +15,7 @@ from app.models.types import MONEY, QUANTITY
 class MouvementStock(Base):
     """Journal central et immuable de toute variation de stock.
 
-    Référence l'opération d'origine via l'une des quatre FK nullables
+    Référence l'opération d'origine via l'une des cinq FK nullables
     (une seule est renseignée selon le type de mouvement) plutôt qu'une
     référence polymorphe, afin de préserver l'intégrité référentielle.
     """
@@ -47,6 +47,9 @@ class MouvementStock(Base):
     inventaire_ligne_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("inventaire_lignes.id"), nullable=True
     )
+    location_ligne_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("location_lignes.id"), nullable=True
+    )
     mouvement_origine_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("mouvements_stock.id"), nullable=True
     )
@@ -68,6 +71,7 @@ class MouvementStock(Base):
     sortie_ligne: Mapped[Optional["SortieLigne"]] = relationship("SortieLigne")
     vente_ligne: Mapped[Optional["VenteLigne"]] = relationship("VenteLigne")
     inventaire_ligne: Mapped[Optional["InventaireLigne"]] = relationship("InventaireLigne")
+    location_ligne: Mapped[Optional["LocationLigne"]] = relationship("LocationLigne")
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"MouvementStock(type={self.type!r}, article_id={self.article_id!r}, quantite={self.quantite!r})"

@@ -22,7 +22,7 @@ def test_main_window_administrateur_sees_all_modules(qtbot, login_as) -> None:
     window = _build_window(stack)
     qtbot.addWidget(window)
 
-    assert window.navigation_list.count() == 19
+    assert window.navigation_list.count() == 20
     assert window.visible_modules[0] == "Dashboard"
 
 

@@ -59,6 +59,7 @@ from app.db.session import session_scope
 from app.models.audit import AuditLog
 from app.models.documents import Vente, VenteLigne
 from app.models.enums import (
+    ModeGestionArticle,
     ResultatAudit,
     StatutActifInactif,
     StatutOperation,
@@ -396,6 +397,10 @@ class SaleService:
                 raise NotFoundError(f"Article {line.article_id} introuvable.")
             if article.statut != StatutActifInactif.ACTIF:
                 raise ValidationError(f"L'article « {article.reference} » est inactif.")
+            if article.mode_gestion == ModeGestionArticle.LOCATION:
+                raise ValidationError(
+                    f"L'article « {article.reference} » est en mode Location : il ne peut pas être vendu."
+                )
 
             lignes.append(
                 VenteLigne(
@@ -649,6 +654,10 @@ class SaleService:
                     raise NotFoundError(f"Article {ligne.article_id} introuvable.")
                 if article.statut != StatutActifInactif.ACTIF:
                     raise ValidationError(f"L'article « {article.reference} » est inactif.")
+                if article.mode_gestion == ModeGestionArticle.LOCATION:
+                    raise ValidationError(
+                        f"L'article « {article.reference} » est en mode Location : il ne peut pas être vendu."
+                    )
 
                 self._stock.apply_movement(
                     session,

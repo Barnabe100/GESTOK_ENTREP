@@ -3,6 +3,7 @@ from decimal import Decimal
 import pytest
 from PySide6.QtWidgets import QMessageBox
 
+from app.models.enums import ModeGestionArticle
 from app.views.pages.articles_page import ArticlesPage
 
 
@@ -408,3 +409,74 @@ def test_load_suppliers_for_form_includes_inactive_current_selection(qtbot, logi
 
     ids = {option[0] for option in options}
     assert supplier.id in ids
+
+
+# -- mode de gestion (module Locations, lot dédié) -----------------------------
+
+
+def test_mode_gestion_button_enabled_with_article_update_permission(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.mode_gestion_button.isEnabled() is True
+
+
+def test_mode_gestion_button_disabled_for_consultation(qtbot, login_as) -> None:
+    stack, _ = login_as("Consultation")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.mode_gestion_button.isEnabled() is False
+
+
+def test_submit_mode_gestion_switches_article_to_location(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    category = stack.categories.create_category("Matériel")
+    article = stack.articles.create_article(
+        "ART-SWITCH", "Article", category.id, "unité", Decimal("100"), Decimal("150"), Decimal("0"),
+        stock_initial=Decimal("10"), tarif_location_jour=Decimal("500"),
+    )
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    result = page._submit_mode_gestion(article.id, ModeGestionArticle.LOCATION)
+
+    assert result is True
+    assert stack.articles.get_article(article.id).mode_gestion == ModeGestionArticle.LOCATION
+
+
+def test_submit_mode_gestion_refused_if_already_in_target_mode(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    category = stack.categories.create_category("Matériel")
+    article = stack.articles.create_article(
+        "ART-SAME", "Article", category.id, "unité", Decimal("100"), Decimal("150"), Decimal("0"),
+        stock_initial=Decimal("10"),
+    )
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    result = page._submit_mode_gestion(article.id, ModeGestionArticle.VENTE)
+
+    assert result is False
+
+
+def test_create_article_accepts_tarif_location_jour(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    category = stack.categories.create_category("Matériel")
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    values = {
+        "reference": "ART-TARIF", "designation": "Article", "category_id": category.id,
+        "fournisseur_principal_id": None, "unite": "unité", "prix_achat": "100", "prix_vente": "150",
+        "stock_min": "0", "stock_max": "", "emplacement": "", "code_barres": "", "description": "",
+        "stock_initial": "5", "tarif_location_jour": "500",
+    }
+
+    result = page._submit_form(None, values)
+
+    assert result is True
+    created = next(a for a in stack.articles.list_articles() if a.reference == "ART-TARIF")
+    assert created.tarif_location_jour == Decimal("500")

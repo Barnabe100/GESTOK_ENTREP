@@ -33,6 +33,7 @@ from app.services.licensing.license_service import LicenseService
 from app.services.licensing.permission_map import PERMISSION_TO_FEATURE
 from app.services.licensing.public_key import PRODUCTION_PUBLIC_KEY_BYTES
 from app.services.onboarding.onboarding_service import OnboardingService
+from app.services.rentals.location_service import LocationService
 from app.services.reports.report_service import ReportService
 from app.services.roles.role_service import RoleService
 from app.services.sales.sale_service import SaleService
@@ -70,6 +71,7 @@ class ServiceRegistry:
     onboarding: OnboardingService
     data_reset: DataResetService
     account_recovery: AccountRecoveryService
+    rentals: LocationService
 
 
 def build_service_registry(
@@ -125,4 +127,5 @@ def build_service_registry(
         onboarding=OnboardingService(settings),
         data_reset=DataResetService(permission_service, backup_service, settings),
         account_recovery=AccountRecoveryService(permission_service, settings),
+        rentals=LocationService(permission_service, settings),
     )

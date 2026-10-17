@@ -97,6 +97,15 @@ PERMISSIONS: list[tuple[str, str, str]] = [
         "Réinitialiser les données métier (après une période de test)",
         "systeme",
     ),
+    ("LOCATION_VIEW", "Consulter les locations", "locations"),
+    ("LOCATION_CREATE", "Créer une location", "locations"),
+    ("LOCATION_UPDATE", "Modifier une location en brouillon", "locations"),
+    ("LOCATION_CONFIRM", "Confirmer une location", "locations"),
+    ("LOCATION_DEPART", "Enregistrer le départ d'une location", "locations"),
+    ("LOCATION_RETURN", "Enregistrer un retour (total ou partiel) sur une location", "locations"),
+    ("LOCATION_CANCEL", "Annuler une location (avant départ uniquement)", "locations"),
+    ("LOCATION_CAUTION_MANAGE", "Définir et restituer la caution d'une location", "locations"),
+    ("LOCATION_PAYMENT_CREATE", "Enregistrer un paiement sur une location", "locations"),
 ]
 
 _ALL_CODES = [code for code, _, _ in PERMISSIONS]
@@ -115,6 +124,12 @@ _GESTIONNAIRE_STOCK_CODES = [
     "INVENTORY_VIEW", "INVENTORY_CREATE", "INVENTORY_UPDATE", "INVENTORY_VALIDATE",
     "REPORT_VIEW", "REPORT_EXPORT",
     "CLIENT_VIEW", "CLIENT_CREATE", "CLIENT_UPDATE", "CLIENT_ACTIVATE", "CLIENT_DEACTIVATE",
+    # Locations (lot dédié) : droits opérationnels complets à l'identique des
+    # autres documents de stock (Entrées/Sorties) — à l'exception de
+    # LOCATION_CANCEL, réservée à l'Administrateur, même convention que
+    # STOCK_ENTRY_CANCEL/STOCK_EXIT_CANCEL non accordées à ce rôle.
+    "LOCATION_VIEW", "LOCATION_CREATE", "LOCATION_UPDATE", "LOCATION_CONFIRM",
+    "LOCATION_DEPART", "LOCATION_RETURN", "LOCATION_CAUTION_MANAGE", "LOCATION_PAYMENT_CREATE",
 ]
 
 _VENDEUR_CODES = [
@@ -125,6 +140,12 @@ _VENDEUR_CODES = [
     # au moment de la vente, mais jamais activer/désactiver un compte client
     # (décision métier explicite de ce lot).
     "CLIENT_VIEW", "CLIENT_CREATE", "CLIENT_UPDATE",
+    # Locations (lot dédié) : une location est une opération client au même
+    # titre qu'une vente — mêmes droits opérationnels que pour les ventes
+    # (sans LOCATION_CANCEL, réservée à l'Administrateur, comme SALE_CANCEL
+    # ne l'est pas non plus pour ce rôle).
+    "LOCATION_VIEW", "LOCATION_CREATE", "LOCATION_UPDATE", "LOCATION_CONFIRM",
+    "LOCATION_DEPART", "LOCATION_RETURN", "LOCATION_CAUTION_MANAGE", "LOCATION_PAYMENT_CREATE",
 ]
 
 _CONSULTATION_CODES = [
@@ -132,6 +153,7 @@ _CONSULTATION_CODES = [
     "ARTICLE_VIEW", "CATEGORY_VIEW", "SUPPLIER_VIEW",
     "STOCK_MOVEMENT_VIEW",
     "REPORT_VIEW",
+    "LOCATION_VIEW",
 ]
 
 # nom du rôle -> codes de permission (Administrateur = toutes, calculé)

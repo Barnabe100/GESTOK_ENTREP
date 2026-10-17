@@ -5,6 +5,7 @@ modification passe par :class:`ArticleFormDialog` via l'action « Modifier ».
 """
 from __future__ import annotations
 
+from app.models.enums import ModeGestionArticle
 from app.services.articles.article_service import ArticleSummary
 from app.utils.money import format_money
 from app.utils.quantity import format_quantity
@@ -52,6 +53,15 @@ class ArticleDetailDialog(QDialog):
         form.addRow("Code-barres", QLabel(article.code_barres or "—", self))
         form.addRow("Description", QLabel(article.description or "—", self))
         form.addRow("Statut", QLabel("Actif" if article.actif else "Inactif", self))
+        form.addRow(
+            "Mode de gestion",
+            QLabel("Location" if article.mode_gestion == ModeGestionArticle.LOCATION else "Vente", self),
+        )
+        if article.tarif_location_jour is not None:
+            form.addRow(
+                "Tarif de location (par jour)",
+                QLabel(format_money(article.tarif_location_jour, currency_code), self),
+            )
         form.addRow("Créé le", QLabel(article.date_creation.strftime("%Y-%m-%d %H:%M"), self))
         form.addRow("Modifié le", QLabel(article.date_modification.strftime("%Y-%m-%d %H:%M"), self))
 
