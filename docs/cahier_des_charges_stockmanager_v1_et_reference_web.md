@@ -74,18 +74,18 @@ Objectifs additionnels envisageables pour une version Web (à valider avec le m�
 ## 4. Périmètre fonctionnel Desktop V1
 
 ### A. CE QUI EXISTE
-Modules implémentés et fonctionnels : Authentification, Tableau de bord, Articles, Catégories, Fournisseurs, Clients, Motifs de sortie, Entrées de stock, Sorties de stock, Ventes, Paiements, Créances, Inventaires, Mouvements de stock, Rapports (9 rapports + export CSV), Utilisateurs, Rôles & permissions, Sauvegardes/restauration, Réinitialisation des données métier, Journal d'audit, Paramètres entreprise, Licences, Reçus (impression/export PDF A4 et ticket 80 mm).
+Modules implémentés et fonctionnels : Authentification (dont récupération de compte Administrateur par code à usage unique), Tableau de bord, Articles, Catégories, Fournisseurs, Clients, Motifs de sortie, Entrées de stock, Sorties de stock, Ventes, Paiements, Créances, Locations (réservation/départ/retour d'articles configurés pour ce mode, facturation au retour, caution — non détaillé dans ce document), Inventaires, Mouvements de stock, Rapports (9 rapports + export CSV/Excel), Utilisateurs, Rôles & permissions, Sauvegardes/restauration, Réinitialisation des données métier, Journal d'audit, Paramètres entreprise, Licences, Reçus (impression/export PDF A4 et ticket 80 mm).
 
 ## 5. Périmètre hors scope
 
 ### A. CE QUI EXISTE (absences confirmées, volontaires ou non, dans Desktop V1)
 - **[ABSENT EN V1]** Aucune API réseau, aucun serveur, aucune synchronisation entre postes.
-- **[ABSENT EN V1]** Aucun export PDF/Excel pour les rapports (CSV uniquement).
+- **[ABSENT EN V1]** Aucun export PDF pour les rapports (CSV et Excel disponibles — voir §21).
 - **[ABSENT EN V1]** Aucune notification (email, SMS, push).
 - **[ABSENT EN V1]** Aucune gestion multi-boutiques / multi-entrepôts.
-- **[ABSENT EN V1]** Aucun verrouillage de compte après échecs de connexion répétés, aucune règle de complexité de mot de passe au-delà d'une longueur minimale de 8 caractères.
+- **[ABSENT EN V1]** Aucun verrouillage de compte après échecs de **connexion** répétés (identifiant/mot de passe), aucune règle de complexité de mot de passe au-delà d'une longueur minimale de 8 caractères. Un verrouillage existe désormais, mais uniquement sur le flux distinct de récupération de compte Administrateur par code (5 échecs → 15 minutes, voir §30).
 - **[ABSENT EN V1]** Aucune annulation d'inventaire validé, aucune modification/suppression d'un paiement ou d'un mouvement de stock.
-- **[ABSENT EN V1]** Aucun mécanisme de récupération de mot de passe en libre-service (seule la réinitialisation par un administrateur existe).
+- **[ABSENT EN V1]** Aucun mécanisme de récupération de mot de passe en libre-service pour les comptes non-Administrateur (seule la réinitialisation par un administrateur existe). Un compte **Administrateur** dispose en revanche d'une récupération par code à usage unique, généré au préalable depuis Paramètres (voir §30).
 - Le §25 du document de spécification antérieur (`Cahier_des_charges_final_StockManager.md`) évoquait déjà, comme perspectives volontairement hors périmètre : clients avancés, multi-entrepôt, transferts, API, synchronisation, version web/mobile — cohérent avec l'absence totale de code réseau constatée.
 
 ## 6. Profils utilisateurs
@@ -172,7 +172,7 @@ Rattachés à une vente **validée** uniquement. Montant (>0, ≤ reste à payer
 ## 17. Créances
 
 ### A. CE QUI EXISTE
-Aucun service dédié : l'écran Créances réutilise intégralement `SaleService.list_sales` filtré sur les ventes validées, avec filtres client/statut de paiement/période. Reste à payer = `max(total − montant_payé, 0)`. Résumé agrégé par client disponible (`app/views/pages/receivables_page.py`, `app/services/sales/sale_service.py:get_client_receivable_summary`).
+Aucun service dédié : l'écran Créances réutilise intégralement `SaleService.list_sales` filtré sur les ventes validées, avec filtres client/statut de paiement/période. **Filtre de statut de paiement par défaut côté vue uniquement (« En cours ») : exclut les ventes intégralement payées** — un filtre explicite (« Toutes » ou « Payée ») permet de les inclure (`app/views/pages/receivables_page.py`, sentinel `_EN_COURS`). Reste à payer = `max(total − montant_payé, 0)`. Résumé agrégé par client disponible (`app/services/sales/sale_service.py:get_client_receivable_summary`).
 
 ## 18. Inventaires
 
@@ -192,7 +192,7 @@ Strictement lecture seule. Période sélectionnable (par défaut le mois courant
 ## 21. Rapports
 
 ### A. CE QUI EXISTE
-9 rapports (État du stock, Stock faible, Ruptures, Mouvements, Entrées, Sorties, Ventes, Inventaires, Valorisation), tous strictement lecture seule, jamais via les services métier (accès direct aux repositories pour ne dépendre que de `REPORT_VIEW`). Export **CSV uniquement**, permission distincte `REPORT_EXPORT` (`app/services/reports/report_service.py`, `app/utils/csv_export.py`). **[ABSENT EN V1]** aucun export PDF/Excel.
+9 rapports (État du stock, Stock faible, Ruptures, Mouvements, Entrées, Sorties, Ventes, Inventaires, Valorisation), tous strictement lecture seule, jamais via les services métier (accès direct aux repositories pour ne dépendre que de `REPORT_VIEW`). Export **CSV et Excel (.xlsx)**, même permission `REPORT_EXPORT` pour les deux formats (`app/services/reports/report_service.py`, `app/utils/csv_export.py`, `app/utils/xlsx_export.py`). **[ABSENT EN V1]** aucun export PDF.
 
 ## 22. Sauvegardes/restauration
 
@@ -241,9 +241,10 @@ Hiérarchie d'exceptions métier dédiée (`app/utils/exceptions.py`, non lue in
 
 ### A. CE QUI EXISTE
 - Mots de passe hachés en **Argon2** (`app/security/password_hashing.py`), jamais stockés en clair.
-- Politique de mot de passe : longueur minimale de **8 caractères**. **[ABSENT EN V1]** aucune règle de complexité (majuscule/chiffre/caractère spécial), **[ABSENT EN V1]** aucun verrouillage de compte après échecs répétés.
+- Politique de mot de passe : longueur minimale de **8 caractères**. **[ABSENT EN V1]** aucune règle de complexité (majuscule/chiffre/caractère spécial), **[ABSENT EN V1]** aucun verrouillage de compte après échecs répétés **sur la connexion normale**.
 - Message de connexion volontairement générique en cas d'échec (ne révèle jamais si l'identifiant existe).
 - Changement de mot de passe obligatoire (`must_change_password`) forcé à la création d'un compte et après une réinitialisation par un administrateur ; l'ancien mot de passe est toujours exigé pour le changer, y compris lors du changement forcé.
+- **Récupération de compte Administrateur par code à usage unique** (`AccountRecoveryService`) : un Administrateur déjà connecté génère/régénère son propre code (affiché une seule fois) depuis Paramètres ; ce code permet ensuite, depuis l'écran de connexion, de redéfinir le mot de passe sans autre administrateur. Verrouillage après 5 échecs (15 minutes), message d'erreur strictement identique quelle que soit la cause réelle de l'échec (anti-énumération), vérification Argon2 factice à temps constant même en l'absence de compte/code éligible. Réservé aux comptes de rôle Administrateur.
 - RBAC appliqué exclusivement côté service (jamais uniquement côté interface).
 - Licences signées Ed25519, clé privée jamais embarquée côté client.
 - Aucune donnée transmise sur le réseau (application 100% locale).
@@ -512,9 +513,10 @@ Question ouverte, à trancher avec le métier avant toute conception technique :
 | Ventes | ✅ | ✅ (conservé) | Client optionnel conservé (vente comptant) |
 | Paiements | ✅ | ✅ (conservé) | Immuabilité à conserver impérativement |
 | Créances | ✅ (vue dérivée des ventes) | ✅ (conservé) | Pas de modèle dédié en V1, réutilise `SaleService` |
+| Locations | ✅ (réservation/départ/retour, facturation, caution) | ✅ (conservé, à rediscuter) | Non détaillé dans ce document (cf. documentation dédiée au module) |
 | Inventaires | ✅ (sans annulation) | ✅ (conservé, à rediscuter) | Absence d'annulation à revalider comme règle métier permanente ou limitation V1 à lever |
 | Mouvements | ✅ (lecture seule) | ✅ (conservé) | Journal immuable |
-| Rapports | ✅ (9 rapports, export CSV) | ⚙️ à étendre | Export PDF/Excel envisageable |
+| Rapports | ✅ (9 rapports, export CSV + Excel) | ⚙️ à étendre | Export PDF envisageable |
 | Audit | ✅ (rétention illimitée) | ⚙️ à étendre | Étendre aux événements API/serveur |
 | Sauvegardes | ✅ (manuelle + planifiée locale) | ⚙️ à adapter | Vers outillage serveur/infrastructure |
 | Licences | ✅ (activation locale hors ligne) | ⚙️ à adapter | Vers gestion centralisée |
@@ -560,14 +562,18 @@ Cette matrice décrit les permissions **par rôle** : un utilisateur peut possé
 | REPORT_VIEW | ✓ | ✓ | ✗ | ✓ |
 | REPORT_EXPORT | ✓ | ✓ | ✗ | ✗ |
 | USER_VIEW / CREATE / UPDATE / ACTIVATE / RESET_PASSWORD | ✓ | ✗ | ✗ | ✗ |
+| ADMIN_RECOVERY_MANAGE | ✓ | ✗ | ✗ | ✗ |
 | ROLE_VIEW / UPDATE | ✓ | ✗ | ✗ | ✗ |
 | SETTINGS_VIEW / UPDATE | ✓ | ✗ | ✗ | ✗ |
 | BACKUP_VIEW / CREATE / RESTORE | ✓ | ✗ | ✗ | ✗ |
 | AUDIT_VIEW | ✓ | ✗ | ✗ | ✗ |
 | LICENSE_VIEW / ACTIVATE | ✓ | ✗ | ✗ | ✗ |
 | SYSTEM_RESET_BUSINESS_DATA | ✓ | ✗ | ✗ | ✗ |
+| LOCATION_VIEW | ✓ | ✓ | ✓ | ✓ |
+| LOCATION_CREATE / UPDATE / CONFIRM / DEPART / RETURN / CAUTION_MANAGE / PAYMENT_CREATE | ✓ | ✓ | ✓ | ✗ |
+| LOCATION_CANCEL | ✓ | ✗ | ✗ | ✗ |
 
-**Notes** : le Vendeur peut créer/modifier un client à la volée mais jamais l'activer/désactiver. Les motifs de sortie sont une exclusivité de l'Administrateur (y compris leur simple consultation). Seul l'Administrateur peut annuler une entrée, une sortie ou une vente déjà validée par défaut.
+**Notes** : le Vendeur peut créer/modifier un client à la volée mais jamais l'activer/désactiver. Les motifs de sortie sont une exclusivité de l'Administrateur (y compris leur simple consultation). Seul l'Administrateur peut annuler une entrée, une sortie, une vente ou une location déjà validée/confirmée par défaut. ``ADMIN_RECOVERY_MANAGE`` ne gouverne que la génération par un Administrateur de son propre code de récupération — jamais celui d'un autre compte.
 
 ---
 

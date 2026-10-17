@@ -44,7 +44,7 @@
 
 ### Objectif
 
-StockManager Desktop est un logiciel de gestion de stock destiné aux petites et moyennes entreprises. Il permet de gérer un catalogue d'articles, de suivre les mouvements de stock (entrées, sorties, ventes, inventaires), d'enregistrer des ventes avec ou sans client identifié, de suivre les paiements et les créances, de produire des rapports, de gérer les comptes utilisateurs et leurs droits d'accès, et de sauvegarder/restaurer les données.
+StockManager Desktop est un logiciel de gestion de stock destiné aux petites et moyennes entreprises. Il permet de gérer un catalogue d'articles, de suivre les mouvements de stock (entrées, sorties, ventes, inventaires), d'enregistrer des ventes avec ou sans client identifié, de suivre les paiements et les créances, de gérer des locations d'articles configurés pour ce mode (module Locations — mention d'existence uniquement, non détaillé dans ce document), de produire des rapports, de gérer les comptes utilisateurs et leurs droits d'accès, et de sauvegarder/restaurer les données.
 
 ### Public cible
 
@@ -100,6 +100,8 @@ Au tout premier lancement, l'application :
 À chaque lancement, un écran de connexion demande l'identifiant et le mot de passe. Si le compte doit changer de mot de passe (première connexion, ou après une réinitialisation par un administrateur), une fenêtre de changement de mot de passe obligatoire s'affiche : elle ne peut pas être fermée sans effectuer le changement (l'annuler déconnecte l'utilisateur).
 
 En cas d'identifiant ou de mot de passe incorrect, le message est volontairement générique (« Identifiant ou mot de passe incorrect. ») pour ne pas révéler si un identifiant existe. Si le compte a été désactivé par un administrateur, un message spécifique l'indique.
+
+Chaque champ de saisie de mot de passe comporte une icône « œil » permettant de l'afficher temporairement en clair pour vérifier la saisie. Un compte Administrateur disposant d'un code de récupération généré au préalable peut en outre récupérer l'accès par lui-même via le bouton « Mot de passe oublié ? » de cet écran (voir chapitre 24).
 
 ### Configuration initiale — entreprise
 
@@ -381,7 +383,7 @@ La fiche de détail d'une vente affiche l'historique complet des paiements enreg
 
 ### Créances
 
-L'écran **Créances** (menu Clients) liste toutes les ventes **validées** avec leur montant total, montant payé, reste à payer et statut de paiement, avec des filtres par client, statut de paiement (Non payée / Partiellement payée / Payée / Toutes) et période. Une vente comptant sans client y apparaît sous la mention « (Vente comptant sans client) ». En filtrant sur un client précis, un résumé agrégé (total des ventes, total payé, reste à payer global pour ce client) est affiché — uniquement calculé sur les ventes validées et non annulées.
+L'écran **Créances** (son propre menu « Créances », distinct du menu Clients) liste toutes les ventes **validées** avec leur montant total, montant payé, reste à payer et statut de paiement, avec des filtres par client, statut de paiement (En cours / Toutes / Non payée / Partiellement payée / Payée) et période. **Par défaut, seules les ventes non intégralement payées (« En cours ») sont affichées** — choisir « Toutes » ou « Payée » pour voir également les ventes déjà réglées. Une vente comptant sans client y apparaît sous la mention « (Vente comptant sans client) ». En filtrant sur un client précis, un résumé agrégé (total des ventes, total payé, reste à payer global pour ce client) est affiché — uniquement calculé sur les ventes validées et non annulées.
 
 ### Modes de paiement
 
@@ -479,7 +481,7 @@ Selon le rapport : recherche texte, catégorie, période, statut, motif, type de
 
 ### Export
 
-**Un seul format d'export existe : CSV** (délimiteur `;`, encodage compatible Excel). **[ABSENT EN V1]** Aucun export PDF ou Excel (`.xlsx`) n'existe dans cette version. La consultation des rapports et leur export sont deux permissions séparées : un rôle peut avoir le droit de consulter les rapports sans avoir le droit de les exporter (c'est le cas du rôle Consultation par défaut).
+**Deux formats d'export existent : CSV** (délimiteur `;`, encodage compatible Excel) **et Excel (.xlsx)** — fichier directement exploitable, colonnes typées (montants/quantités en valeurs numériques), même contenu que l'export CSV du même rapport. **[ABSENT EN V1]** Aucun export PDF n'existe pour les rapports. La consultation des rapports et leur export sont deux permissions séparées : un rôle peut avoir le droit de consulter les rapports sans avoir le droit de les exporter (c'est le cas du rôle Consultation par défaut).
 
 ---
 
@@ -707,7 +709,9 @@ Le reçu de vente documente **la transaction commerciale complète** (ce qui a �
 
 **Après une restauration de sauvegarde, l'application se comporte anormalement** — Un redémarrage complet de l'application est nécessaire après toute restauration ; s'il n'a pas été effectué, fermez et relancez StockManager.
 
-**Mot de passe oublié** — Un administrateur doit réinitialiser le mot de passe depuis le module Utilisateurs. **[ABSENT EN V1]** Il n'existe aucune fonctionnalité de réinitialisation en libre-service (pas d'email de récupération) : l'intervention d'un administrateur est obligatoire.
+**Mot de passe oublié (compte non-Administrateur)** — Un administrateur doit réinitialiser le mot de passe depuis le module Utilisateurs. Il n'existe aucune fonctionnalité de réinitialisation en libre-service pour ces comptes.
+
+**Mot de passe oublié (compte Administrateur)** — Un compte Administrateur disposant d'un **code de récupération** généré au préalable (depuis Paramètres, pendant qu'il était connecté) peut récupérer l'accès par lui-même, via le bouton « Mot de passe oublié ? » de l'écran de connexion (identifiant + code + nouveau mot de passe). Code à usage unique, verrouillage du compte après 5 échecs (15 minutes), message d'erreur volontairement identique quelle que soit la cause réelle de l'échec. Sans code généré au préalable, cette récupération n'est pas possible.
 
 ---
 

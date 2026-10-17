@@ -17,12 +17,16 @@ Ce document distingue deux publics :
 ## État du projet
 
 Toutes les phases fonctionnelles sont implémentées et validées : socle
-technique, authentification/RBAC, catalogue (catégories, fournisseurs,
-motifs de sortie, articles), mouvements de stock (entrées, sorties, ventes,
-inventaires), rapports, sauvegardes/restauration, licences (Ed25519,
-`FeatureGate`), Dashboard. La phase courante (Packaging) prépare la
-distribution Windows — voir [`packaging/README.md`](packaging/README.md)
-pour le détail du build et son état de validation.
+technique, authentification/RBAC (rôles multiples par utilisateur,
+récupération de compte Administrateur par code à usage unique), catalogue
+(catégories, fournisseurs, motifs de sortie, articles), clients, mouvements
+de stock (entrées, sorties, ventes, inventaires), ventes à crédit/paiements
+partiels et créances, location d'articles (module Locations), rapports
+(export CSV et Excel), sauvegardes/restauration/réinitialisation des
+données métier, licences (Ed25519, `FeatureGate`), Dashboard. La phase
+courante (Packaging) prépare la distribution Windows — voir
+[`packaging/README.md`](packaging/README.md) pour le détail du build et
+son état de validation.
 
 ---
 

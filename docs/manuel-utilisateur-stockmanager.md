@@ -58,6 +58,7 @@ Elle permet de :
 - gérer un catalogue d'articles, de catégories et de fournisseurs ;
 - suivre les mouvements de stock (entrées, sorties, ventes, inventaires) ;
 - enregistrer des ventes et gérer une liste de clients ;
+- gérer des **locations d'articles** (module Locations — réservation, départ, retour, facturation, caution ; voir la liste des menus, chapitre 9) pour les articles configurés dans ce mode de gestion ;
 - consulter des tableaux de bord et des rapports ;
 - sauvegarder et restaurer les données ;
 - gérer les comptes des utilisateurs et leurs droits d'accès.
@@ -198,9 +199,28 @@ Le tableau de bord s'affiche (ou le guide de démarrage, s'il s'agit de la premi
 | Compte désactivé | « Ce compte est désactivé. » |
 | Les deux mots de passe saisis ne correspondent pas | « Les deux mots de passe ne correspondent pas. » |
 
+## Afficher le mot de passe saisi
+
+Chaque champ de saisie de mot de passe (connexion, changement de mot de passe, création/réinitialisation d'un compte) comporte une icône « œil » permettant d'afficher temporairement le mot de passe en clair pendant la saisie, pour vérifier qu'il a été tapé correctement.
+
+## Procédure — Récupérer l'accès à un compte Administrateur (sans autre administrateur disponible)
+
+Un compte **Administrateur** qui ne peut plus se connecter (mot de passe oublié) peut récupérer l'accès par lui-même, à condition qu'un **code de récupération** ait été généré au préalable pour ce compte (voir chapitre 8, section « Code de récupération administrateur »).
+
+1. Sur l'écran de connexion, cliquer sur **« Mot de passe oublié ? »**.
+2. Saisir l'identifiant du compte, le code de récupération, puis le nouveau mot de passe (deux fois).
+3. Valider.
+
+**Règles et limites** :
+- Cette récupération n'est possible que pour un compte de rôle **Administrateur**, actif, et disposant déjà d'un code de récupération généré.
+- Le code est à **usage unique** : il est invalidé dès qu'il a servi (avec succès ou après un trop grand nombre d'échecs), et doit être régénéré pour être réutilisé.
+- Après **5 tentatives échouées**, le compte est temporairement verrouillé (15 minutes) avant de pouvoir réessayer.
+- Pour des raisons de sécurité, le message d'erreur affiché est **toujours identique** quelle que soit la cause réelle de l'échec (identifiant inconnu, compte non administrateur, code absent, incorrect, déjà utilisé, ou compte verrouillé) — il ne donne aucune indication permettant de deviner si un identifiant existe.
+- Il n'existe **aucune** fonctionnalité de récupération en libre-service pour les comptes non-Administrateur (Gestionnaire de stock, Vendeur, Consultation) : seul un administrateur peut réinitialiser leur mot de passe (chapitre 9).
+
 ## Points d'attention
 - Ne partagez jamais votre mot de passe avec un autre utilisateur (voir chapitre 19 — Bonnes pratiques).
-- Il n'existe pas, dans cette version, de fonctionnalité « mot de passe oublié » en libre-service : seul un administrateur peut réinitialiser le mot de passe d'un compte (chapitre 9).
+- Ne partagez pas davantage un code de récupération administrateur généré : il permet de redéfinir le mot de passe du compte sans autre vérification.
 
 **Capture à insérer** : `[CAPTURE 01 — CONNEXION]`, `[CAPTURE 02 — PREMIER MOT DE PASSE]`
 
@@ -256,6 +276,9 @@ Si aucune donnée n'existe pour la période, un message clair remplace le graphi
 ### Accès rapides
 Des boutons permettent d'accéder directement aux écrans Ventes, Entrées, Sorties, Mouvements et Rapports (uniquement affichés si le compte connecté y a accès).
 
+### Cas particulier du rôle Vendeur
+Le rôle Vendeur ne dispose pas de l'accès aux Rapports (`REPORT_VIEW`), mais voit malgré tout les indicateurs et le graphique liés aux ventes (nombre de ventes, chiffre d'affaires, évolution des ventes), via son propre accès à l'écran Ventes (`SALE_VIEW`). Les autres sections (stock, entrées, sorties, inventaires, mouvements, valorisation), elles, restent masquées pour ce rôle.
+
 ## Règles métier
 - Les montants affichés respectent toujours la devise configurée dans les Paramètres (chapitre 8).
 - Le tableau de bord n'affiche jamais que des ventes/entrées/sorties/inventaires **validés** — jamais des documents en brouillon.
@@ -306,6 +329,22 @@ Un aperçu du logo actuel, avec deux boutons : **« Choisir un logo… »** et *
 1. Cliquer sur « Choisir un logo… ».
 2. Sélectionner une image (PNG/JPG).
 3. Le logo est immédiatement enregistré et prévisualisé.
+
+## Code de récupération administrateur
+
+### Objectif
+Permettre à un compte Administrateur de retrouver l'accès à l'application s'il oublie son mot de passe, sans dépendre d'un autre administrateur (voir chapitre 6, procédure de récupération).
+
+### Qui peut l'utiliser
+Un compte Administrateur, pour générer **son propre** code uniquement — jamais celui d'un autre compte.
+
+### Procédure
+
+1. Depuis l'écran Paramètres, cliquer sur **« Générer un nouveau code de récupération »**.
+2. Confirmer (un code déjà existant, s'il y en a un, est immédiatement invalidé et remplacé).
+3. Le nouveau code s'affiche **une seule fois**, dans une fenêtre dédiée — il n'est jamais réaffiché ensuite.
+
+> **Important** — Notez ce code immédiatement et conservez-le en lieu sûr (il n'est stocké par l'application que sous une forme qui ne permet pas de le retrouver). S'il est perdu, il faudra en générer un nouveau en étant déjà connecté.
 
 ## Paramètres **non disponibles** dans la version actuelle
 
@@ -370,8 +409,11 @@ StockManager propose quatre rôles fixes. Il n'est pas possible d'en créer de n
 | Réinitialiser les données métier | ✓ | — | — | — |
 | Journal d'audit | ✓ | — | — | — |
 | Licence | ✓ | — | — | — |
+| Locations (consulter) | ✓ | ✓ | ✓ | ✓ |
+| Locations (créer/gérer le cycle de vie, paiements, caution) | ✓ | ✓ | ✓ | — |
+| Annuler une location (avant départ uniquement) | ✓ | — | — | — |
 
-> Cette matrice est une **présentation simplifiée**. Le détail complet des permissions (65 permissions réelles) figure en annexe (chapitre 22) — c'est ce détail qui fait foi en cas de doute.
+> Cette matrice est une **présentation simplifiée**. Le détail complet des permissions (75 permissions réelles) figure en annexe (chapitre 22) — c'est ce détail qui fait foi en cas de doute. Le fonctionnement détaillé du module Locations (réservation, départ, retours partiels/complets, facturation, caution) n'est pas couvert par ce manuel et fait l'objet d'une documentation séparée.
 
 > **Important** — Les droits d'accès sont vérifiés à deux niveaux : au niveau de l'écran (un bouton non autorisé n'est pas affiché ou est désactivé) **et** au niveau du programme lui-même. Un utilisateur ne peut donc jamais contourner ses droits, même en essayant d'accéder à une fonctionnalité par un autre moyen.
 
@@ -379,19 +421,23 @@ StockManager propose quatre rôles fixes. Il n'est pas possible d'en créer de n
 
 1. Ouvrir le menu Utilisateurs.
 2. Cliquer sur « Ajouter un utilisateur ».
-3. Renseigner : nom d'utilisateur, mot de passe, rôle, et cocher « Compte actif » si le compte doit être immédiatement utilisable.
+3. Renseigner : nom d'utilisateur, mot de passe, au moins un **rôle** (une case à cocher par rôle disponible — voir « Plusieurs rôles par utilisateur » ci-dessous), et cocher « Compte actif » si le compte doit être immédiatement utilisable.
 4. Valider.
 
 **Résultat attendu** : le compte est créé. Son titulaire devra changer ce mot de passe dès sa première connexion.
 
-## Procédure — Modifier le rôle d'un utilisateur
+## Plusieurs rôles par utilisateur
+
+Un utilisateur **peut posséder plusieurs rôles à la fois** (ex. Vendeur et Gestionnaire de stock). Il garde toujours un seul identifiant et un seul mot de passe ; ses permissions effectives sont l'**union** des permissions de tous ses rôles. Chaque utilisateur doit avoir au moins un rôle — impossible d'en enregistrer un sans aucune case cochée.
+
+## Procédure — Modifier les rôles d'un utilisateur
 
 1. Sélectionner l'utilisateur dans la liste.
 2. Cliquer sur « Modifier ».
-3. Choisir le nouveau rôle.
+3. Cocher/décocher les rôles souhaités (les rôles déjà attribués sont pré-cochés).
 4. Valider.
 
-> Seul le rôle peut être modifié ici — pas le nom d'utilisateur ni le mot de passe.
+> Seuls les rôles peuvent être modifiés ici — pas le nom d'utilisateur ni le mot de passe.
 
 ## Procédure — Réinitialiser un mot de passe
 
@@ -573,7 +619,7 @@ Administrateur, Gestionnaire de stock.
 Le stock de chaque article concerné augmente, et son CMUP est recalculé.
 
 ### Annulation
-Bouton « Annuler » (Administrateur uniquement), disponible uniquement pour une entrée déjà validée. Le stock est restauré à son niveau précédent via un mouvement inverse.
+Bouton « Annuler » (Administrateur uniquement), disponible uniquement pour une entrée déjà validée. Une boîte de dialogue demande de saisir un **motif d'annulation obligatoire** (au moins 5 caractères, ni vide ni composé uniquement d'espaces) : sans motif valide, l'annulation est refusée. Le stock est restauré à son niveau précédent via un mouvement inverse, et le motif saisi reste consultable définitivement dans le détail de l'entrée.
 
 ## 11.2 Sorties
 
@@ -591,7 +637,7 @@ Administrateur, Gestionnaire de stock.
 4. Enregistrer en brouillon, puis valider.
 
 ### Annulation
-Identique aux entrées (Administrateur uniquement, uniquement après validation).
+Identique aux entrées (Administrateur uniquement, uniquement après validation, motif d'annulation obligatoire — voir 11.1).
 
 ## 11.3 Mouvements
 
@@ -662,7 +708,7 @@ Bouton « Valider » (visible uniquement pour une vente en brouillon). La valida
 
 ## 12.4 Annulation
 
-Bouton « Annuler » (Administrateur uniquement), uniquement pour une vente déjà validée. Le stock vendu est restauré.
+Bouton « Annuler » (Administrateur uniquement), uniquement pour une vente déjà validée. Comme pour les entrées et sorties (11.1), une boîte de dialogue demande un **motif d'annulation obligatoire** (au moins 5 caractères) avant de confirmer. Le stock vendu est restauré, et le motif reste consultable définitivement dans le détail de la vente.
 
 > Une vente en brouillon, elle, peut être **supprimée directement** — c'est le seul type de document de l'application autorisant une suppression physique, et uniquement tant qu'il n'a jamais été validé.
 
@@ -734,7 +780,9 @@ Depuis l'historique des paiements d'une vente, chaque paiement peut faire l'obje
 
 ### Écran Créances clients
 
-Menu **Créances** : liste des ventes validées avec leur montant total, montant payé, reste à payer et statut de paiement. Filtres disponibles : recherche par numéro de vente, client, statut de paiement, période. En sélectionnant un client dans le filtre, un résumé s'affiche : total facturé, total payé et reste à payer pour ce client (sur ses ventes validées — une vente annulée ne compte plus comme une créance active).
+Menu **Créances** : liste des ventes validées avec leur montant total, montant payé, reste à payer et statut de paiement. Filtres disponibles : recherche par numéro de vente, client, statut de paiement (« En cours » par défaut, « Toutes », ou un statut précis : Non payée / Partiellement payée / Payée), période. En sélectionnant un client dans le filtre, un résumé s'affiche : total facturé, total payé et reste à payer pour ce client (sur ses ventes validées — une vente annulée ne compte plus comme une créance active).
+
+> **Filtre par défaut** — À l'ouverture de l'écran, seules les ventes **non intégralement payées** (non payées + partiellement payées) sont affichées : c'est un écran de créances, pas un historique complet des ventes. Choisir « Toutes (non annulées) » ou « Payée » dans le filtre de statut pour voir également les ventes déjà réglées.
 
 > Cet écran n'est pas un tableau de bord financier complet : il présente uniquement les ventes et leur état de paiement.
 
@@ -782,24 +830,25 @@ Menu Rapports — un menu déroulant permet de choisir le rapport souhaité ; le
 
 | Rapport | Objectif | Filtres disponibles | Période | Export |
 |---|---|---|---|---|
-| État du stock | Vue complète du catalogue avec stock, CMUP et valeur | Recherche, Catégorie, Inclure inactifs | Non | CSV |
-| Stock faible | Articles au niveau ou en dessous du seuil minimum | Recherche, Catégorie | Non | CSV |
-| Ruptures | Articles à stock zéro | Recherche, Catégorie | Non | CSV |
-| Mouvements | Historique des mouvements de stock | Article, Type de mouvement | Oui | CSV |
-| Entrées | Historique des entrées | Statut | Oui | CSV |
-| Sorties | Historique des sorties | Motif, Statut | Oui | CSV |
-| Ventes | Historique des ventes | Statut | Oui | CSV |
-| Inventaires | Résumé par inventaire (écarts, quantité ajustée) | Statut | Oui | CSV |
-| Valorisation | Valeur du stock (stock × CMUP) et valeur totale | Recherche, Catégorie, Inclure inactifs | Non | CSV |
+| État du stock | Vue complète du catalogue avec stock, CMUP et valeur | Recherche, Catégorie, Inclure inactifs | Non | CSV, Excel |
+| Stock faible | Articles au niveau ou en dessous du seuil minimum | Recherche, Catégorie | Non | CSV, Excel |
+| Ruptures | Articles à stock zéro | Recherche, Catégorie | Non | CSV, Excel |
+| Mouvements | Historique des mouvements de stock | Article, Type de mouvement | Oui | CSV, Excel |
+| Entrées | Historique des entrées | Statut | Oui | CSV, Excel |
+| Sorties | Historique des sorties | Motif, Statut | Oui | CSV, Excel |
+| Ventes | Historique des ventes | Statut | Oui | CSV, Excel |
+| Inventaires | Résumé par inventaire (écarts, quantité ajustée) | Statut | Oui | CSV, Excel |
+| Valorisation | Valeur du stock (stock × CMUP) et valeur totale | Recherche, Catégorie, Inclure inactifs | Non | CSV, Excel |
 
 > Le rapport Inventaires présente un **résumé par inventaire** (nombre de lignes, écarts positifs/négatifs, quantité totale ajustée) — pas le détail ligne à ligne, qui reste consultable dans le détail de chaque inventaire.
 
 ## Export
 
-- **Seul le format CSV est disponible** dans la version actuelle. Il n'existe pas d'export Excel ni PDF pour les rapports.
-- Bouton « Exporter CSV ».
-- Format technique du fichier : séparateur `;`, encodage compatible Excel (BOM UTF-8) — pensé pour une ouverture directe correcte dans Excel en français.
-- Si le rapport ne contient aucune donnée, l'export est bloqué avec le message : « Aucune donnée à exporter. »
+- **Deux formats sont disponibles** : CSV et **Excel (.xlsx)**. Il n'existe pas d'export PDF pour les rapports.
+- Boutons « Exporter CSV » et « Exporter Excel ».
+- Format CSV : séparateur `;`, encodage compatible Excel (BOM UTF-8) — pensé pour une ouverture directe correcte dans Excel en français.
+- Format Excel : fichier `.xlsx` directement exploitable (colonnes typées — montants et quantités en valeurs numériques, pas en texte), même contenu que l'export CSV du même rapport.
+- Si le rapport ne contient aucune donnée, l'export (CSV ou Excel) est bloqué avec le message : « Aucune donnée à exporter. »
 
 **Capture à insérer** : `[CAPTURE 17 — RAPPORTS]`
 
@@ -1043,7 +1092,7 @@ Bouton **« À propos »**, dans la barre supérieure de l'application (accessib
 
 # 22. Annexe — Matrice complète des permissions
 
-Cette annexe liste les **65 permissions réelles** définies dans l'application, regroupées par module, avec le détail exact pour chacun des quatre rôles (A = Administrateur, G = Gestionnaire de stock, V = Vendeur, C = Consultation).
+Cette annexe liste les **75 permissions réelles** définies dans l'application, regroupées par module, avec le détail exact pour chacun des quatre rôles (A = Administrateur, G = Gestionnaire de stock, V = Vendeur, C = Consultation).
 
 ### Dashboard
 | Permission | A | G | V | C |
@@ -1150,6 +1199,7 @@ Cette annexe liste les **65 permissions réelles** définies dans l'application,
 | Modifier un utilisateur | ✓ | — | — | — |
 | Activer/désactiver un compte utilisateur | ✓ | — | — | — |
 | Réinitialiser le mot de passe d'un utilisateur | ✓ | — | — | — |
+| Générer/régénérer son propre code de récupération administrateur | ✓ | — | — | — |
 
 ### Rôles
 | Permission | A | G | V | C |
@@ -1189,6 +1239,21 @@ Cette annexe liste les **65 permissions réelles** définies dans l'application,
 | Permission | A | G | V | C |
 |---|:-:|:-:|:-:|:-:|
 | Réinitialiser les données métier | ✓ | — | — | — |
+
+### Locations
+| Permission | A | G | V | C |
+|---|:-:|:-:|:-:|:-:|
+| Consulter les locations | ✓ | ✓ | ✓ | ✓ |
+| Créer une location | ✓ | ✓ | ✓ | — |
+| Modifier une location en brouillon | ✓ | ✓ | ✓ | — |
+| Confirmer une location | ✓ | ✓ | ✓ | — |
+| Enregistrer le départ d'une location | ✓ | ✓ | ✓ | — |
+| Enregistrer un retour (total ou partiel) sur une location | ✓ | ✓ | ✓ | — |
+| Annuler une location (avant départ uniquement) | ✓ | — | — | — |
+| Définir et restituer la caution d'une location | ✓ | ✓ | ✓ | — |
+| Enregistrer un paiement sur une location | ✓ | ✓ | ✓ | — |
+
+> Le fonctionnement du module Locations (statuts, quantités réservée/en location/immobilisée, calcul de la facturation au retour, gestion de la caution) n'est pas détaillé dans ce manuel — voir la documentation dédiée au module Locations.
 
 ---
 
