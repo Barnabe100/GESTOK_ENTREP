@@ -22,6 +22,7 @@ Toutes les informations de ce document ont été vérifiées dans le code actuel
 11. Gestion du stock
 12. Ventes et clients
 13. Inventaires
+13.5. Location d'articles (module Locations)
 14. Rapports
 15. Sauvegardes, restauration et réinitialisation des données métier
 16. Journal d'audit
@@ -58,7 +59,7 @@ Elle permet de :
 - gérer un catalogue d'articles, de catégories et de fournisseurs ;
 - suivre les mouvements de stock (entrées, sorties, ventes, inventaires) ;
 - enregistrer des ventes et gérer une liste de clients ;
-- gérer des **locations d'articles** (module Locations — réservation, départ, retour, facturation, caution ; voir la liste des menus, chapitre 9) pour les articles configurés dans ce mode de gestion ;
+- gérer des **locations d'articles** (module Locations — réservation, départ, retour, facturation, caution ; voir le chapitre 13.5 pour le détail complet) pour les articles configurés dans ce mode de gestion ;
 - consulter des tableaux de bord et des rapports ;
 - sauvegarder et restaurer les données ;
 - gérer les comptes des utilisateurs et leurs droits d'accès.
@@ -413,7 +414,7 @@ StockManager propose quatre rôles fixes. Il n'est pas possible d'en créer de n
 | Locations (créer/gérer le cycle de vie, paiements, caution) | ✓ | ✓ | ✓ | — |
 | Annuler une location (avant départ uniquement) | ✓ | — | — | — |
 
-> Cette matrice est une **présentation simplifiée**. Le détail complet des permissions (75 permissions réelles) figure en annexe (chapitre 22) — c'est ce détail qui fait foi en cas de doute. Le fonctionnement détaillé du module Locations (réservation, départ, retours partiels/complets, facturation, caution) n'est pas couvert par ce manuel et fait l'objet d'une documentation séparée.
+> Cette matrice est une **présentation simplifiée**. Le détail complet des permissions (75 permissions réelles) figure en annexe (chapitre 22) — c'est ce détail qui fait foi en cas de doute. Le fonctionnement détaillé du module Locations (réservation, départ, retours partiels/complets, facturation, caution) est couvert au chapitre 13.5.
 
 > **Important** — Les droits d'accès sont vérifiés à deux niveaux : au niveau de l'écran (un bouton non autorisé n'est pas affiché ou est désactivé) **et** au niveau du programme lui-même. Un utilisateur ne peut donc jamais contourner ses droits, même en essayant d'accéder à une fonctionnalité par un autre moyen.
 
@@ -812,6 +813,199 @@ Pour chaque écart non nul, un mouvement d'ajustement est généré automatiquem
 > **Point important** — **Une fois un inventaire validé, il ne peut pas être annulé** dans cette version de StockManager. Vérifiez soigneusement les quantités comptées avant de valider. Une correction ultérieure nécessitera un nouvel inventaire ou une autre opération de stock.
 
 **Capture à insérer** : `[CAPTURE 15 — INVENTAIRE]`
+
+---
+
+# 13.5 Location d'articles (module Locations)
+
+> Ce chapitre est inséré avec un numéro décimal (13.5) plutôt qu'en renumérotant les chapitres suivants, afin de ne pas invalider les renvois « voir chapitre N » déjà présents ailleurs dans ce manuel.
+
+## Objectif et différence avec une vente
+
+Le module Locations permet de louer temporairement des articles à un client : contrairement à une **vente**, qui transfère définitivement la propriété d'un article contre un prix, une **location** ne fait que sortir physiquement un article du stock pour une durée indéterminée à l'avance, avec une obligation de restitution (totale ou partielle) et une facturation calculée **au moment du retour**, en fonction du nombre de jours écoulés.
+
+## Mode de gestion d'un article : Vente ou Location
+
+Chaque article porte un **mode de gestion** exclusif : **Vente** (valeur par défaut à la création) ou **Location**. Les deux modes sont mutuellement exclusifs :
+
+- un article en mode **Vente** ne peut jamais figurer sur une location (refusé par le formulaire, qui ne propose même pas ces articles) ;
+- un article en mode **Location** ne peut jamais être vendu — message exact si on tente malgré tout de l'ajouter à une vente : *« L'article « [référence] » est en mode Location : il ne peut pas être vendu. »*
+
+### Conditions pour qu'un article puisse être loué
+
+- l'article doit être **actif** ;
+- son mode de gestion doit être **Location** ;
+- un **tarif de location journalier** doit être disponible, soit déjà renseigné sur la fiche article (champ « Tarif de location (par jour) », sans objet en mode Vente), soit saisi manuellement au moment de l'ajout de la ligne de location — l'un des deux est obligatoire, sinon la ligne est refusée.
+
+### Changer le mode de gestion d'un article
+
+Depuis le module Articles, bouton **« Mode de gestion… »** (permission `ARTICLE_UPDATE`) : ouvre un dialogue dédié indiquant le mode actuel et proposant de basculer vers l'autre mode, avec un bouton **« Confirmer la bascule »**. Ce changement n'est **jamais** un simple champ du formulaire d'édition habituel : chaque bascule (dans les deux sens) est conservée définitivement dans un historique dédié, consultable par programme mais sans écran de consultation dédié dans cette version.
+
+**Restriction** : il est impossible de rebasculer un article de **Location** vers **Vente** tant qu'il reste concerné par une ligne de location **physiquement en cours** (quantité « en location » non nulle sur au moins une location non retournée). À l'inverse, une quantité simplement **réservée** (location en brouillon ou confirmée, pas encore partie) n'empêche jamais la bascule — seule une sortie physique du stock la bloque.
+
+## Permissions du module Locations
+
+| Permission | Administrateur | Gestionnaire de stock | Vendeur | Consultation |
+|---|:-:|:-:|:-:|:-:|
+| Consulter les locations | ✓ | ✓ | ✓ | ✓ |
+| Créer une location | ✓ | ✓ | ✓ | — |
+| Modifier une location en brouillon | ✓ | ✓ | ✓ | — |
+| Confirmer une location | ✓ | ✓ | ✓ | — |
+| Enregistrer le départ d'une location | ✓ | ✓ | ✓ | — |
+| Enregistrer un retour (total ou partiel) | ✓ | ✓ | ✓ | — |
+| Définir et restituer la caution | ✓ | ✓ | ✓ | — |
+| Enregistrer un paiement sur une location | ✓ | ✓ | ✓ | — |
+| Annuler une location (avant départ uniquement) | ✓ | — | — | — |
+
+Le rôle Vendeur dispose donc des mêmes droits opérationnels que le Gestionnaire de stock sur ce module (hormis l'annulation, réservée à l'Administrateur) — cohérent avec son rôle déjà existant sur les Ventes.
+
+## Cycle de vie d'une location
+
+### Statuts
+
+Brouillon → Confirmée → En cours → Retournée, ou Brouillon/Confirmée → Annulée. **Une location ne peut plus jamais être annulée après son départ** : une fois le stock physiquement sorti, seule une suite de retours permet de la clore.
+
+### 1. Création (Brouillon)
+
+Menu **Locations** → bouton **« Nouvelle location »**.
+
+- Champs : **Date** (obligatoire, jamais dans le futur), **Client** (obligatoire — une location, à la différence d'une vente, n'a pas d'équivalent « comptant/sans client » : un client identifié est toujours exigé), Commentaire (facultatif).
+- Lignes : bouton **« Ajouter une ligne »** ouvre un formulaire dédié — **Article** (uniquement les articles actifs en mode Location), **Quantité** (strictement positive), **Tarif journalier** (pré-rempli depuis le tarif catalogue de l'article choisi, librement modifiable). Bouton **« Supprimer la ligne »** pour retirer une ligne sélectionnée.
+- Bouton **« Enregistrer en brouillon »**.
+
+**Aucun effet sur le stock à ce stade** : la quantité demandée est seulement enregistrée comme « réservée », une information de confort, jamais décomptée d'`Article.stock_actuel` (exactement comme une vente en brouillon). Seule une location en **Brouillon** peut être modifiée (bouton « Modifier ») ou **supprimée physiquement** (bouton « Supprimer ») — ce sont les deux seules actions disponibles directement depuis la liste ; tout le reste du cycle de vie se pilote depuis l'écran de détail (bouton « Détails »).
+
+### 2. Confirmation
+
+Depuis le détail de la location, bouton **« Confirmer »** (actif uniquement en Brouillon). Revérifie que chaque article de la location est toujours actif et toujours en mode Location (sa situation peut avoir changé depuis la création du brouillon) et qu'il y a au moins une ligne. **N'a toujours aucun effet sur le stock.** Passe au statut **Confirmée**.
+
+### 3. Départ
+
+Bouton **« Enregistrer le départ »** (actif uniquement en Confirmée) ouvre un dialogue demandant la **Date de départ** (jamais dans le futur, jamais antérieure à la date de la location), avec un bouton **« Confirmer le départ »**.
+
+C'est le **seul moment** où le stock est physiquement décrémenté : pour chaque ligne, la quantité réservée devient « en location » et un mouvement de stock est généré (consultable comme n'importe quel mouvement — voir la mise en garde ci-dessous sur son libellé). La date de départ, une fois enregistrée, n'est plus jamais modifiée : elle sert de point de départ au calcul des frais à chaque retour.
+
+### 4. Consultation du détail et de l'état
+
+Bouton **« Détails »**, disponible quel que soit le statut. Affiche : numéro, date, client, créée par, statut, date de départ (si déjà partie), motif d'annulation (si annulée), commentaire, puis trois zones :
+- un tableau des **lignes** (article, quantité prévue, réservée, en location, immobilisée, tarif/jour, montant déjà facturé) ;
+- un historique des **retours** (date, ligne concernée, quantité en bon état, quantité immobilisée, montant facturé, utilisateur) ;
+- les montants **Total facturé / Payé / Reste à payer**, suivis d'un historique des **paiements** (date, montant, mode, référence, utilisateur) ;
+- la **caution** (montant, restitué/retenu).
+
+### 5. Retours (partiels puis complet)
+
+Bouton **« Enregistrer un retour »** (actif uniquement en Statut En cours). Ouvre un formulaire listant uniquement les lignes dont la quantité « en location » est encore positive — si aucune ligne n'est éligible, le message *« Aucune ligne n'est encore en location. »* s'affiche à la place.
+
+Champs : **Ligne** (affiche la quantité encore en location, en lecture seule), **Date de retour** (jamais dans le futur, jamais antérieure à la date de départ), **Quantité en bon état**, **Quantité immobilisée (non remise en stock)**, Commentaire. Au moins l'une des deux quantités doit être strictement positive, et leur somme ne peut pas dépasser la quantité encore en location de la ligne choisie.
+
+Chaque retour est un **événement indépendant et historisé** (jamais modifié ni supprimé ensuite) :
+- la quantité remise en **bon état** régénère du stock disponible (mouvement de stock, voir plus bas) ;
+- la quantité **immobilisée** ne redevient jamais disponible (voir « Effets sur le stock et les articles » ci-dessous) ;
+- un **retour partiel peut être suivi d'autres retours** sur la même ligne, jusqu'à épuisement complet de la quantité partie.
+
+**Pourquoi une location reste « En cours » après un retour partiel** : une location peut porter sur plusieurs lignes (plusieurs articles différents). Le statut global ne passe à **Retournée** que lorsque **toutes** les lignes de la location ont une quantité « en location » revenue à zéro — il n'existe pas de statut intermédiaire par ligne, seules les quantités affichées par ligne permettent de suivre l'avancement.
+
+### 6. Annulation
+
+Bouton **« Annuler la location »** (actif uniquement en Brouillon ou Confirmée — jamais après le départ). Comme pour les entrées, sorties et ventes, une boîte de dialogue demande un **motif d'annulation obligatoire** (au moins 5 caractères). Aucun mouvement de stock n'est généré par l'annulation elle-même : rien n'a encore été sorti du stock avant le départ.
+
+### 7. Facturation, encaissement et historiques
+
+Le montant facturé n'existe qu'à partir du **premier retour enregistré** (voir « Calcul des frais » ci-dessous) — avant cela, le total facturé affiché est 0.
+
+Bouton **« Paiement… »** (actif dès le statut En cours, et aussi en Retournée). Affiche Total facturé / Déjà payé / Reste à payer, puis demande **Montant du paiement** (obligatoire), Mode de paiement (champ libre, suggestions « Espèces, Mobile Money, Virement… »), Référence, Commentaire. **Tout paiement qui dépasserait le montant déjà facturé est refusé** — concrètement, avant le premier retour, le montant facturé est encore nul et aucun paiement, même minime, ne peut donc être enregistré tant qu'aucun retour n'a eu lieu. Chaque paiement est conservé individuellement dans l'historique des paiements, jamais fusionné — et ce journal est **totalement indépendant** du journal des paiements des ventes (`Paiement`) : encaisser une location n'a aucun effet sur les créances/paiements d'une vente, et réciproquement.
+
+## Calcul des frais
+
+### Règle
+
+- Le **tarif journalier** d'une ligne est enregistré dès la création de celle-ci (pré-rempli depuis le tarif catalogue de l'article, mais librement modifiable à la saisie). Il reste modifiable tant que la location est en **Brouillon** (en la rouvrant via « Modifier »). **À partir de la confirmation de la location, ce tarif est figé** : aucune étape suivante du cycle de vie (départ, retour, annulation, paiement) ne le modifie plus.
+- **Une modification ultérieure du tarif de location de l'article au catalogue ne change jamais le tarif déjà retenu sur une ligne existante** — c'est la valeur historisée sur la ligne qui compte, jamais le tarif catalogue courant.
+- À **chaque retour**, le montant dû pour cet événement est calculé **une seule fois** et conservé définitivement (jamais recalculé ensuite) selon la formule :
+
+> montant du retour = tarif journalier de la ligne × nombre de jours entre la date de départ et la date de ce retour (**minimum 1 jour**) × quantité traitée lors de cet événement (bon état **+** immobilisée confondues — les deux dues également, un article immobilisé a quand même été loué pendant sa durée de sortie)
+
+- Les frais des **retours successifs s'accumulent** : le montant total facturé d'une ligne est la somme des montants de tous ses événements de retour ; le montant total facturé d'une location est la somme de celui de toutes ses lignes.
+
+### Exemple numérique (illustratif, conforme à la règle ci-dessus)
+
+Article loué à 500 (unité monétaire configurée) par jour, quantité louée : 5, départ le 1er janvier.
+
+| Événement | Date | Jours écoulés depuis le départ | Quantité traitée | Montant de l'événement |
+|---|---|:-:|:-:|---:|
+| Retour partiel n°1 | 2 janvier | max(1, 1) = 1 | 2 (bon état) | 500 × 1 × 2 = **1 000** |
+| Retour final n°2 | 5 janvier | max(4, 1) = 4 | 3 (bon état) | 500 × 4 × 3 = **6 000** |
+
+**Total facturé pour cette location : 1 000 + 6 000 = 7 000.** Le retour n°1 ne clôt pas la location (il reste 3 unités en location) ; le retour n°2 ramène la quantité en location à 0 sur cette ligne, ce qui fait passer la location à **Retournée**.
+
+### Limites de cette méthode de calcul
+
+- La durée facturée se compte en **jours entiers uniquement** — aucune proratisation à l'heure : un retour le jour même du départ facture quand même un jour plein (minimum 1 jour).
+- **Aucune distinction entre jours calendaires et jours ouvrés** : la méthode compte des jours calendaires simples, sans paramètre pour exclure les week-ends ou jours fériés, et ce choix n'est pas configurable.
+- Chaque article d'une même ligne loué à des quantités différentes partage le même tarif journalier unique saisi sur cette ligne — il n'existe pas de tarif dégressif selon la quantité ou la durée.
+
+## Cautions
+
+La caution est **entièrement distincte** des frais de location (montant facturé via les retours) et des paiements de location (journal `LocationPaiement`) — trois montants suivis séparément sur une même location, sans aucun lien de calcul automatique entre eux.
+
+### Versement et modification du montant
+
+Bouton **« Caution… »** dans le détail de la location (disponible quel que soit le statut, sous réserve de la permission). Avant le départ (Brouillon ou Confirmée), le champ proposé est **« Nouveau montant de la caution »** : il remplace entièrement le montant actuel (ce n'est jamais un calcul, seulement une saisie manuelle), et ne peut pas être réduit en dessous de ce qui a déjà été restitué.
+
+### Restitution ou retenue
+
+Une fois le départ effectué (En cours ou Retournée) — et aussi après une annulation —, le même bouton propose à la place **« Montant à restituer/retenir »** : chaque saisie s'ajoute au cumul déjà enregistré (`Restituée/retenue`, affiché dans le détail), **jamais une soustraction ni un remboursement automatique**. Rien dans l'application ne calcule ce qu'il « faudrait » restituer à partir des frais ou de l'état des articles retournés : c'est une décision et une saisie entièrement manuelles de l'utilisateur.
+
+### Contrôle
+
+Toute restitution/retenue qui ferait dépasser le montant total de la caution versée est refusée.
+
+### Limite de l'historique
+
+Le détail d'une location n'affiche que **deux totaux cumulés** (montant de la caution, et restitué/retenu) — contrairement aux retours et aux paiements, il n'existe **pas** de tableau listant chaque restitution/retenue individuelle avec sa date et son utilisateur.
+
+## Effets sur le stock et les articles
+
+| Étape | Effet sur le stock | Mouvement généré |
+|---|---|---|
+| Départ | `stock_actuel` diminue de la quantité réservée de chaque ligne | Un mouvement par ligne (quantité négative) |
+| Retour — quantité en bon état | `stock_actuel` augmente de cette quantité | Un mouvement (quantité positive) |
+| Retour — quantité immobilisée | **Aucun effet** : ne revient jamais en stock disponible | Aucun mouvement |
+
+Ni l'un ni l'autre de ces deux mouvements ne recalcule le CMUP de l'article (seule une Entrée de stock le recalcule).
+
+> **À noter sur leur consultation dans l'écran Mouvements** — Ces deux mouvements sont bien consultables comme tout autre mouvement (écran Mouvements, et filtre « Type de mouvement » des Rapports), mais ils s'affichent sous leur **libellé technique brut** (« LOCATION_SORTIE » / « LOCATION_RETOUR »), à la différence des types Entrée/Sortie/Vente/Ajustement/Annulation qui bénéficient d'un libellé traduit en français dans l'écran Mouvements. Ce n'est pas un défaut documenté comme corrigé : c'est le libellé réellement affiché dans la version actuelle.
+
+### Immobilisation : pas de remise en état ni de mise au rebut
+
+Une quantité marquée « immobilisée » lors d'un retour ne redevient **jamais** disponible dans cette version : il n'existe **aucun écran ni aucune action** permettant de la remettre en stock vendable/louable, ni de la sortir formellement par une mise au rebut. C'est une limitation connue et acceptée de cette version, pas un oubli d'affichage.
+
+### Exclusivité Vente/Location (rappel)
+
+Voir « Mode de gestion d'un article » ci-dessus : un article en mode Location ne peut jamais être vendu, et toute bascule de mode est historisée de façon permanente et consultable par un changement jamais effectué en simple modification de fiche.
+
+## Statuts, erreurs et contrôles
+
+### Transitions autorisées
+
+Brouillon → Confirmée → En cours → Retournée (automatique, jamais déclenchée manuellement) ; Brouillon → Annulée ; Confirmée → Annulée. Toute autre tentative de transition est refusée (par exemple : confirmer une location déjà confirmée, faire partir une location encore en brouillon, annuler une location déjà partie).
+
+### Contrôles de quantité et de disponibilité réellement appliqués
+
+- Toute quantité saisie doit être strictement positive (quantité de ligne, quantité de paiement, montant de caution) ou au moins non négative selon le champ (quantités d'un retour) ; un retour doit porter sur une quantité totale strictement positive.
+- Un retour ne peut jamais dépasser la quantité encore en location de la ligne concernée.
+- Les dates de location, de départ et de retour ne peuvent jamais être dans le futur ; la date de départ ne peut pas précéder la date de la location ; la date d'un retour ne peut pas précéder la date de départ.
+- Un article doit être actif pour être ajouté à une ligne, et sa situation (actif + toujours en mode Location) est revérifiée à la confirmation ; au départ, seul son caractère actif est revérifié (pas son mode de gestion).
+- Un client doit être actif pour être sélectionné.
+
+### Contrôle de concurrence (mécanisme interne, pas une procédure utilisateur)
+
+Lorsque deux retours sont enregistrés en même temps sur deux lignes différentes d'une même location, la mise à jour des quantités et le passage automatique au statut Retournée sont chacun calculés par une instruction unique évaluée directement par la base de données au moment de l'écriture, et non à partir d'une valeur déjà chargée en mémoire — ceci afin qu'aucune mise à jour concurrente ne soit perdue et que le passage à « Retournée » ne soit jamais manqué. C'est un mécanisme de fiabilité interne : il n'implique aucune action ni aucun écran supplémentaire côté utilisateur.
+
+### Contrôles d'intégrité
+
+La base de données garantit en plus, au niveau du schéma : qu'une caution restituée/retenue ne peut jamais dépasser la caution versée ni être négative ; que les quantités d'une ligne (prévue, réservée, en location, immobilisée) et le tarif journalier ne sont jamais négatifs (la quantité prévue devant être strictement positive) ; qu'un événement de retour porte toujours sur une quantité totale strictement positive et un montant facturé non négatif.
 
 ---
 
@@ -1253,7 +1447,7 @@ Cette annexe liste les **75 permissions réelles** définies dans l'application,
 | Définir et restituer la caution d'une location | ✓ | ✓ | ✓ | — |
 | Enregistrer un paiement sur une location | ✓ | ✓ | ✓ | — |
 
-> Le fonctionnement du module Locations (statuts, quantités réservée/en location/immobilisée, calcul de la facturation au retour, gestion de la caution) n'est pas détaillé dans ce manuel — voir la documentation dédiée au module Locations.
+> Le fonctionnement du module Locations (statuts, quantités réservée/en location/immobilisée, calcul de la facturation au retour, gestion de la caution) est détaillé au chapitre 13.5.
 
 ---
 

@@ -27,6 +27,7 @@
 15. [Ventes](#15-ventes)
 16. [Paiements](#16-paiements)
 17. [Créances](#17-créances)
+17.1. [Locations (détail)](#171-locations-détail)
 18. [Inventaires](#18-inventaires)
 19. [Mouvements](#19-mouvements)
 20. [Dashboard](#20-dashboard)
@@ -74,7 +75,7 @@ Objectifs additionnels envisageables pour une version Web (à valider avec le m�
 ## 4. Périmètre fonctionnel Desktop V1
 
 ### A. CE QUI EXISTE
-Modules implémentés et fonctionnels : Authentification (dont récupération de compte Administrateur par code à usage unique), Tableau de bord, Articles, Catégories, Fournisseurs, Clients, Motifs de sortie, Entrées de stock, Sorties de stock, Ventes, Paiements, Créances, Locations (réservation/départ/retour d'articles configurés pour ce mode, facturation au retour, caution — non détaillé dans ce document), Inventaires, Mouvements de stock, Rapports (9 rapports + export CSV/Excel), Utilisateurs, Rôles & permissions, Sauvegardes/restauration, Réinitialisation des données métier, Journal d'audit, Paramètres entreprise, Licences, Reçus (impression/export PDF A4 et ticket 80 mm).
+Modules implémentés et fonctionnels : Authentification (dont récupération de compte Administrateur par code à usage unique), Tableau de bord, Articles, Catégories, Fournisseurs, Clients, Motifs de sortie, Entrées de stock, Sorties de stock, Ventes, Paiements, Créances, Locations (réservation/départ/retour d'articles configurés pour ce mode, facturation au retour, caution — voir §17.1), Inventaires, Mouvements de stock, Rapports (9 rapports + export CSV/Excel), Utilisateurs, Rôles & permissions, Sauvegardes/restauration, Réinitialisation des données métier, Journal d'audit, Paramètres entreprise, Licences, Reçus (impression/export PDF A4 et ticket 80 mm).
 
 ## 5. Périmètre hors scope
 
@@ -173,6 +174,38 @@ Rattachés à une vente **validée** uniquement. Montant (>0, ≤ reste à payer
 
 ### A. CE QUI EXISTE
 Aucun service dédié : l'écran Créances réutilise intégralement `SaleService.list_sales` filtré sur les ventes validées, avec filtres client/statut de paiement/période. **Filtre de statut de paiement par défaut côté vue uniquement (« En cours ») : exclut les ventes intégralement payées** — un filtre explicite (« Toutes » ou « Payée ») permet de les inclure (`app/views/pages/receivables_page.py`, sentinel `_EN_COURS`). Reste à payer = `max(total − montant_payé, 0)`. Résumé agrégé par client disponible (`app/services/sales/sale_service.py:get_client_receivable_summary`).
+
+## 17.1 Locations (détail)
+
+> Section ajoutée pour détailler le module déjà mentionné en §4/§39/§40 ; numérotée en décimal (17.1) pour ne renuméroter aucune des sections suivantes de ce document (dont les renvois internes, ex. §7/§40).
+
+### A. CE QUI EXISTE
+
+**Modèle et cycle de vie** (`app/models/rental.py`, `app/services/rentals/location_service.py`) : `Location` (numéro `LOC-NNNNNN`, date, client obligatoire — pas d'équivalent « comptant », utilisateur, statut, date de départ, caution, commentaire, motif d'annulation) → `LocationLigne` (article, `qte_prevue`/`qte_reservee`/`qte_en_location`/`qte_immobilisee`, `tarif_jour` historisé) → `LocationRetour` (un par événement de retour, immuable) et `LocationPaiement` (journal immuable, totalement distinct de `Paiement`/Ventes).
+
+Cycle (`StatutLocation`) : `BROUILLON → CONFIRMEE → EN_COURS → RETOURNEE`, ou `BROUILLON/CONFIRMEE → ANNULEE` — jamais d'annulation après le départ (`LocationService.cancel_location`, `ConflictError` sinon).
+
+- **Brouillon/Confirmée** : aucun effet sur le stock ; `qte_reservee` purement informative (même principe qu'une vente en brouillon). Seule une location en Brouillon est modifiable/supprimable physiquement.
+- **Confirmation** (`confirm_location`) : revérifie que chaque article est actif et toujours en mode `LOCATION` ; aucun effet sur le stock.
+- **Départ** (`depart_location`) : unique point de décrémentation du stock — un mouvement `LOCATION_SORTIE` par ligne (quantité négative = `qte_reservee`, qui devient `qte_en_location`) via `StockService.apply_movement` (jamais une seconde logique de décompte). Ne revérifie que le caractère actif de l'article, **pas** son mode de gestion (constaté dans le code : seule la confirmation revérifie `mode_gestion`).
+- **Retour** (`return_location_line`) : décrémente `qte_en_location` de la quantité totale traitée (bon état + immobilisée) ; la quantité en bon état génère un mouvement `LOCATION_RETOUR` (restaure le stock) ; la quantité immobilisée n'est jamais remise en stock (aucun écran de remise en état/mise au rebut — limitation connue, acceptée, documentée dans le code lui-même). Passage automatique à `RETOURNEE` dès que **toutes** les lignes ont `qte_en_location == 0`, calculé via une mise à jour SQL atomique (`UPDATE ... WHERE ... AND NOT EXISTS (...)`) plutôt qu'une collection Python déjà chargée, pour rester correct sous retours concurrents sur des lignes différentes de la même location (test dédié : `tests/test_location_service.py::test_concurrent_returns_on_different_lines_do_not_lose_updates`).
+- Ni `LOCATION_SORTIE` ni `LOCATION_RETOUR` ne recalcule le CMUP (seul `ENTREE` le fait).
+- **Annulation** (`cancel_location`) : motif obligatoire (même convention et mêmes bornes que `Entree`/`Sortie`/`Vente` : ≥5 caractères), jamais possible après le départ.
+
+**Facturation** (`return_location_line`) : à chaque retour, `montant_facture = tarif_jour × max((date_retour − date_depart).days, 1) × (quantite_bon_etat + quantite_immobilisee)`, calculé une seule fois et jamais recalculé ensuite. `tarif_jour` est historisé à la création de la ligne (pré-rempli depuis `Article.tarif_location_jour`, modifiable librement jusqu'à la confirmation via `update_location` qui reconstruit les lignes ; aucune méthode du service ne le modifie plus après) — une modification ultérieure du tarif catalogue de l'article n'affecte jamais une ligne déjà créée. Les frais des retours successifs s'accumulent (`LocationLigneSummary.montant_facture_total`, somme des `LocationRetour`).
+
+**Paiements** (`record_payment`) : autorisés uniquement en `EN_COURS`/`RETOURNEE` ; refusé si le cumul dépasserait `montant_total_facture` — en pratique, aucun paiement n'est acceptable avant le premier retour (montant facturé encore nul). Journal `LocationPaiement` entièrement séparé de celui des ventes.
+
+**Caution** (`set_caution_montant`/`record_caution_return`) : montant fixe, modifiable intégralement tant que la location n'est pas partie (`BROUILLON`/`CONFIRMEE`) ; après quoi seule une restitution/retenue cumulative (`caution_rendue`) est possible, **sans aucun contrôle de statut** dans `record_caution_return` (constaté dans le code : cette méthode ne vérifie que l'existence de la location et le plafond, pas son statut — une restitution/retenue reste possible même sur une location Annulée). Contraintes SQL : `caution_rendue >= 0` et `<= caution_montant`. Aucune caution individuelle n'est historisée (seuls les deux cumuls sont conservés) ; aucun calcul automatique de restitution à partir des frais ou de l'état du matériel.
+
+**Exclusivité Vente/Location** (`Article.mode_gestion`, `ArticleModeGestionChangement`) : un article en mode `LOCATION` est refusé par `SaleService` (*« L'article « [référence] » est en mode Location : il ne peut pas être vendu. »*) ; `ArticleService.switch_mode_gestion` bloque le retour vers `VENTE` uniquement si `qte_en_location > 0` sur une ligne de location de cet article (`qte_reservee` n'entre volontairement pas en jeu). Chaque bascule, dans les deux sens, est historisée de façon permanente (`ArticleModeGestionChangement`, jamais un simple champ du formulaire d'édition).
+
+**Consultation** : les mouvements `LOCATION_SORTIE`/`LOCATION_RETOUR` sont consultables comme tout mouvement (écran Mouvements, filtre « Type de mouvement » des Rapports), mais s'affichent sous leur valeur technique brute dans l'écran Mouvements (`app/views/pages/mouvements_page.py::_TYPE_LABELS` ne les mappe pas, contrairement aux 5 types historiques) ; le filtre de type du rapport Mouvements affiche de toute façon la valeur brute pour tous les types, Locations compris.
+
+**Permissions** (`app/db/seed.py`, module `locations`, 9 permissions) : `LOCATION_VIEW` (les 4 rôles), `LOCATION_CREATE`/`UPDATE`/`CONFIRM`/`DEPART`/`RETURN`/`CAUTION_MANAGE`/`PAYMENT_CREATE` (Administrateur, Gestionnaire de stock, Vendeur), `LOCATION_CANCEL` (Administrateur uniquement) — voir §40 pour la matrice complète mise à jour.
+
+### B. ÉVOLUTION POSSIBLE (WEB)
+Remise en état / mise au rebut d'une quantité immobilisée, historique détaillé des mouvements de caution, libellés traduits pour les types de mouvement Locations dans les filtres : aucune de ces extensions n'existe en V1 ; à considérer dans une évolution future sans que cela modifie l'existant.
 
 ## 18. Inventaires
 
@@ -513,7 +546,7 @@ Question ouverte, à trancher avec le métier avant toute conception technique :
 | Ventes | ✅ | ✅ (conservé) | Client optionnel conservé (vente comptant) |
 | Paiements | ✅ | ✅ (conservé) | Immuabilité à conserver impérativement |
 | Créances | ✅ (vue dérivée des ventes) | ✅ (conservé) | Pas de modèle dédié en V1, réutilise `SaleService` |
-| Locations | ✅ (réservation/départ/retour, facturation, caution) | ✅ (conservé, à rediscuter) | Non détaillé dans ce document (cf. documentation dédiée au module) |
+| Locations | ✅ (réservation/départ/retour, facturation, caution) | ✅ (conservé, à rediscuter) | Détail en §17.1 |
 | Inventaires | ✅ (sans annulation) | ✅ (conservé, à rediscuter) | Absence d'annulation à revalider comme règle métier permanente ou limitation V1 à lever |
 | Mouvements | ✅ (lecture seule) | ✅ (conservé) | Journal immuable |
 | Rapports | ✅ (9 rapports, export CSV + Excel) | ⚙️ à étendre | Export PDF envisageable |
