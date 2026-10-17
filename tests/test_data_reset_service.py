@@ -6,9 +6,10 @@ import pytest
 from app.config.settings import get_settings
 from app.db.session import session_scope
 from app.models.audit import AuditLog
-from app.models.enums import ResultatAudit
+from app.models.enums import ModeGestionArticle, ResultatAudit
 from app.models.rbac import Permission, Role
 from app.models.user import User
+from app.services.rentals.location_service import LocationLigneInput
 from app.services.sales.sale_service import VenteLigneInput
 from app.utils.exceptions import PermissionDeniedError, ValidationError
 
@@ -52,13 +53,58 @@ def _seed_full_business_data(stack):
     return {"category": category, "supplier": supplier, "motif": motif, "client": client, "article": article}
 
 
+def _seed_location_data(stack, with_return: bool = False):
+    """Peuple une location (confirmée, partie, et au besoin avec un retour
+    partiel) — jeu de données minimal pour reproduire le défaut d'origine
+    (clé étrangère ``location_lignes``/``locations`` absente de l'ordre de
+    suppression) et vérifier sa correction."""
+    category = stack.categories.create_category("Matériel de location")
+    client = stack.clients.create_client("Client Location Reset")
+    article = stack.articles.create_article(
+        "ART-LOC-RESET", "Article de location", category.id, "unité",
+        Decimal("1000"), Decimal("0"), Decimal("0"),
+        stock_initial=Decimal("10"), tarif_location_jour=Decimal("500"),
+    )
+    stack.articles.switch_mode_gestion(article.id, ModeGestionArticle.LOCATION)
+
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("2"))]
+    )
+    stack.rentals.confirm_location(location.id)
+    departed = stack.rentals.depart_location(location.id, date(2026, 1, 1))
+
+    if with_return:
+        ligne_id = departed.lignes[0].id
+        stack.rentals.return_location_line(
+            location.id, ligne_id, date(2026, 1, 2), quantite_bon_etat=Decimal("1")
+        )
+        stack.rentals.record_payment(location.id, Decimal("500"))
+
+    return {"category": category, "client": client, "article": article, "location": location}
+
+
+def _seed_article_mode_gestion_change_without_location(stack):
+    """Change le mode de gestion d'un article sans jamais créer de location —
+    cause distincte mais apparentée du même défaut d'origine
+    (``article_mode_gestion_changements`` absente de l'ordre de
+    suppression)."""
+    category = stack.categories.create_category("Matériel sans location")
+    article = stack.articles.create_article(
+        "ART-MODE-SEUL", "Article sans location", category.id, "unité",
+        Decimal("1000"), Decimal("0"), Decimal("0"), stock_initial=Decimal("5"),
+    )
+    stack.articles.switch_mode_gestion(article.id, ModeGestionArticle.LOCATION)
+    return {"category": category, "article": article}
+
+
 def _business_table_counts() -> dict[str, int]:
-    from app.models.catalog import Article, Category, ExitReason, Supplier
+    from app.models.catalog import Article, ArticleModeGestionChangement, Category, ExitReason, Supplier
     from app.models.client import Client
     from app.models.documents import Entree, EntreeLigne, Sortie, SortieLigne, Vente, VenteLigne
     from app.models.inventory import Inventaire, InventaireLigne
     from app.models.movement import MouvementStock
     from app.models.payment import Paiement
+    from app.models.rental import Location, LocationLigne, LocationPaiement, LocationRetour
 
     models = {
         "articles": Article, "categories": Category, "fournisseurs": Supplier, "motifs_sortie": ExitReason,
@@ -66,6 +112,9 @@ def _business_table_counts() -> dict[str, int]:
         "sortie_lignes": SortieLigne, "ventes": Vente, "vente_lignes": VenteLigne,
         "inventaires": Inventaire, "inventaire_lignes": InventaireLigne,
         "mouvements_stock": MouvementStock, "paiements": Paiement,
+        "locations": Location, "location_lignes": LocationLigne,
+        "location_retours": LocationRetour, "location_paiements": LocationPaiement,
+        "article_mode_gestion_changements": ArticleModeGestionChangement,
     }
     with session_scope(get_settings()) as session:
         return {label: session.query(model).count() for label, model in models.items()}
@@ -271,3 +320,141 @@ def test_reset_on_empty_database_succeeds_with_zero_counts(login_as) -> None:
 
     assert result.success is True
     assert all(count == 0 for count in result.deleted_counts.values())
+
+
+# -- module Locations (lot dédié) -----------------------------------------------------
+
+
+def test_reset_with_location_lines_raises_no_foreign_key_violation(login_as) -> None:
+    """Reproduit le cas minimal du défaut d'origine : une location confirmée
+    et partie (donc avec des lignes référençant articles/clients encore
+    existants) ne doit plus provoquer de violation de clé étrangère lors
+    de la réinitialisation."""
+    stack, _ = login_as("Administrateur")
+    _seed_location_data(stack)
+
+    result = stack.data_reset.reset_business_data()
+
+    assert result.success is True
+
+
+def test_reset_deletes_location_with_lines(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    _seed_location_data(stack)
+    assert _business_table_counts()["locations"] == 1
+    assert _business_table_counts()["location_lignes"] == 1
+
+    stack.data_reset.reset_business_data()
+
+    counts = _business_table_counts()
+    assert counts["locations"] == 0
+    assert counts["location_lignes"] == 0
+
+
+def test_reset_deletes_location_with_returns(login_as) -> None:
+    """Cycle complet confirmation -> départ -> retour partiel, avec paiement
+    enregistré — couvre LocationRetour et LocationPaiement."""
+    stack, _ = login_as("Administrateur")
+    _seed_location_data(stack, with_return=True)
+    counts_before = _business_table_counts()
+    assert counts_before["location_retours"] == 1
+    assert counts_before["location_paiements"] == 1
+
+    result = stack.data_reset.reset_business_data()
+
+    assert result.success is True
+    counts_after = _business_table_counts()
+    assert counts_after["location_retours"] == 0
+    assert counts_after["location_paiements"] == 0
+    assert counts_after["locations"] == 0
+    assert counts_after["location_lignes"] == 0
+
+
+def test_reset_deletes_article_mode_gestion_changement_history_without_any_location(login_as) -> None:
+    """Cause distincte mais apparentée : un simple changement de mode de
+    gestion, sans aucune location, suffit à lui seul à bloquer la
+    suppression si la table n'est pas dans l'ordre."""
+    stack, _ = login_as("Administrateur")
+    _seed_article_mode_gestion_change_without_location(stack)
+    assert _business_table_counts()["article_mode_gestion_changements"] == 1
+
+    result = stack.data_reset.reset_business_data()
+
+    assert result.success is True
+    assert _business_table_counts()["article_mode_gestion_changements"] == 0
+
+
+def test_reset_deletes_all_business_data_including_locations(login_as) -> None:
+    """Données métier ordinaires + Location combinées dans la même base."""
+    stack, _ = login_as("Administrateur")
+    _seed_full_business_data(stack)
+    _seed_location_data(stack, with_return=True)
+    assert sum(_business_table_counts().values()) > 0
+
+    result = stack.data_reset.reset_business_data()
+
+    assert result.success is True
+    assert sum(_business_table_counts().values()) == 0
+
+
+def test_reset_with_location_still_preserves_users_roles_permissions_and_settings(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    stack.parameters.update_config(nom="Ma Boutique Location", adresse=None, telephone=None, email=None, devise="XOF")
+    _seed_location_data(stack, with_return=True)
+
+    with session_scope(get_settings()) as session:
+        users_before = session.query(User).count()
+        roles_before = session.query(Role).count()
+        permissions_before = session.query(Permission).count()
+
+    stack.data_reset.reset_business_data()
+
+    with session_scope(get_settings()) as session:
+        assert session.query(User).count() == users_before
+        assert session.query(Role).count() == roles_before
+        assert session.query(Permission).count() == permissions_before
+    assert stack.parameters.get_config().nom == "Ma Boutique Location"
+
+
+def test_reset_remains_atomic_if_locations_tables_missing_from_delete_order(login_as, monkeypatch) -> None:
+    """Garde-fou de régression : réinjecte artificiellement l'ancien ordre de
+    suppression fautif (sans les tables Locations) pour prouver que, dans ce
+    cas précis, la vraie IntegrityError se produit et qu'elle laisse la
+    transaction intacte (rollback complet, aucune suppression partielle) —
+    ni le jour où ce correctif existe, ni avant."""
+    from app.models.catalog import Article, Category, ExitReason, Supplier
+    from app.models.client import Client
+    from app.models.documents import Entree, EntreeLigne, Sortie, SortieLigne, Vente, VenteLigne
+    from app.models.inventory import Inventaire, InventaireLigne
+    from app.models.movement import MouvementStock
+    from app.models.payment import Paiement
+
+    faulty_delete_order = [
+        ("mouvements_stock", MouvementStock),
+        ("paiements", Paiement),
+        ("vente_lignes", VenteLigne),
+        ("sortie_lignes", SortieLigne),
+        ("entree_lignes", EntreeLigne),
+        ("inventaire_lignes", InventaireLigne),
+        ("ventes", Vente),
+        ("sorties", Sortie),
+        ("entrees", Entree),
+        ("inventaires", Inventaire),
+        ("articles", Article),
+        ("clients", Client),
+        ("fournisseurs", Supplier),
+        ("motifs_sortie", ExitReason),
+        ("categories", Category),
+    ]
+    monkeypatch.setattr("app.services.system.data_reset_service._DELETE_ORDER", faulty_delete_order)
+
+    stack, _ = login_as("Administrateur")
+    _seed_location_data(stack)
+    counts_before = _business_table_counts()
+    assert sum(counts_before.values()) > 0
+
+    with pytest.raises(ValidationError):
+        stack.data_reset.reset_business_data()
+
+    counts_after = _business_table_counts()
+    assert counts_after == counts_before  # rien n'a été supprimé (rollback complet)

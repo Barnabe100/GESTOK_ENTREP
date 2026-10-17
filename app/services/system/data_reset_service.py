@@ -14,11 +14,21 @@ suppressions réussissent, soit aucune (rollback automatique).
 Ordre de suppression déterminé par le graphe de dépendances de clés
 étrangères réelles du schéma (enfants avant parents) — jamais un ordre
 arbitraire :
-    mouvements_stock, paiements
-    -> vente_lignes, sortie_lignes, entree_lignes, inventaire_lignes
-    -> ventes, sorties, entrees, inventaires
+    mouvements_stock, paiements, location_retours, location_paiements
+    -> vente_lignes, sortie_lignes, entree_lignes, inventaire_lignes, location_lignes
+    -> ventes, sorties, entrees, inventaires, locations
+    -> article_mode_gestion_changements
     -> articles
     -> clients, fournisseurs, motifs_sortie, categories
+
+Module Locations (lot dédié) : ``location_retours`` référence
+``location_lignes`` (doit donc être supprimée avant), ``location_lignes``
+référence ``locations`` et ``articles`` (avant les deux),
+``location_paiements`` référence ``locations`` (avant elle), et
+``article_mode_gestion_changements`` référence ``articles`` (avant elle) —
+``mouvements_stock`` référence déjà ``location_lignes`` (cinquième FK
+d'origine) mais est, comme pour les quatre autres documents, supprimée en
+tout premier, donc toujours avant.
 
 Ne touche jamais : utilisateurs, rôles, permissions, compte administrateur,
 paramètres de l'entreprise (dont logo/devise), licence, journal d'audit.
@@ -39,7 +49,7 @@ from sqlalchemy import text
 from app.config.settings import Settings
 from app.db.session import session_scope
 from app.models.audit import AuditLog
-from app.models.catalog import Article, Category, ExitReason, Supplier
+from app.models.catalog import Article, ArticleModeGestionChangement, Category, ExitReason, Supplier
 from app.models.client import Client
 from app.models.documents import Entree, EntreeLigne, Sortie, SortieLigne, Vente, VenteLigne
 from app.models.enums import ResultatAudit
@@ -49,6 +59,7 @@ from app.models.movement import MouvementStock
 from app.models.parameter import Parametre
 from app.models.payment import Paiement
 from app.models.rbac import Permission, Role
+from app.models.rental import Location, LocationLigne, LocationPaiement, LocationRetour
 from app.models.user import User
 from app.services.auth.permission_service import PermissionService
 from app.services.backups.backup_service import BackupService
@@ -61,14 +72,19 @@ logger = get_logger("services.system.data_reset")
 _DELETE_ORDER: list[tuple[str, type]] = [
     ("mouvements_stock", MouvementStock),
     ("paiements", Paiement),
+    ("location_retours", LocationRetour),
+    ("location_paiements", LocationPaiement),
     ("vente_lignes", VenteLigne),
     ("sortie_lignes", SortieLigne),
     ("entree_lignes", EntreeLigne),
     ("inventaire_lignes", InventaireLigne),
+    ("location_lignes", LocationLigne),
     ("ventes", Vente),
     ("sorties", Sortie),
     ("entrees", Entree),
     ("inventaires", Inventaire),
+    ("locations", Location),
+    ("article_mode_gestion_changements", ArticleModeGestionChangement),
     ("articles", Article),
     ("clients", Client),
     ("fournisseurs", Supplier),
