@@ -77,6 +77,11 @@ PERMISSIONS: list[tuple[str, str, str]] = [
     ("USER_UPDATE", "Modifier un utilisateur", "utilisateurs"),
     ("USER_ACTIVATE", "Activer/désactiver un compte utilisateur", "utilisateurs"),
     ("USER_RESET_PASSWORD", "Réinitialiser le mot de passe d'un utilisateur", "utilisateurs"),
+    (
+        "ADMIN_RECOVERY_MANAGE",
+        "Générer/régénérer son propre code de récupération administrateur",
+        "utilisateurs",
+    ),
     ("ROLE_VIEW", "Consulter les rôles et permissions", "roles"),
     ("ROLE_UPDATE", "Modifier les permissions d'un rôle", "roles"),
     ("SETTINGS_VIEW", "Consulter les paramètres", "parametres"),

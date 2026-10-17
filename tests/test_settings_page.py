@@ -19,7 +19,7 @@ def _no_blocking_dialogs(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _build_page(stack) -> SettingsPage:
-    return SettingsPage(stack.parameters, stack.permissions)
+    return SettingsPage(stack.parameters, stack.permissions, stack.account_recovery)
 
 
 def _make_test_image(path: Path, width: int = 20, height: int = 20) -> None:
@@ -168,3 +168,40 @@ def test_non_admin_role_sees_disabled_form(qtbot, login_as) -> None:
     assert page.nom_edit.isEnabled() is False
     assert page.save_profile_button.isEnabled() is False
     assert page.choose_logo_button.isEnabled() is False
+
+
+# -- génération du code de récupération administrateur -----------------------------
+
+
+def test_generate_recovery_code_button_enabled_for_administrateur(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.generate_recovery_code_button.isEnabled() is True
+
+
+@pytest.mark.parametrize("role_name", ["Gestionnaire de stock", "Vendeur", "Consultation"])
+def test_generate_recovery_code_button_disabled_for_non_administrateur(qtbot, login_as, role_name) -> None:
+    stack, _ = login_as(role_name)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.generate_recovery_code_button.isEnabled() is False
+
+
+def test_generate_recovery_code_returns_code_and_shows_dialog(qtbot, login_as, monkeypatch: pytest.MonkeyPatch) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    shown_codes = []
+    monkeypatch.setattr(
+        "app.views.pages.settings_page.RecoveryCodeDisplayDialog",
+        lambda code, parent=None: shown_codes.append(code) or type("_FakeDialog", (), {"exec": lambda self: None})(),
+    )
+
+    code = page._generate_recovery_code()
+
+    assert code is not None and len(code) >= 32
+    assert shown_codes == [code]

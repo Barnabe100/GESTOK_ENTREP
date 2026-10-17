@@ -233,7 +233,7 @@ class MainWindow(QMainWindow):
                 self._services.exit_reasons, self._permissions,
             )
         if module_name == "Paramètres":
-            return SettingsPage(self._services.parameters, self._permissions)
+            return SettingsPage(self._services.parameters, self._permissions, self._services.account_recovery)
         if module_name == "Sauvegardes":
             return BackupsPage(self._services.backups, self._permissions, self._services.data_reset)
         if module_name == "Audit":

@@ -28,12 +28,13 @@ EXPECTED_TABLES = {
     "audit_logs",
     "parametres",
     "licences",
+    "admin_recovery_codes",
 }
 
 
-def test_declarative_metadata_declares_all_23_tables() -> None:
+def test_declarative_metadata_declares_all_24_tables() -> None:
     assert set(Base.metadata.tables) == EXPECTED_TABLES
-    assert len(EXPECTED_TABLES) == 23
+    assert len(EXPECTED_TABLES) == 24
 
 
 def test_alembic_migration_creates_all_tables_in_sqlite(initialized_db: Settings) -> None:

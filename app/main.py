@@ -56,7 +56,7 @@ def run_session(services: ServiceRegistry) -> bool:
     Retourne True si l'utilisateur s'est déconnecté (relancer un nouveau
     cycle), False s'il a fermé la fenêtre de connexion (quitter l'application).
     """
-    login_window = LoginWindow(services.auth)
+    login_window = LoginWindow(services.auth, services.account_recovery)
     if login_window.exec() != QDialog.DialogCode.Accepted:
         return False
 

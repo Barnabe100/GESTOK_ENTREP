@@ -23,6 +23,7 @@ from app.models.inventory import Inventaire, InventaireLigne
 from app.models.audit import AuditLog
 from app.models.parameter import Parametre
 from app.models.license import Licence
+from app.models.account_recovery import AdminRecoveryCode
 
 __all__ = [
     "Base",
@@ -49,4 +50,5 @@ __all__ = [
     "AuditLog",
     "Parametre",
     "Licence",
+    "AdminRecoveryCode",
 ]

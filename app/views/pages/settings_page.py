@@ -9,6 +9,8 @@ cette page.
 """
 from __future__ import annotations
 
+from typing import Optional
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
@@ -25,6 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.services.auth.account_recovery_service import AccountRecoveryService
 from app.services.auth.permission_service import PermissionService
 from app.services.settings.company_settings_service import (
     CompanySettingsConfig,
@@ -33,6 +36,7 @@ from app.services.settings.company_settings_service import (
 )
 from app.utils.exceptions import AppError
 from app.views.common import build_required_field_legend, confirm_action, required_label
+from app.views.recovery_code_display_dialog import RecoveryCodeDisplayDialog
 
 _LOGO_PREVIEW_SIZE = 160
 
@@ -42,15 +46,18 @@ class SettingsPage(QWidget):
         self,
         settings_service: CompanySettingsService,
         permission_service: PermissionService,
+        account_recovery_service: AccountRecoveryService,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._settings_service = settings_service
         self._permissions = permission_service
+        self._account_recovery_service = account_recovery_service
 
         layout = QVBoxLayout(self)
         layout.addWidget(self._build_profile_group())
         layout.addWidget(self._build_logo_group())
+        layout.addWidget(self._build_security_group())
         layout.addStretch(1)
 
         self._load_config_into_form()
@@ -196,6 +203,51 @@ class SettingsPage(QWidget):
             return False
         self._load_config_into_form()
         return True
+
+    # -- récupération administrateur --------------------------------------------
+
+    def _build_security_group(self) -> QGroupBox:
+        group = QGroupBox("Sécurité — récupération administrateur", self)
+        layout = QVBoxLayout(group)
+
+        notice = QLabel(
+            "Génère un code de récupération à usage unique pour votre propre "
+            "compte, utilisable depuis l'écran de connexion en cas de mot de "
+            "passe oublié. Régénérer un code invalide immédiatement le précédent.",
+            self,
+        )
+        notice.setWordWrap(True)
+        layout.addWidget(notice)
+
+        can_manage = self._permissions.has_permission("ADMIN_RECOVERY_MANAGE")
+        self.generate_recovery_code_button = QPushButton("Générer un nouveau code de récupération", self)
+        self.generate_recovery_code_button.setEnabled(can_manage)
+        layout.addWidget(self.generate_recovery_code_button)
+
+        self.generate_recovery_code_button.clicked.connect(self._on_generate_recovery_code_clicked)
+
+        return group
+
+    def _on_generate_recovery_code_clicked(self) -> None:
+        if not confirm_action(
+            self, "Confirmation",
+            "Générer un nouveau code de récupération ? Le code actuel (s'il en existe un) sera "
+            "immédiatement invalidé.",
+        ):
+            return
+        self._generate_recovery_code()
+
+    def _generate_recovery_code(self) -> Optional[str]:
+        """Isolé de ``_on_generate_recovery_code_clicked`` pour rester
+        testable sans boîte de confirmation modale (même principe que
+        ``_clear_logo``)."""
+        try:
+            code = self._account_recovery_service.generate_code()
+        except AppError as exc:
+            QMessageBox.warning(self, "Génération refusée", str(exc))
+            return None
+        RecoveryCodeDisplayDialog(code, parent=self).exec()
+        return code
 
     def _on_clear_logo_clicked(self) -> None:
         if not confirm_action(self, "Confirmation", "Voulez-vous vraiment supprimer le logo de l'entreprise ?"):

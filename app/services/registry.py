@@ -14,6 +14,7 @@ from typing import Optional
 from app.config.settings import Settings
 from app.services.articles.article_service import ArticleService
 from app.services.audit.audit_service import AuditService
+from app.services.auth.account_recovery_service import AccountRecoveryService
 from app.services.auth.auth_service import AuthService
 from app.services.auth.permission_service import PermissionService
 from app.services.backups.backup_service import BackupService
@@ -68,6 +69,7 @@ class ServiceRegistry:
     roles: RoleService
     onboarding: OnboardingService
     data_reset: DataResetService
+    account_recovery: AccountRecoveryService
 
 
 def build_service_registry(
@@ -122,4 +124,5 @@ def build_service_registry(
         roles=RoleService(permission_service, settings),
         onboarding=OnboardingService(settings),
         data_reset=DataResetService(permission_service, backup_service, settings),
+        account_recovery=AccountRecoveryService(permission_service, settings),
     )

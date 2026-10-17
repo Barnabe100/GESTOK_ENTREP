@@ -12,20 +12,30 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
+from app.services.auth.account_recovery_service import AccountRecoveryService
 from app.services.auth.auth_service import AuthService
-from app.utils.exceptions import AccountDisabledError, AuthenticationError
+from app.utils.exceptions import AccountDisabledError, AuthenticationError, AppError
+from app.views.account_recovery_dialog import AccountRecoveryDialog
+from app.views.common import run_modal_form
 from app.views.password_line_edit import PasswordLineEdit
 
 
 class LoginWindow(QDialog):
-    def __init__(self, auth_service: AuthService, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        auth_service: AuthService,
+        account_recovery_service: AccountRecoveryService,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self._auth_service = auth_service
+        self._account_recovery_service = account_recovery_service
 
         self.setWindowTitle("Connexion — StockManager Desktop")
         self.setModal(True)
@@ -53,6 +63,9 @@ class LoginWindow(QDialog):
         layout.addWidget(self.error_label)
 
         button_row = QHBoxLayout()
+        self.forgot_password_button = QPushButton("Mot de passe oublié ?", self)
+        self.forgot_password_button.setFlat(True)
+        button_row.addWidget(self.forgot_password_button)
         button_row.addStretch(1)
         self.login_button = QPushButton("Se connecter", self)
         self.login_button.setDefault(True)
@@ -62,6 +75,7 @@ class LoginWindow(QDialog):
         self.login_button.clicked.connect(self._on_login_clicked)
         self.password_edit.returnPressed.connect(self._on_login_clicked)
         self.username_edit.returnPressed.connect(self._on_login_clicked)
+        self.forgot_password_button.clicked.connect(self._on_forgot_password_clicked)
 
     def _on_login_clicked(self) -> None:
         username = self.username_edit.text().strip()
@@ -81,3 +95,35 @@ class LoginWindow(QDialog):
             self.password_edit.clear()
         else:
             self.accept()
+
+    def _on_forgot_password_clicked(self) -> None:
+        # Nom d'utilisateur conservé d'une tentative à l'autre (confort),
+        # jamais le code ni le nouveau mot de passe — même convention que
+        # UsersPage._on_add_clicked pour CreateUserDialog.
+        state = {"username": self.username_edit.text().strip()}
+
+        def factory() -> AccountRecoveryDialog:
+            return AccountRecoveryDialog(initial_username=state["username"], parent=self)
+
+        def submit(dialog: AccountRecoveryDialog) -> bool:
+            state["username"] = dialog.username()
+            return self._submit_account_recovery(dialog)
+
+        run_modal_form(factory, submit)
+
+    def _submit_account_recovery(self, dialog: AccountRecoveryDialog) -> bool:
+        """Isolé de ``_on_forgot_password_clicked`` pour rester testable
+        sans dialogue modal (même principe que
+        ``UsersPage._submit_create_user``)."""
+        try:
+            self._account_recovery_service.reset_password_with_code(
+                dialog.username(), dialog.code(), dialog.new_password()
+            )
+        except AppError as exc:
+            dialog.set_error(str(exc))
+            return False
+        QMessageBox.information(
+            self, "Mot de passe réinitialisé",
+            "Votre mot de passe a été réinitialisé. Vous pouvez maintenant vous connecter.",
+        )
+        return True
