@@ -20,6 +20,7 @@ from typing import Optional
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
+    QDialog,
     QHBoxLayout,
     QLineEdit,
     QMessageBox,
@@ -38,6 +39,7 @@ from app.services.rentals.location_service import LocationLigneInput, LocationSe
 from app.services.settings.company_settings_service import get_effective_currency
 from app.utils.exceptions import AppError
 from app.utils.money import format_money
+from app.views.client_form_dialog import ClientFormDialog
 from app.views.common import confirm_action, run_modal_form
 from app.views.location_detail_dialog import LocationDetailDialog
 from app.views.location_form_dialog import LocationFormDialog
@@ -166,7 +168,7 @@ class LocationsPage(QWidget):
             numero_item.setData(Qt.ItemDataRole.UserRole + 1, location.statut)
             self.table.setItem(row, 0, numero_item)
             self.table.setItem(row, 1, QTableWidgetItem(str(location.date)))
-            self.table.setItem(row, 2, QTableWidgetItem(location.client_nom))
+            self.table.setItem(row, 2, QTableWidgetItem(location.client_nom or "Client non renseigné"))
             self.table.setItem(row, 3, QTableWidgetItem(location.username))
             self.table.setItem(
                 row, 4, QTableWidgetItem(format_money(location.montant_total_facture, self._currency_code))
@@ -288,14 +290,48 @@ class LocationsPage(QWidget):
         state = {"values": initial}
 
         def factory() -> LocationFormDialog:
-            return LocationFormDialog(articles, clients, state["values"], parent=self)
+            return LocationFormDialog(
+                articles, clients, state["values"],
+                on_create_client=self._create_client_from_location_form,
+                parent=self,
+            )
 
         def submit(dialog: LocationFormDialog) -> bool:
             state["values"] = dialog.values()
             return self._submit_form(location_id, state["values"], dialog.requested_action())
 
         run_modal_form(factory, submit)
+        self._reload_client_filter_combo()
         self.refresh()
+
+    def _create_client_from_location_form(self) -> Optional[tuple[int, str]]:
+        """Callback transmis à ``LocationFormDialog`` pour la création de
+        client « à la volée » : ouvre ``ClientFormDialog`` par-dessus le
+        formulaire de location déjà ouvert, sans jamais le fermer ni
+        réinitialiser son état — la date et les lignes déjà saisies restent
+        intactes pendant toute l'opération. Patron identique à
+        ``SalesPage._create_client_from_sale_form``."""
+        dialog = ClientFormDialog(parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return self._create_client_from_values(dialog.values())
+
+    def _create_client_from_values(self, values: dict) -> Optional[tuple[int, str]]:
+        """Isolé de ``_create_client_from_location_form`` pour rester
+        testable sans dialogue modal."""
+        try:
+            created = self._client_service.create_client(
+                values["nom"],
+                telephone=values.get("telephone"),
+                email=values.get("email"),
+                adresse=values.get("adresse"),
+                observations=values.get("observations"),
+            )
+        except AppError as exc:
+            QMessageBox.warning(self, "Création refusée", str(exc))
+            return None
+        QMessageBox.information(self, "Client créé", f"Le client « {created.nom} » a été créé.")
+        return created.id, created.nom
 
     def _submit_form(self, location_id: Optional[int], values: dict, action: str = "draft") -> bool:
         """Convertit la saisie, appelle le service et affiche le résultat.

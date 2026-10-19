@@ -37,6 +37,11 @@ Caution : montant fixe saisi à la création de la location
 (``Location.caution_montant``), restituée/retenue manuellement par
 l'utilisateur (``Location.caution_rendue``, jamais calculée
 automatiquement) — décision métier explicite de ce lot.
+
+Client facultatif (lot « Client facultatif et création rapide depuis une
+location ») : ``Location.client_id`` peut être NULL, à l'identique de
+``Vente.client_id`` — aucun impact sur le cycle de vie, les calculs de
+frais, la caution ou les paiements, qui n'utilisent jamais le client.
 """
 from __future__ import annotations
 
@@ -67,11 +72,13 @@ class Location(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     numero: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
     date: Mapped[date] = mapped_column(Date, nullable=False)
-    # Toujours renseigné : contrairement à une vente comptant, une location
-    # immobilise du stock pour une durée indéterminée à l'avance — aucune
-    # trace d'un équivalent « location comptant/anonyme » dans ce qui a été
-    # retrouvé de ce module, donc un client identifié est exigé.
-    client_id: Mapped[int] = mapped_column(ForeignKey("clients.id"), nullable=False)
+    # Facultatif (lot « Client facultatif et création rapide depuis une
+    # location ») : NULL = aucun client identifié, à l'identique de
+    # Vente.client_id (vente comptant) depuis la migration 0006. Avant ce
+    # lot, un client était systématiquement exigé (voir migration 0014) ;
+    # la migration 0015 assouplit cette contrainte sans toucher aux lignes
+    # déjà enregistrées, qui ont toutes un client renseigné.
+    client_id: Mapped[Optional[int]] = mapped_column(ForeignKey("clients.id"), nullable=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     statut: Mapped[StatutLocation] = mapped_column(
         _STATUT_LOCATION_TYPE, default=StatutLocation.BROUILLON, nullable=False
@@ -101,7 +108,7 @@ class Location(TimestampMixin, Base):
         cascade="all, delete-orphan",
         order_by="LocationPaiement.id",
     )
-    client: Mapped["Client"] = relationship("Client")
+    client: Mapped[Optional["Client"]] = relationship("Client")
     user: Mapped["User"] = relationship("User")
 
     def __repr__(self) -> str:  # pragma: no cover

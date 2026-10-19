@@ -751,3 +751,85 @@ def test_concurrent_returns_on_different_lines_do_not_lose_updates(login_as) -> 
     final = stack.rentals.get_location(departed.id)
     assert final.statut == StatutLocation.RETOURNEE
     assert all(l.qte_en_location == Decimal("0") for l in final.lignes)
+
+
+# -- Lot 13 : client facultatif ----------------------------------------------
+
+def test_create_location_without_client(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+
+    created = stack.rentals.create_location(
+        date(2026, 1, 1), None, [LocationLigneInput(article.id, Decimal("1"))]
+    )
+
+    assert created.client_id is None
+    assert created.client_nom is None
+
+
+def test_create_location_with_existing_client(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    client = _make_client(stack)
+
+    created = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("1"))]
+    )
+
+    assert created.client_id == client.id
+    assert created.client_nom == client.nom
+
+
+def test_update_location_can_clear_client(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    client = _make_client(stack)
+    location = stack.rentals.create_location(date(2026, 1, 1), client.id, [])
+
+    updated = stack.rentals.update_location(location.id, date(2026, 1, 1), None, [])
+
+    assert updated.client_id is None
+
+
+def test_update_location_can_assign_client(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    client = _make_client(stack)
+    location = stack.rentals.create_location(date(2026, 1, 1), None, [])
+
+    updated = stack.rentals.update_location(location.id, date(2026, 1, 1), client.id, [])
+
+    assert updated.client_id == client.id
+
+
+def test_create_location_without_client_rejects_inactive_lines_normally(login_as) -> None:
+    """Non-régression : l'absence de client ne relâche aucune autre
+    validation (ici, article non géré en mode Location)."""
+    stack, _ = login_as("Administrateur")
+    category = stack.categories.create_category("Matériel vente")
+    article = stack.articles.create_article(
+        "ART-VENTE-SEUL", "Article", category.id, "unité", Decimal("100"), Decimal("150"), Decimal("0"),
+    )
+
+    with pytest.raises(ValidationError):
+        stack.rentals.create_location(
+            date(2026, 1, 1), None, [LocationLigneInput(article.id, Decimal("1"))]
+        )
+
+
+def test_location_without_client_supports_full_lifecycle_at_service_level(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack, stock_initial=Decimal("5"))
+
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), None, [LocationLigneInput(article.id, Decimal("2"))]
+    )
+    stack.rentals.confirm_location(location.id)
+    stack.rentals.depart_location(location.id, date(2026, 1, 1))
+    ligne = stack.rentals.get_location(location.id).lignes[0]
+    returned = stack.rentals.return_location_line(
+        location.id, ligne.id, date(2026, 1, 2),
+        quantite_bon_etat=Decimal("2"), quantite_immobilisee=Decimal("0"),
+    )
+
+    assert returned.statut == StatutLocation.RETOURNEE
+    assert returned.client_id is None
+    assert stack.articles.get_article(article.id).stock_actuel == Decimal("5")

@@ -1,18 +1,25 @@
 """Formulaire de création/modification d'une location (date + client
-obligatoire + lignes dynamiques).
+facultatif + lignes dynamiques).
 
-Contrairement à une vente, le client est obligatoire (voir
-``LocationService``) : pas d'équivalent « location comptant ». Le
-sélecteur ne propose que les articles en mode Location transmis par
-l'appelant (``LocationsPage``, qui filtre déjà via
-``ArticleService.list_articles``) ; ce formulaire ne connaît rien du
-service métier lui-même.
+Client facultatif (lot « Client facultatif et création rapide depuis une
+location ») : une location sans client reste parfaitement valide (voir
+``LocationService``), à l'identique d'une vente comptant. Le sélecteur ne
+propose que les articles en mode Location transmis par l'appelant
+(``LocationsPage``, qui filtre déjà via ``ArticleService.list_articles``) ;
+ce formulaire ne connaît rien du service métier lui-même.
+
+Création de client « à la volée » : le bouton « Nouveau client… » délègue
+entièrement la création à ``on_create_client`` (callback fourni par
+``LocationsPage``, qui appelle ``ClientService.create_client`` et gère la
+validation) — ce dialogue reste ouvert pendant l'opération, avec la date et
+les lignes déjà saisies intactes ; seul le résultat (id, nom) est ajouté au
+sélecteur et sélectionné. Patron identique à ``SaleFormDialog``.
 """
 from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal
-from typing import Optional
+from typing import Callable, Optional
 
 from PySide6.QtCore import QDate
 from PySide6.QtWidgets import (
@@ -42,6 +49,7 @@ from app.views.common import (
 from app.views.location_line_form_dialog import LocationLineFormDialog
 
 _LINE_COLUMNS = ["Article", "Quantité", "Tarif / jour"]
+_NO_CLIENT_LABEL = "(Aucun client)"
 
 
 class LocationFormDialog(QDialog):
@@ -50,15 +58,19 @@ class LocationFormDialog(QDialog):
         articles: list[tuple[int, str, str]],
         clients: list[tuple[int, str]],
         initial: Optional[dict] = None,
+        on_create_client: Optional[Callable[[], Optional[tuple[int, str]]]] = None,
         parent: QWidget | None = None,
     ) -> None:
         """``articles`` : liste de tuples (id, libellé, tarif journalier
         catalogue en texte) — articles en mode Location uniquement.
         ``clients`` : liste de tuples (id, nom) — clients actifs.
-        ``initial['lignes']`` : liste de dicts {article_id, article_label, quantite, tarif_jour}."""
+        ``initial['lignes']`` : liste de dicts {article_id, article_label, quantite, tarif_jour}.
+        ``initial['client_id']`` : identifiant du client présélectionné, ou None (aucun client)."""
         super().__init__(parent)
         initial = initial or {}
         self._articles = articles
+        self._clients: list[tuple[int, str]] = list(clients)
+        self._on_create_client = on_create_client
         self._lines: list[dict] = list(initial.get("lignes", []))
         self._requested_action = "draft"
 
@@ -76,11 +88,14 @@ class LocationFormDialog(QDialog):
         self.date_edit.setDate(date_to_qdate(initial.get("date") or date.today()))
         form.addRow(required_label("Date"), self.date_edit)
 
+        client_row = QHBoxLayout()
         self.client_combo = QComboBox(self)
-        for client_id, nom in clients:
-            self.client_combo.addItem(nom, client_id)
-        self._select_combo_data(self.client_combo, initial.get("client_id"))
-        form.addRow(required_label("Client"), self.client_combo)
+        client_row.addWidget(self.client_combo)
+        self.new_client_button = QPushButton("Nouveau client…", self)
+        self.new_client_button.setEnabled(on_create_client is not None)
+        client_row.addWidget(self.new_client_button)
+        form.addRow("Client", client_row)
+        self._refresh_client_combo(selected_id=initial.get("client_id"))
 
         self.commentaire_edit = QLineEdit(self)
         self.commentaire_edit.setText(initial.get("commentaire", "") or "")
@@ -129,6 +144,7 @@ class LocationFormDialog(QDialog):
         self.validate_button.clicked.connect(self._on_validate_clicked)
         self.add_line_button.clicked.connect(self._on_add_line_clicked)
         self.remove_line_button.clicked.connect(self._on_remove_line_clicked)
+        self.new_client_button.clicked.connect(self._on_new_client_clicked)
 
         self._refresh_lines_table()
 
@@ -139,6 +155,30 @@ class LocationFormDialog(QDialog):
         index = combo.findData(data)
         if index >= 0:
             combo.setCurrentIndex(index)
+
+    # -- gestion du client ------------------------------------------------------
+
+    def _refresh_client_combo(self, selected_id: Optional[int] = None) -> None:
+        self.client_combo.blockSignals(True)
+        self.client_combo.clear()
+        self.client_combo.addItem(_NO_CLIENT_LABEL, None)
+        for client_id, nom in self._clients:
+            self.client_combo.addItem(nom, client_id)
+        self.client_combo.blockSignals(False)
+        if selected_id is not None:
+            index = self.client_combo.findData(selected_id)
+            if index != -1:
+                self.client_combo.setCurrentIndex(index)
+
+    def _on_new_client_clicked(self) -> None:
+        if self._on_create_client is None:
+            return
+        result = self._on_create_client()
+        if result is None:
+            return
+        client_id, client_nom = result
+        self._clients.append((client_id, client_nom))
+        self._refresh_client_combo(selected_id=client_id)
 
     # -- gestion des lignes ---------------------------------------------------
 

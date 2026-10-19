@@ -253,3 +253,34 @@ def test_permission_denied_action_shows_warning_not_crash(qtbot, login_as) -> No
     result = dialog._confirm()
 
     assert result is False
+
+
+# -- Lot 13 : client facultatif ----------------------------------------------
+
+def test_detail_dialog_shows_neutral_label_when_client_absent(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    location = stack.rentals.create_location(date(2026, 1, 1), None, [])
+
+    dialog = _build_dialog(stack, location)
+    qtbot.addWidget(dialog)
+
+    labels = [
+        dialog._header_form.itemAt(i, dialog._header_form.ItemRole.FieldRole).widget().text()
+        for i in range(dialog._header_form.rowCount())
+    ]
+    assert "Client non renseigné" in labels
+
+
+def test_detail_dialog_shows_client_name_when_present(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    client = _make_client(stack)
+    location = stack.rentals.create_location(date(2026, 1, 1), client.id, [])
+
+    dialog = _build_dialog(stack, location)
+    qtbot.addWidget(dialog)
+
+    labels = [
+        dialog._header_form.itemAt(i, dialog._header_form.ItemRole.FieldRole).widget().text()
+        for i in range(dialog._header_form.rowCount())
+    ]
+    assert client.nom in labels

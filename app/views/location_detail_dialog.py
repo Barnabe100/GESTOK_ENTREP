@@ -179,7 +179,7 @@ class LocationDetailDialog(QDialog):
         self._clear_form(self._header_form)
         self._header_form.addRow("Numéro", QLabel(location.numero, self))
         self._header_form.addRow("Date", QLabel(str(location.date), self))
-        self._header_form.addRow("Client", QLabel(location.client_nom, self))
+        self._header_form.addRow("Client", QLabel(location.client_nom or "Client non renseigné", self))
         self._header_form.addRow("Créée par", QLabel(location.username, self))
         self._header_form.addRow("Statut", QLabel(_STATUT_LABELS.get(location.statut, str(location.statut)), self))
         if location.date_depart is not None:

@@ -197,8 +197,10 @@ class LocationSummary:
     id: int
     numero: str
     date: date
-    client_id: int
-    client_nom: str
+    # Facultatif (lot « Client facultatif... ») : None = aucun client
+    # identifié, à l'identique de VenteSummary.client_id/client_nom.
+    client_id: Optional[int]
+    client_nom: Optional[str]
     user_id: int
     username: str
     statut: StatutLocation
@@ -237,7 +239,7 @@ class LocationSummary:
             numero=location.numero,
             date=location.date,
             client_id=location.client_id,
-            client_nom=location.client.nom,
+            client_nom=location.client.nom if location.client is not None else None,
             user_id=location.user_id,
             username=location.user.username,
             statut=location.statut,
@@ -325,7 +327,15 @@ class LocationService:
             )
         )
 
-    def _validate_client(self, session, client_id: int) -> int:
+    def _validate_client(self, session, client_id: Optional[int]) -> Optional[int]:
+        """Vérifie qu'un client optionnel existe et est actif avant de
+        l'associer à une location — même contrat que
+        ``SaleService._validate_client`` (vente comptant) : ``client_id=None``
+        reste parfaitement valide et ne fait que transiter jusqu'à
+        ``Location.client_id``, sans aucun effet sur le cycle de vie, les
+        calculs de frais, la caution ou les paiements."""
+        if client_id is None:
+            return None
         client = ClientRepository(session).get_by_id(client_id)
         if client is None:
             raise NotFoundError(f"Client {client_id} introuvable.")
@@ -398,7 +408,7 @@ class LocationService:
     def create_location(
         self,
         date_location: date,
-        client_id: int,
+        client_id: Optional[int],
         lines: Sequence[LocationLigneInput] = (),
         *,
         commentaire: Optional[str] = None,
@@ -406,7 +416,12 @@ class LocationService:
         """Crée une location en BROUILLON : n'a aucun impact sur le stock.
         ``qte_reservee`` est fixée à la quantité demandée dès la création
         (purement informative, voir docstring de module) — jamais
-        decrémentée d'``Article.stock_actuel`` avant le départ."""
+        decrémentée d'``Article.stock_actuel`` avant le départ.
+
+        ``client_id`` est optionnel (``None`` = aucun client identifié, lot
+        « Client facultatif... ») : une location sans client suit ensuite un
+        cycle de vie en tout point identique (confirmation, départ, retour,
+        frais, caution, paiements)."""
         self._permissions.require_permission("LOCATION_CREATE")
         date_location = validate_not_future_date(date_location)
         commentaire = _validate_optional_text(commentaire, "commentaire", MAX_COMMENTAIRE_LENGTH)
@@ -445,14 +460,16 @@ class LocationService:
         self,
         location_id: int,
         date_location: date,
-        client_id: int,
+        client_id: Optional[int],
         lines: Sequence[LocationLigneInput],
         *,
         commentaire: Optional[str] = None,
     ) -> LocationSummary:
         """Modifie une location en BROUILLON (remplace intégralement les
         lignes). Refuse toute modification d'une location déjà confirmée,
-        partie, retournée ou annulée."""
+        partie, retournée ou annulée. ``client_id=None`` efface
+        l'association existante (lot « Client facultatif... »), comme
+        ``SaleService.update_sale``."""
         self._permissions.require_permission("LOCATION_UPDATE")
         date_location = validate_not_future_date(date_location)
         commentaire = _validate_optional_text(commentaire, "commentaire", MAX_COMMENTAIRE_LENGTH)

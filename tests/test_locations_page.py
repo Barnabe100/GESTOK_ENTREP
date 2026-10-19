@@ -390,14 +390,202 @@ def test_submit_form_validate_action_denied_without_permission_keeps_draft_recov
     assert admin_stack.articles.get_article(article.id).stock_actuel == Decimal("10")
 
 
-def test_submit_form_validate_action_rejects_missing_client_without_creating(qtbot, login_as) -> None:
+def test_submit_form_allows_missing_client(qtbot, login_as) -> None:
+    """Lot « Client facultatif... » : le client n'est plus obligatoire —
+    seule l'absence de ligne fait encore échouer la validation directe
+    (``confirm_location`` exige au moins une ligne), jamais l'absence de
+    client (voir ``test_submit_form_validate_action_rejects_empty_lines_...``
+    pour ce cas, déjà couvert séparément)."""
     stack, _ = login_as("Administrateur")
     page = _build_page(stack)
     qtbot.addWidget(page)
 
     values = {"date": date(2026, 1, 1), "client_id": None, "commentaire": "", "lignes": []}
 
-    result = page._submit_form(None, values, "validate")
+    result = page._submit_form(None, values)
 
-    assert result is False
-    assert stack.rentals.list_locations() == []
+    assert result is True
+    created = stack.rentals.list_locations()[0]
+    assert created.client_id is None
+    assert created.client_nom is None
+
+
+# -- Lot 13 : client facultatif + création rapide ----------------------------
+
+def test_submit_form_creates_location_with_existing_client(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    client = _make_client(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    values = {
+        "date": date(2026, 1, 1), "client_id": client.id, "commentaire": "",
+        "lignes": [{"article_id": article.id, "article_label": "x", "quantite": Decimal("1"), "tarif_jour": Decimal("500")}],
+    }
+
+    result = page._submit_form(None, values)
+
+    assert result is True
+    created = stack.rentals.list_locations()[0]
+    assert created.client_id == client.id
+    assert created.client_nom == client.nom
+
+
+def test_create_client_from_values_persists_and_returns_tuple(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    result = page._create_client_from_values(
+        {"nom": "Client Location Rapide", "telephone": "", "email": "", "adresse": "", "observations": ""}
+    )
+
+    assert result is not None
+    client_id, client_nom = result
+    assert client_nom == "Client Location Rapide"
+    assert stack.clients.get_client(client_id).nom == "Client Location Rapide"
+
+
+def test_create_client_from_values_shows_warning_on_invalid_data_and_preserves_location(qtbot, login_as) -> None:
+    """§5-7 du lot : un échec de création du client ne doit ni créer de
+    client, ni affecter la location en cours (ici simulée par des valeurs
+    de formulaire non transmises au service, puisque la création échoue
+    avant toute écriture)."""
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    result = page._create_client_from_values(
+        {"nom": "", "telephone": "", "email": "", "adresse": "", "observations": ""}
+    )
+
+    assert result is None
+    assert stack.clients.list_clients() == []
+
+
+def test_submit_form_with_new_client_selects_and_persists_it(qtbot, login_as) -> None:
+    """Scénario complet de création rapide depuis le formulaire de
+    location : le client créé via le callback est bien celui enregistré
+    sur la location."""
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    created_client = page._create_client_from_values(
+        {"nom": "Client Créé Pendant Location", "telephone": "", "email": "", "adresse": "", "observations": ""}
+    )
+    assert created_client is not None
+    client_id, _client_nom = created_client
+
+    values = {
+        "date": date(2026, 1, 1), "client_id": client_id, "commentaire": "",
+        "lignes": [{"article_id": article.id, "article_label": "x", "quantite": Decimal("1"), "tarif_jour": Decimal("500")}],
+    }
+    result = page._submit_form(None, values)
+
+    assert result is True
+    created_location = stack.rentals.list_locations()[0]
+    assert created_location.client_id == client_id
+
+
+def test_create_client_denied_without_permission(qtbot, login_as) -> None:
+    """§6 du lot : sans CLIENT_CREATE, la création échoue côté service —
+    jamais contournée côté vue."""
+    admin_stack, _ = login_as("Administrateur")
+    role_id = next(r.id for r in admin_stack.roles.list_roles() if r.nom == "Vendeur")
+    codes = admin_stack.roles.get_role_permissions(role_id)
+    admin_stack.roles.update_role_permissions(role_id, [c for c in codes if c != "CLIENT_CREATE"])
+
+    vendeur_stack, _ = login_as("Vendeur")
+    page = _build_page(vendeur_stack)
+    qtbot.addWidget(page)
+
+    result = page._create_client_from_values(
+        {"nom": "Client Refusé", "telephone": "", "email": "", "adresse": "", "observations": ""}
+    )
+
+    assert result is None
+    assert admin_stack.clients.list_clients() == []
+
+
+def test_location_without_client_follows_full_lifecycle(qtbot, login_as) -> None:
+    """§9 du lot : confirmation, départ, retour, caution et paiement doivent
+    fonctionner normalement sur une location sans client."""
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack, stock_initial=Decimal("10"))
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    values = {
+        "date": date(2026, 1, 1), "client_id": None, "commentaire": "",
+        "lignes": [{"article_id": article.id, "article_label": "x", "quantite": Decimal("2"), "tarif_jour": Decimal("500")}],
+    }
+    page._submit_form(None, values)
+    location = stack.rentals.list_locations()[0]
+    assert location.client_id is None
+
+    confirmed = stack.rentals.confirm_location(location.id)
+    assert confirmed.statut == StatutLocation.CONFIRMEE
+    stack.rentals.set_caution_montant(location.id, Decimal("1000"))
+
+    departed = stack.rentals.depart_location(location.id, date(2026, 1, 1))
+    assert departed.statut == StatutLocation.EN_COURS
+    assert stack.articles.get_article(article.id).stock_actuel == Decimal("8")
+
+    ligne_id = stack.rentals.get_location(location.id).lignes[0].id
+    returned = stack.rentals.return_location_line(
+        location.id, ligne_id, date(2026, 1, 2), quantite_bon_etat=Decimal("2"), quantite_immobilisee=Decimal("0")
+    )
+    assert returned.statut == StatutLocation.RETOURNEE
+    assert stack.articles.get_article(article.id).stock_actuel == Decimal("10")
+
+    stack.rentals.record_payment(location.id, Decimal("500"))
+    assert stack.rentals.get_location(location.id).montant_paye == Decimal("500")
+
+
+def test_locations_page_list_shows_neutral_label_when_client_absent(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    values = {
+        "date": date(2026, 1, 1), "client_id": None, "commentaire": "",
+        "lignes": [{"article_id": article.id, "article_label": "x", "quantite": Decimal("1"), "tarif_jour": Decimal("500")}],
+    }
+    page._submit_form(None, values)
+    page.refresh()
+
+    row = next(r for r in range(page.table.rowCount()) if page.table.item(r, 0).text() == "LOC-000001")
+    assert page.table.item(row, 2).text() == "Client non renseigné"
+
+
+def test_load_edit_initial_returns_none_client_id_when_absent(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    location = stack.rentals.create_location(date(2026, 1, 1), None, [])
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    initial = page._load_edit_initial(location.id)
+
+    assert initial is not None
+    assert initial["client_id"] is None
+
+
+def test_submit_form_can_clear_client_on_update(qtbot, login_as) -> None:
+    """§4 du lot : un client déjà associé peut être retiré via le
+    formulaire de modification (sélection « Aucun client »)."""
+    stack, _ = login_as("Administrateur")
+    client = _make_client(stack)
+    location = stack.rentals.create_location(date(2026, 1, 1), client.id, [])
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    values = {"date": date(2026, 1, 1), "client_id": None, "commentaire": "", "lignes": []}
+
+    result = page._submit_form(location.id, values)
+
+    assert result is True
+    assert stack.rentals.get_location(location.id).client_id is None
