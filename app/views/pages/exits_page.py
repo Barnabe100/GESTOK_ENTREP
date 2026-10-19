@@ -255,14 +255,21 @@ class ExitsPage(QWidget):
 
         def submit(dialog: ExitFormDialog) -> bool:
             state["values"] = dialog.values()
-            return self._submit_form(exit_id, state["values"])
+            return self._submit_form(exit_id, state["values"], dialog.requested_action())
 
         run_modal_form(factory, submit)
         self.refresh()
 
-    def _submit_form(self, exit_id: Optional[int], values: dict) -> bool:
+    def _submit_form(self, exit_id: Optional[int], values: dict, action: str = "draft") -> bool:
         """Convertit la saisie, appelle le service et affiche le résultat.
-        Isolé de ``_open_form`` pour rester testable sans dialogue modal."""
+        Isolé de ``_open_form`` pour rester testable sans dialogue modal.
+
+        ``action`` ('draft' ou 'validate', voir ``ExitFormDialog.requested_action``) :
+        si 'validate', ``ExitService.validate_exit`` est appelé dans la
+        foulée. Si la création/modification réussit mais que la validation
+        échoue (stock insuffisant, article inactif...), la sortie reste en
+        brouillon, retrouvable dans la liste — le dialogue n'est jamais
+        rouvert dans ce cas, pour ne jamais recréer la sortie en double."""
         try:
             motif_id = values["motif_id"]
             if motif_id is None:
@@ -274,7 +281,7 @@ class ExitsPage(QWidget):
             ]
 
             if exit_id is None:
-                created = self._exit_service.create_exit(
+                document = self._exit_service.create_exit(
                     motif_id,
                     exit_date,
                     lines,
@@ -282,11 +289,9 @@ class ExitsPage(QWidget):
                     reference=values["reference"],
                     commentaire=values["commentaire"],
                 )
-                QMessageBox.information(
-                    self, "Sortie créée", f"La sortie « {created.numero} » a été créée en brouillon."
-                )
+                created_now = True
             else:
-                updated = self._exit_service.update_exit(
+                document = self._exit_service.update_exit(
                     exit_id,
                     motif_id,
                     exit_date,
@@ -295,12 +300,35 @@ class ExitsPage(QWidget):
                     reference=values["reference"],
                     commentaire=values["commentaire"],
                 )
-                QMessageBox.information(
-                    self, "Sortie modifiée", f"La sortie « {updated.numero} » a été modifiée."
-                )
+                created_now = False
         except AppError as exc:
             QMessageBox.warning(self, "Opération refusée", str(exc))
             return False
+
+        if action != "validate":
+            if created_now:
+                QMessageBox.information(
+                    self, "Sortie créée", f"La sortie « {document.numero} » a été créée en brouillon."
+                )
+            else:
+                QMessageBox.information(
+                    self, "Sortie modifiée", f"La sortie « {document.numero} » a été modifiée."
+                )
+            return True
+
+        try:
+            validated = self._exit_service.validate_exit(document.id)
+        except AppError as exc:
+            QMessageBox.warning(
+                self, "Sortie enregistrée, validation refusée",
+                f"La sortie « {document.numero} » a été enregistrée en brouillon, mais n'a pas pu être "
+                f"validée : {exc}\n\nVous pouvez la retrouver dans la liste pour la corriger ou la valider.",
+            )
+            return True
+
+        QMessageBox.information(
+            self, "Sortie validée", f"La sortie « {validated.numero} » a été créée et validée."
+        )
         return True
 
     # -- consultation détaillée ----------------------------------------------

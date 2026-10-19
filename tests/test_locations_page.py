@@ -282,3 +282,122 @@ def test_load_location_for_detail_returns_none_on_error(qtbot, login_as) -> None
     qtbot.addWidget(page)
 
     assert page._load_location_for_detail(999999) is None
+
+
+# -- Lot 11 : validation directe (bouton « Valider » du formulaire) ----------
+#
+# Pour Location, « Valider » appelle uniquement LocationService.confirm_location
+# (BROUILLON -> CONFIRMEE, sans effet stock) — jamais depart_location, qui
+# exige une date de départ absente de ce formulaire. Ces tests vérifient
+# explicitement que le cycle de vie n'est jamais poussé au-delà de la
+# confirmation initiale.
+
+def test_submit_form_validate_action_confirms_location_without_stock_effect(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack, stock_initial=Decimal("10"))
+    client = _make_client(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    values = {
+        "date": date(2026, 1, 1), "client_id": client.id, "commentaire": "",
+        "lignes": [{"article_id": article.id, "article_label": "x", "quantite": Decimal("2"), "tarif_jour": Decimal("500")}],
+    }
+
+    result = page._submit_form(None, values, "validate")
+
+    assert result is True
+    created = stack.rentals.list_locations()[0]
+    assert created.statut == StatutLocation.CONFIRMEE
+    # Jamais EN_COURS : depart_location n'est jamais déclenché par ce bouton.
+    assert created.statut != StatutLocation.EN_COURS
+    reloaded = stack.rentals.get_location(created.id)
+    assert reloaded.date_depart is None
+    assert reloaded.lignes[0].qte_en_location == Decimal("0")
+    assert reloaded.lignes[0].qte_reservee == Decimal("2")
+    # confirm_location ne modifie jamais le stock.
+    assert stack.articles.get_article(article.id).stock_actuel == Decimal("10")
+
+
+def test_submit_form_validate_action_rejects_empty_lines_without_creating_stock_effect(qtbot, login_as) -> None:
+    """confirm_location refuse une location sans ligne ; la création réussit
+    (un brouillon peut être vide), la confirmation échoue ensuite — le
+    brouillon vide créé reste retrouvable, sans doublon."""
+    stack, _ = login_as("Administrateur")
+    client = _make_client(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    values = {"date": date(2026, 1, 1), "client_id": client.id, "commentaire": "", "lignes": []}
+
+    result = page._submit_form(None, values, "validate")
+
+    assert result is True
+    locations = stack.rentals.list_locations()
+    assert len(locations) == 1
+    assert locations[0].statut == StatutLocation.BROUILLON
+
+
+def test_submit_form_validate_action_rejects_article_no_longer_rental_without_creating(qtbot, login_as) -> None:
+    """Contrairement à la rupture de stock, un article qui n'est plus en
+    mode Location est déjà rejeté dès ``create_location``/``update_location``
+    (même contrôle que ``confirm_location``, voir ``_build_lignes``) : il
+    n'existe donc pas de fenêtre où la création réussirait puis la
+    confirmation échouerait pour ce motif précis — la création elle-même
+    est refusée, sans rien enregistrer."""
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack, stock_initial=Decimal("10"))
+    client = _make_client(stack)
+    stack.articles.switch_mode_gestion(article.id, ModeGestionArticle.VENTE)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    values = {
+        "date": date(2026, 1, 1), "client_id": client.id, "commentaire": "",
+        "lignes": [{"article_id": article.id, "article_label": "x", "quantite": Decimal("2"), "tarif_jour": Decimal("500")}],
+    }
+
+    result = page._submit_form(None, values, "validate")
+
+    assert result is False
+    assert stack.rentals.list_locations() == []
+
+
+def test_submit_form_validate_action_denied_without_permission_keeps_draft_recoverable(qtbot, login_as) -> None:
+    admin_stack, _ = login_as("Administrateur")
+    article = _make_rental_article(admin_stack, stock_initial=Decimal("10"))
+    client = _make_client(admin_stack)
+
+    role_id = next(r.id for r in admin_stack.roles.list_roles() if r.nom == "Vendeur")
+    codes = admin_stack.roles.get_role_permissions(role_id)
+    admin_stack.roles.update_role_permissions(role_id, [c for c in codes if c != "LOCATION_CONFIRM"])
+
+    vendeur_stack, _ = login_as("Vendeur")
+    page = _build_page(vendeur_stack)
+    qtbot.addWidget(page)
+
+    values = {
+        "date": date(2026, 1, 1), "client_id": client.id, "commentaire": "",
+        "lignes": [{"article_id": article.id, "article_label": "x", "quantite": Decimal("2"), "tarif_jour": Decimal("500")}],
+    }
+
+    result = page._submit_form(None, values, "validate")
+
+    assert result is True
+    locations = admin_stack.rentals.list_locations()
+    assert len(locations) == 1
+    assert locations[0].statut == StatutLocation.BROUILLON
+    assert admin_stack.articles.get_article(article.id).stock_actuel == Decimal("10")
+
+
+def test_submit_form_validate_action_rejects_missing_client_without_creating(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    values = {"date": date(2026, 1, 1), "client_id": None, "commentaire": "", "lignes": []}
+
+    result = page._submit_form(None, values, "validate")
+
+    assert result is False
+    assert stack.rentals.list_locations() == []

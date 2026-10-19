@@ -346,3 +346,99 @@ def test_lookup_article_by_barcode_unknown_returns_none(qtbot, login_as) -> None
     qtbot.addWidget(page)
 
     assert page._lookup_article_by_barcode("0000000000000") is None
+
+
+# -- Lot 11 : validation directe (bouton « Valider » du formulaire) ----------
+
+def test_submit_form_validate_action_creates_and_validates_inventory_in_one_step(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("100"))
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    values = {
+        "date": date(2026, 1, 1),
+        "lignes": [
+            {"article_id": article.id, "article_label": "x", "stock_theorique": Decimal("100"), "stock_physique": Decimal("97")}
+        ],
+    }
+
+    result = page._submit_form(None, values, "validate")
+
+    assert result is True
+    created = next(i for i in stack.inventory.list_inventories() if i.numero == "INV-000001")
+    assert created.statut == StatutInventaire.VALIDE
+    assert stack.articles.get_article(article.id).stock_actuel == Decimal("97")
+
+
+def test_submit_form_validate_action_rejects_empty_lines_without_creating(qtbot, login_as) -> None:
+    """Le service refuse un inventaire sans ligne à la validation — la
+    création d'un inventaire vide réussit (un brouillon n'a pas besoin de
+    lignes), mais la tentative de validation directe échoue ensuite ; le
+    brouillon vide créé reste visible et retrouvable, sans doublon."""
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    values = {"date": date(2026, 1, 1), "lignes": []}
+
+    result = page._submit_form(None, values, "validate")
+
+    assert result is True
+    inventories = stack.inventory.list_inventories()
+    assert len(inventories) == 1
+    assert inventories[0].statut == StatutInventaire.BROUILLON
+
+
+def test_submit_form_validate_action_rejects_inactive_article_without_creating(qtbot, login_as) -> None:
+    """Contrairement à la rupture de stock (Sorties/Ventes), un article
+    inactif est déjà rejeté dès ``create_inventory``/``update_inventory``
+    (même contrôle que ``validate_inventory``, voir ``_build_lignes``) : il
+    n'existe donc pas de fenêtre où la création réussirait puis la
+    validation échouerait pour ce motif précis — la création elle-même est
+    refusée, sans rien enregistrer."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("100"))
+    stack.articles.deactivate_article(article.id)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    values = {
+        "date": date(2026, 1, 1),
+        "lignes": [
+            {"article_id": article.id, "article_label": "x", "stock_theorique": Decimal("100"), "stock_physique": Decimal("97")}
+        ],
+    }
+
+    result = page._submit_form(None, values, "validate")
+
+    assert result is False
+    assert stack.inventory.list_inventories() == []
+
+
+def test_submit_form_validate_action_denied_without_permission_keeps_draft_recoverable(qtbot, login_as) -> None:
+    admin_stack, _ = login_as("Administrateur")
+    article = _make_article(admin_stack, stock_initial=Decimal("100"))
+
+    role_id = next(r.id for r in admin_stack.roles.list_roles() if r.nom == "Gestionnaire de stock")
+    codes = admin_stack.roles.get_role_permissions(role_id)
+    admin_stack.roles.update_role_permissions(role_id, [c for c in codes if c != "INVENTORY_VALIDATE"])
+
+    gestionnaire_stack, _ = login_as("Gestionnaire de stock")
+    page = _build_page(gestionnaire_stack)
+    qtbot.addWidget(page)
+
+    values = {
+        "date": date(2026, 1, 1),
+        "lignes": [
+            {"article_id": article.id, "article_label": "x", "stock_theorique": Decimal("100"), "stock_physique": Decimal("97")}
+        ],
+    }
+
+    result = page._submit_form(None, values, "validate")
+
+    assert result is True
+    inventories = [i for i in admin_stack.inventory.list_inventories() if i.numero == "INV-000001"]
+    assert len(inventories) == 1
+    assert inventories[0].statut == StatutInventaire.BROUILLON
+    assert admin_stack.articles.get_article(article.id).stock_actuel == Decimal("100")

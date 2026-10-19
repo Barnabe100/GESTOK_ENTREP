@@ -325,7 +325,7 @@ class SalesPage(QWidget):
 
         def submit(dialog: SaleFormDialog) -> bool:
             state["values"] = dialog.values()
-            return self._submit_form(sale_id, state["values"])
+            return self._submit_form(sale_id, state["values"], dialog.requested_action())
 
         run_modal_form(factory, submit)
         self._reload_client_filter_combo()
@@ -362,9 +362,20 @@ class SalesPage(QWidget):
         QMessageBox.information(self, "Client créé", f"Le client « {created.nom} » a été créé.")
         return created.id, created.nom
 
-    def _submit_form(self, sale_id: Optional[int], values: dict) -> bool:
+    def _submit_form(self, sale_id: Optional[int], values: dict, action: str = "draft") -> bool:
         """Convertit la saisie, appelle le service et affiche le résultat.
-        Isolé de ``_open_form`` pour rester testable sans dialogue modal."""
+        Isolé de ``_open_form`` pour rester testable sans dialogue modal.
+
+        ``action`` ('draft' ou 'validate', voir ``SaleFormDialog.requested_action``) :
+        si 'validate', ``SaleService.validate_sale`` est appelé dans la
+        foulée, sans paiement initial (ce formulaire ne collecte aucun
+        paiement — la vente validée reste à crédit, solde non payé ; le
+        paiement s'enregistre ensuite via le détail de la vente, sans
+        changement de ce lot). Si la création/modification réussit mais que
+        la validation échoue (stock insuffisant, article inactif...), la
+        vente reste en brouillon, retrouvable dans la liste — le dialogue
+        n'est jamais rouvert dans ce cas, pour ne jamais recréer la vente en
+        double."""
         try:
             sale_date = values["date"]
             client_id = values.get("client_id")
@@ -378,18 +389,39 @@ class SalesPage(QWidget):
             ]
 
             if sale_id is None:
-                created = self._sale_service.create_sale(sale_date, lines, client_id=client_id)
-                QMessageBox.information(
-                    self, "Vente créée", f"La vente « {created.numero} » a été créée en brouillon."
-                )
+                document = self._sale_service.create_sale(sale_date, lines, client_id=client_id)
+                created_now = True
             else:
-                updated = self._sale_service.update_sale(sale_id, sale_date, lines, client_id=client_id)
-                QMessageBox.information(
-                    self, "Vente modifiée", f"La vente « {updated.numero} » a été modifiée."
-                )
+                document = self._sale_service.update_sale(sale_id, sale_date, lines, client_id=client_id)
+                created_now = False
         except AppError as exc:
             QMessageBox.warning(self, "Opération refusée", str(exc))
             return False
+
+        if action != "validate":
+            if created_now:
+                QMessageBox.information(
+                    self, "Vente créée", f"La vente « {document.numero} » a été créée en brouillon."
+                )
+            else:
+                QMessageBox.information(
+                    self, "Vente modifiée", f"La vente « {document.numero} » a été modifiée."
+                )
+            return True
+
+        try:
+            validated = self._sale_service.validate_sale(document.id)
+        except AppError as exc:
+            QMessageBox.warning(
+                self, "Vente enregistrée, validation refusée",
+                f"La vente « {document.numero} » a été enregistrée en brouillon, mais n'a pas pu être "
+                f"validée : {exc}\n\nVous pouvez la retrouver dans la liste pour la corriger ou la valider.",
+            )
+            return True
+
+        QMessageBox.information(
+            self, "Vente validée", f"La vente « {validated.numero} » a été créée et validée."
+        )
         return True
 
     # -- suppression d'un brouillon ------------------------------------------

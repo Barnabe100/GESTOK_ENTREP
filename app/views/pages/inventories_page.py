@@ -242,14 +242,24 @@ class InventoriesPage(QWidget):
 
         def submit(dialog: InventoryFormDialog) -> bool:
             state["values"] = dialog.values()
-            return self._submit_form(inventory_id, state["values"])
+            return self._submit_form(inventory_id, state["values"], dialog.requested_action())
 
         run_modal_form(factory, submit)
         self.refresh()
 
-    def _submit_form(self, inventory_id: Optional[int], values: dict) -> bool:
+    def _submit_form(self, inventory_id: Optional[int], values: dict, action: str = "draft") -> bool:
         """Convertit la saisie, appelle le service et affiche le résultat.
-        Isolé de ``_open_form`` pour rester testable sans dialogue modal."""
+        Isolé de ``_open_form`` pour rester testable sans dialogue modal.
+
+        ``action`` ('draft' ou 'validate', voir ``InventoryFormDialog.requested_action``) :
+        si 'validate', ``InventoryService.validate_inventory`` est appelé
+        dans la foulée (sans réafficher la boîte de confirmation détaillée
+        des écarts, réservée au flux de validation différée depuis la
+        liste — l'utilisateur a déjà explicitement demandé la validation en
+        cliquant sur ce bouton). Si la création/modification réussit mais
+        que la validation échoue, l'inventaire reste en brouillon,
+        retrouvable dans la liste — le dialogue n'est jamais rouvert dans ce
+        cas, pour ne jamais recréer l'inventaire en double."""
         try:
             inventory_date = values["date"]
             lines = [
@@ -258,18 +268,39 @@ class InventoriesPage(QWidget):
             ]
 
             if inventory_id is None:
-                created = self._inventory_service.create_inventory(inventory_date, lines)
-                QMessageBox.information(
-                    self, "Inventaire créé", f"L'inventaire « {created.numero} » a été créé en brouillon."
-                )
+                document = self._inventory_service.create_inventory(inventory_date, lines)
+                created_now = True
             else:
-                updated = self._inventory_service.update_inventory(inventory_id, inventory_date, lines)
-                QMessageBox.information(
-                    self, "Inventaire modifié", f"L'inventaire « {updated.numero} » a été modifié."
-                )
+                document = self._inventory_service.update_inventory(inventory_id, inventory_date, lines)
+                created_now = False
         except AppError as exc:
             QMessageBox.warning(self, "Opération refusée", str(exc))
             return False
+
+        if action != "validate":
+            if created_now:
+                QMessageBox.information(
+                    self, "Inventaire créé", f"L'inventaire « {document.numero} » a été créé en brouillon."
+                )
+            else:
+                QMessageBox.information(
+                    self, "Inventaire modifié", f"L'inventaire « {document.numero} » a été modifié."
+                )
+            return True
+
+        try:
+            validated = self._inventory_service.validate_inventory(document.id)
+        except AppError as exc:
+            QMessageBox.warning(
+                self, "Inventaire enregistré, validation refusée",
+                f"L'inventaire « {document.numero} » a été enregistré en brouillon, mais n'a pas pu être "
+                f"validé : {exc}\n\nVous pouvez le retrouver dans la liste pour le corriger ou le valider.",
+            )
+            return True
+
+        QMessageBox.information(
+            self, "Inventaire validé", f"L'inventaire « {validated.numero} » a été créé et validé."
+        )
         return True
 
     # -- consultation détaillée ----------------------------------------------

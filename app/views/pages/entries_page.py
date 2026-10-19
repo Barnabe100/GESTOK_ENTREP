@@ -254,14 +254,23 @@ class EntriesPage(QWidget):
 
         def submit(dialog: EntryFormDialog) -> bool:
             state["values"] = dialog.values()
-            return self._submit_form(entry_id, state["values"])
+            return self._submit_form(entry_id, state["values"], dialog.requested_action())
 
         run_modal_form(factory, submit)
         self.refresh()
 
-    def _submit_form(self, entry_id: Optional[int], values: dict) -> bool:
+    def _submit_form(self, entry_id: Optional[int], values: dict, action: str = "draft") -> bool:
         """Convertit la saisie, appelle le service et affiche le résultat.
-        Isolé de ``_open_form`` pour rester testable sans dialogue modal."""
+        Isolé de ``_open_form`` pour rester testable sans dialogue modal.
+
+        ``action`` ('draft' ou 'validate', voir ``EntryFormDialog.requested_action``) :
+        si 'validate', ``EntryService.validate_entry`` est appelé dans la
+        foulée, dans un second appel de service (même contrôle de statut/
+        permission que la validation différée depuis la liste). Si la
+        création/modification réussit mais que la validation échoue,
+        l'entrée reste en brouillon, retrouvable dans la liste — le
+        dialogue n'est jamais rouvert dans ce cas, pour ne jamais recréer
+        l'entrée en double."""
         try:
             fournisseur_id = values["fournisseur_id"]
             if fournisseur_id is None:
@@ -277,18 +286,16 @@ class EntriesPage(QWidget):
             ]
 
             if entry_id is None:
-                created = self._entry_service.create_entry(
+                document = self._entry_service.create_entry(
                     fournisseur_id,
                     entry_date,
                     lines,
                     reference_document=values["reference_document"],
                     commentaire=values["commentaire"],
                 )
-                QMessageBox.information(
-                    self, "Entrée créée", f"L'entrée « {created.numero} » a été créée en brouillon."
-                )
+                created_now = True
             else:
-                updated = self._entry_service.update_entry(
+                document = self._entry_service.update_entry(
                     entry_id,
                     fournisseur_id,
                     entry_date,
@@ -296,12 +303,35 @@ class EntriesPage(QWidget):
                     reference_document=values["reference_document"],
                     commentaire=values["commentaire"],
                 )
-                QMessageBox.information(
-                    self, "Entrée modifiée", f"L'entrée « {updated.numero} » a été modifiée."
-                )
+                created_now = False
         except AppError as exc:
             QMessageBox.warning(self, "Opération refusée", str(exc))
             return False
+
+        if action != "validate":
+            if created_now:
+                QMessageBox.information(
+                    self, "Entrée créée", f"L'entrée « {document.numero} » a été créée en brouillon."
+                )
+            else:
+                QMessageBox.information(
+                    self, "Entrée modifiée", f"L'entrée « {document.numero} » a été modifiée."
+                )
+            return True
+
+        try:
+            validated = self._entry_service.validate_entry(document.id)
+        except AppError as exc:
+            QMessageBox.warning(
+                self, "Entrée enregistrée, validation refusée",
+                f"L'entrée « {document.numero} » a été enregistrée en brouillon, mais n'a pas pu être "
+                f"validée : {exc}\n\nVous pouvez la retrouver dans la liste pour la corriger ou la valider.",
+            )
+            return True
+
+        QMessageBox.information(
+            self, "Entrée validée", f"L'entrée « {validated.numero} » a été créée et validée."
+        )
         return True
 
     # -- consultation détaillée ----------------------------------------------

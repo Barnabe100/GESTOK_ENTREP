@@ -292,14 +292,24 @@ class LocationsPage(QWidget):
 
         def submit(dialog: LocationFormDialog) -> bool:
             state["values"] = dialog.values()
-            return self._submit_form(location_id, state["values"])
+            return self._submit_form(location_id, state["values"], dialog.requested_action())
 
         run_modal_form(factory, submit)
         self.refresh()
 
-    def _submit_form(self, location_id: Optional[int], values: dict) -> bool:
+    def _submit_form(self, location_id: Optional[int], values: dict, action: str = "draft") -> bool:
         """Convertit la saisie, appelle le service et affiche le résultat.
-        Isolé de ``_open_form`` pour rester testable sans dialogue modal."""
+        Isolé de ``_open_form`` pour rester testable sans dialogue modal.
+
+        ``action`` ('draft' ou 'validate', voir ``LocationFormDialog.requested_action``) :
+        si 'validate', seul ``LocationService.confirm_location`` est appelé
+        dans la foulée (BROUILLON -> CONFIRMEE, sans effet stock) — jamais
+        ``depart_location``, qui exige une date de départ absente de ce
+        formulaire et reste une étape distincte, pilotée depuis
+        ``LocationDetailDialog``. Si la création/modification réussit mais
+        que la confirmation échoue, la location reste en brouillon,
+        retrouvable dans la liste — le dialogue n'est jamais rouvert dans ce
+        cas, pour ne jamais recréer la location en double."""
         try:
             location_date = values["date"]
             client_id = values["client_id"]
@@ -312,22 +322,43 @@ class LocationsPage(QWidget):
             commentaire = values.get("commentaire")
 
             if location_id is None:
-                created = self._location_service.create_location(
+                document = self._location_service.create_location(
                     location_date, client_id, lines, commentaire=commentaire
                 )
-                QMessageBox.information(
-                    self, "Location créée", f"La location « {created.numero} » a été créée en brouillon."
-                )
+                created_now = True
             else:
-                updated = self._location_service.update_location(
+                document = self._location_service.update_location(
                     location_id, location_date, client_id, lines, commentaire=commentaire
                 )
-                QMessageBox.information(
-                    self, "Location modifiée", f"La location « {updated.numero} » a été modifiée."
-                )
+                created_now = False
         except AppError as exc:
             QMessageBox.warning(self, "Opération refusée", str(exc))
             return False
+
+        if action != "validate":
+            if created_now:
+                QMessageBox.information(
+                    self, "Location créée", f"La location « {document.numero} » a été créée en brouillon."
+                )
+            else:
+                QMessageBox.information(
+                    self, "Location modifiée", f"La location « {document.numero} » a été modifiée."
+                )
+            return True
+
+        try:
+            confirmed = self._location_service.confirm_location(document.id)
+        except AppError as exc:
+            QMessageBox.warning(
+                self, "Location enregistrée, validation refusée",
+                f"La location « {document.numero} » a été enregistrée en brouillon, mais n'a pas pu être "
+                f"confirmée : {exc}\n\nVous pouvez la retrouver dans la liste pour la corriger ou la confirmer.",
+            )
+            return True
+
+        QMessageBox.information(
+            self, "Location validée", f"La location « {confirmed.numero} » a été confirmée."
+        )
         return True
 
     # -- suppression d'un brouillon ------------------------------------------

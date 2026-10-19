@@ -59,6 +59,7 @@ class ExitFormDialog(QDialog):
         initial = initial or {}
         self._articles = articles
         self._lines: list[dict] = list(initial.get("lignes", []))
+        self._requested_action = "draft"
 
         self.setWindowTitle("Sortie de stock")
         self.setModal(True)
@@ -131,13 +132,17 @@ class ExitFormDialog(QDialog):
         button_row.addStretch(1)
         self.cancel_button = QPushButton("Annuler", self)
         self.save_button = QPushButton("Enregistrer en brouillon", self)
-        self.save_button.setDefault(True)
+        self.validate_button = QPushButton("Valider", self)
+        self.validate_button.setDefault(True)
+        self.validate_button.setStyleSheet("font-weight: 600;")
         button_row.addWidget(self.cancel_button)
         button_row.addWidget(self.save_button)
+        button_row.addWidget(self.validate_button)
         layout.addLayout(button_row)
 
         self.cancel_button.clicked.connect(self.reject)
-        self.save_button.clicked.connect(self.accept)
+        self.save_button.clicked.connect(self._on_save_clicked)
+        self.validate_button.clicked.connect(self._on_validate_clicked)
         self.add_line_button.clicked.connect(self._on_add_line_clicked)
         self.remove_line_button.clicked.connect(self._on_remove_line_clicked)
 
@@ -223,3 +228,21 @@ class ExitFormDialog(QDialog):
 
     def set_error(self, message: str) -> None:
         self.error_label.setText(message)
+
+    # -- distinction brouillon / validation directe ---------------------------
+
+    def _on_save_clicked(self) -> None:
+        self._requested_action = "draft"
+        self.accept()
+
+    def _on_validate_clicked(self) -> None:
+        self._requested_action = "validate"
+        self.save_button.setEnabled(False)
+        self.validate_button.setEnabled(False)
+        self.accept()
+
+    def requested_action(self) -> str:
+        """'draft' ou 'validate' selon le bouton actionné — ``accept()`` étant
+        commun aux deux, c'est le seul moyen pour l'appelant de distinguer les
+        deux intentions une fois le dialogue fermé."""
+        return self._requested_action

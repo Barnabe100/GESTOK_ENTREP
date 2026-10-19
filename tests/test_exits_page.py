@@ -365,3 +365,110 @@ def test_load_motifs_for_form_excludes_inactive(qtbot, login_as) -> None:
     ids = {option[0] for option in options}
     assert active.id in ids
     assert inactive.id not in ids
+
+
+# -- Lot 11 : validation directe (bouton « Valider » du formulaire) ----------
+
+def test_submit_form_validate_action_creates_and_validates_exit_in_one_step(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    motif = _make_motif(stack)
+    article = _make_article(stack, stock_initial=Decimal("50"))
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    values = {
+        "motif_id": motif.id, "date": date(2026, 1, 1),
+        "beneficiaire": "", "reference": "SOR-VALIDATE", "commentaire": "",
+        "lignes": [{"article_id": article.id, "article_label": "x", "quantite": Decimal("10")}],
+    }
+
+    result = page._submit_form(None, values, "validate")
+
+    assert result is True
+    created = stack.exits.list_exits(search="SOR-VALIDATE")[0]
+    assert created.statut == StatutOperation.VALIDEE
+    assert stack.articles.get_article(article.id).stock_actuel == Decimal("40")
+
+
+def test_submit_form_validate_action_rejects_missing_motif_without_creating(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    values = {
+        "motif_id": None, "date": date(2026, 1, 1),
+        "beneficiaire": "", "reference": "SOR-REJECT", "commentaire": "", "lignes": [],
+    }
+
+    result = page._submit_form(None, values, "validate")
+
+    assert result is False
+    assert stack.exits.list_exits(search="SOR-REJECT") == []
+
+
+def test_submit_form_validate_action_insufficient_stock_keeps_draft_recoverable(qtbot, login_as) -> None:
+    """§5-7-8-9 du lot : la sortie demandée dépasse le stock disponible -> la
+    création réussit (un brouillon n'a aucun effet stock) mais la validation
+    est refusée par StockService ; le brouillon est conservé intact (sans
+    doublon, sans mouvement partiel), retrouvable et validable depuis la
+    liste une fois le problème corrigé."""
+    stack, _ = login_as("Administrateur")
+    motif = _make_motif(stack)
+    article = _make_article(stack, stock_initial=Decimal("5"))
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    values = {
+        "motif_id": motif.id, "date": date(2026, 1, 1),
+        "beneficiaire": "", "reference": "SOR-INSUFFISANT", "commentaire": "",
+        "lignes": [{"article_id": article.id, "article_label": "x", "quantite": Decimal("999")}],
+    }
+
+    result = page._submit_form(None, values, "validate")
+
+    assert result is True
+    exits = stack.exits.list_exits(search="SOR-INSUFFISANT")
+    assert len(exits) == 1  # pas de doublon
+    created = exits[0]
+    assert created.statut == StatutOperation.BROUILLON
+    assert stack.articles.get_article(article.id).stock_actuel == Decimal("5")  # aucun mouvement partiel
+    assert stack.exits.get_exit_movements(created.id) == []
+
+    # Parcours de récupération concret : correction de la quantité sur le
+    # même brouillon (jamais recréé), puis validation réussie depuis la liste.
+    stack.exits.update_exit(
+        created.id, motif.id, date(2026, 1, 1),
+        [SortieLigneInput(article.id, Decimal("3"))],
+        beneficiaire="", reference="SOR-INSUFFISANT", commentaire="",
+    )
+    validated = page._validate_selected(created.id)
+    assert validated is True
+    assert stack.articles.get_article(article.id).stock_actuel == Decimal("2")
+
+
+def test_submit_form_validate_action_denied_without_permission_keeps_draft_recoverable(qtbot, login_as) -> None:
+    admin_stack, _ = login_as("Administrateur")
+    motif = _make_motif(admin_stack)
+    article = _make_article(admin_stack, stock_initial=Decimal("50"))
+
+    role_id = next(r.id for r in admin_stack.roles.list_roles() if r.nom == "Gestionnaire de stock")
+    codes = admin_stack.roles.get_role_permissions(role_id)
+    admin_stack.roles.update_role_permissions(role_id, [c for c in codes if c != "STOCK_EXIT_VALIDATE"])
+
+    gestionnaire_stack, _ = login_as("Gestionnaire de stock")
+    page = _build_page(gestionnaire_stack)
+    qtbot.addWidget(page)
+
+    values = {
+        "motif_id": motif.id, "date": date(2026, 1, 1),
+        "beneficiaire": "", "reference": "SOR-NOPERM", "commentaire": "",
+        "lignes": [{"article_id": article.id, "article_label": "x", "quantite": Decimal("10")}],
+    }
+
+    result = page._submit_form(None, values, "validate")
+
+    assert result is True
+    exits = admin_stack.exits.list_exits(search="SOR-NOPERM")
+    assert len(exits) == 1
+    assert exits[0].statut == StatutOperation.BROUILLON
+    assert admin_stack.articles.get_article(article.id).stock_actuel == Decimal("50")

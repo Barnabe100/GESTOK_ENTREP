@@ -389,3 +389,84 @@ def test_on_cancel_clicked_does_nothing_if_reason_dialog_rejected(qtbot, login_a
     page._on_cancel_clicked()
 
     assert stack.entries.get_entry(entry.id).statut == StatutOperation.VALIDEE
+
+
+# -- Lot 11 : validation directe (bouton « Valider » du formulaire) ----------
+
+def test_submit_form_validate_action_creates_and_validates_entry_in_one_step(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    supplier = _make_supplier(stack)
+    article = _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    values = {
+        "fournisseur_id": supplier.id, "date": date(2026, 1, 1),
+        "reference_document": "BL-VALIDATE", "commentaire": "",
+        "lignes": [
+            {"article_id": article.id, "article_label": "x", "quantite": Decimal("10"), "prix_unitaire": Decimal("100")}
+        ],
+    }
+
+    result = page._submit_form(None, values, "validate")
+
+    assert result is True
+    created = stack.entries.list_entries(search="BL-VALIDATE")[0]
+    assert created.statut == StatutOperation.VALIDEE
+    assert stack.articles.get_article(article.id).stock_actuel == Decimal("10")
+
+
+def test_submit_form_validate_action_rejects_missing_supplier_without_creating(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    values = {
+        "fournisseur_id": None, "date": date(2026, 1, 1),
+        "reference_document": "BL-REJECT", "commentaire": "", "lignes": [],
+    }
+
+    result = page._submit_form(None, values, "validate")
+
+    assert result is False
+    assert stack.entries.list_entries(search="BL-REJECT") == []
+
+
+def test_submit_form_validate_action_denied_without_permission_keeps_draft_recoverable(qtbot, login_as) -> None:
+    """§6-7-9 du lot : échec de validation après création réussie -> le
+    brouillon est conservé (ni perdu, ni dupliqué) et reste récupérable
+    depuis la liste par un utilisateur disposant de la permission."""
+    admin_stack, _ = login_as("Administrateur")
+    supplier = _make_supplier(admin_stack)
+    article = _make_article(admin_stack)
+
+    role_id = next(r.id for r in admin_stack.roles.list_roles() if r.nom == "Gestionnaire de stock")
+    codes = admin_stack.roles.get_role_permissions(role_id)
+    admin_stack.roles.update_role_permissions(role_id, [c for c in codes if c != "STOCK_ENTRY_VALIDATE"])
+
+    gestionnaire_stack, _ = login_as("Gestionnaire de stock")
+    page = _build_page(gestionnaire_stack)
+    qtbot.addWidget(page)
+
+    values = {
+        "fournisseur_id": supplier.id, "date": date(2026, 1, 1),
+        "reference_document": "BL-NOPERM", "commentaire": "",
+        "lignes": [
+            {"article_id": article.id, "article_label": "x", "quantite": Decimal("5"), "prix_unitaire": Decimal("100")}
+        ],
+    }
+
+    result = page._submit_form(None, values, "validate")
+
+    assert result is True  # le dialogue se ferme ; l'entrée créée reste en brouillon
+    entries = admin_stack.entries.list_entries(search="BL-NOPERM")
+    assert len(entries) == 1  # pas de doublon
+    created = entries[0]
+    assert created.statut == StatutOperation.BROUILLON
+    assert admin_stack.articles.get_article(article.id).stock_actuel == Decimal("0")
+
+    # Parcours de récupération concret : le brouillon reste validable depuis
+    # la liste par un utilisateur disposant de la permission.
+    validated = admin_stack.entries.validate_entry(created.id)
+    assert validated.statut == StatutOperation.VALIDEE
+    assert admin_stack.articles.get_article(article.id).stock_actuel == Decimal("5")

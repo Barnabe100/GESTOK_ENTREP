@@ -614,3 +614,82 @@ def test_record_payment_button_disabled_for_another_vendeur_sale(qtbot, login_as
     qtbot.addWidget(dialog)
 
     assert dialog.record_payment_button.isEnabled() is False
+
+
+# -- Lot 11 : validation directe (bouton « Valider » du formulaire) ----------
+
+def test_submit_form_validate_action_creates_and_validates_sale_in_one_step(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("50"))
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    values = {
+        "date": date(2026, 1, 1), "client_id": None,
+        "lignes": [{"article_id": article.id, "article_label": "x", "quantite": Decimal("10"), "prix_unitaire": Decimal("150")}],
+    }
+
+    result = page._submit_form(None, values, "validate")
+
+    assert result is True
+    sale = next(s for s in stack.sales.list_sales() if s.numero == "VNT-000001")
+    assert sale.statut == StatutOperation.VALIDEE
+    assert stack.articles.get_article(article.id).stock_actuel == Decimal("40")
+
+
+def test_submit_form_validate_action_insufficient_stock_keeps_draft_recoverable(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("5"))
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    values = {
+        "date": date(2026, 1, 1), "client_id": None,
+        "lignes": [{"article_id": article.id, "article_label": "x", "quantite": Decimal("999"), "prix_unitaire": Decimal("150")}],
+    }
+
+    result = page._submit_form(None, values, "validate")
+
+    assert result is True
+    sales = [s for s in stack.sales.list_sales() if s.numero == "VNT-000001"]
+    assert len(sales) == 1
+    created = sales[0]
+    assert created.statut == StatutOperation.BROUILLON
+    assert stack.articles.get_article(article.id).stock_actuel == Decimal("5")
+
+    # Parcours de récupération concret : correction de la quantité sur le
+    # même brouillon, puis validation réussie depuis la liste.
+    stack.sales.update_sale(
+        created.id, date(2026, 1, 1),
+        [VenteLigneInput(article.id, Decimal("3"), Decimal("150"))],
+        client_id=None,
+    )
+    result2 = page._validate_selected(created.id)
+    assert result2 is True
+    assert stack.articles.get_article(article.id).stock_actuel == Decimal("2")
+
+
+def test_submit_form_validate_action_denied_without_permission_keeps_draft_recoverable(qtbot, login_as) -> None:
+    admin_stack, _ = login_as("Administrateur")
+    article = _make_article(admin_stack, stock_initial=Decimal("50"))
+
+    role_id = next(r.id for r in admin_stack.roles.list_roles() if r.nom == "Vendeur")
+    codes = admin_stack.roles.get_role_permissions(role_id)
+    admin_stack.roles.update_role_permissions(role_id, [c for c in codes if c != "SALE_VALIDATE"])
+
+    vendeur_stack, _ = login_as("Vendeur")
+    page = _build_page(vendeur_stack)
+    qtbot.addWidget(page)
+
+    values = {
+        "date": date(2026, 1, 1), "client_id": None,
+        "lignes": [{"article_id": article.id, "article_label": "x", "quantite": Decimal("10"), "prix_unitaire": Decimal("150")}],
+    }
+
+    result = page._submit_form(None, values, "validate")
+
+    assert result is True
+    sales = [s for s in admin_stack.sales.list_sales() if s.numero == "VNT-000001"]
+    assert len(sales) == 1
+    assert sales[0].statut == StatutOperation.BROUILLON
+    assert admin_stack.articles.get_article(article.id).stock_actuel == Decimal("50")
