@@ -426,3 +426,24 @@ def test_payment_receipt_without_client_has_no_client_line(qapp) -> None:
 
     text = rendered.document.toPlainText()
     assert "Client Crédit" not in text
+
+
+# -- mode de paiement / référence (lot Harmonisation des reçus) -----------------------
+
+
+def test_payment_receipt_shows_mode_and_reference_when_set(qapp) -> None:
+    rendered = build_payment_receipt_document(
+        _make_payment_receipt_data(mode_paiement="Mobile Money", reference="MM-REF-42")
+    )
+
+    text = rendered.document.toPlainText()
+    assert "Mobile Money" in text
+    assert "MM-REF-42" in text
+
+
+def test_payment_receipt_omits_mode_and_reference_lines_when_absent(qapp) -> None:
+    rendered = build_payment_receipt_document(_make_payment_receipt_data(mode_paiement=None, reference=None))
+
+    text = rendered.document.toPlainText()
+    assert "Mode de paiement" not in text
+    assert "Référence" not in text

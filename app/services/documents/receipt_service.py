@@ -19,6 +19,16 @@ Le client associé à la vente (``Vente.client``, optionnel) est lu de la
 même façon que l'utilisateur/les articles ci-dessus — par relation ORM,
 jamais via ``ClientService`` — pour ne dépendre, là aussi, que de
 ``SALE_VIEW`` (voir ``build_sale_receipt``).
+
+Harmonisation reçu de vente / reçu de paiement (lot dédié) : deux documents
+volontairement distincts (jamais fusionnés) — le reçu de vente représente
+la transaction complète (articles, total, état de paiement courant), le
+reçu de paiement représente un règlement précis et renvoie à la vente par
+son numéro (référence croisée déjà existante, jamais recalculée). Le reçu
+d'un paiement reprend désormais aussi son mode de paiement et sa référence
+tels qu'enregistrés sur ``Paiement`` (voir ``build_payment_receipt``) —
+déjà affichés dans l'historique à l'écran, il n'y a aucune raison qu'ils
+manquent sur le document imprimé/exporté de ce même paiement.
 """
 from __future__ import annotations
 
@@ -110,6 +120,14 @@ class PaymentReceiptData:
     entreprise_adresse: Optional[str]
     entreprise_telephone: Optional[str]
     entreprise_email: Optional[str]
+    # Ajoutés après la première version de ce DTO (valeur par défaut, ne
+    # cassent aucun appelant existant — même principe que SaleReceiptData
+    # ci-dessus) : repris tels qu'enregistrés sur ``Paiement`` (voir
+    # SaleService.record_payment) — déjà affichés dans l'historique à
+    # l'écran (SaleDetailDialog.payments_table), le reçu PDF de ce même
+    # paiement doit montrer la même information.
+    mode_paiement: Optional[str] = None
+    reference: Optional[str] = None
 
     @property
     def reste_a_payer(self) -> Decimal:
@@ -232,6 +250,8 @@ class ReceiptService:
             montant = paiement.montant
             date_heure = paiement.date_heure
             username = paiement.user.username
+            mode_paiement = paiement.mode_paiement
+            reference = paiement.reference
 
         profile = get_company_profile(self._settings)
         devise = get_effective_currency(self._settings)
@@ -249,4 +269,6 @@ class ReceiptService:
             entreprise_adresse=profile.adresse,
             entreprise_telephone=profile.telephone,
             entreprise_email=profile.email,
+            mode_paiement=mode_paiement,
+            reference=reference,
         )

@@ -416,3 +416,175 @@ def test_build_payment_receipt_unknown_payment_raises_not_found(login_as) -> Non
 
     with pytest.raises(NotFoundError):
         stack.documents.build_payment_receipt(sale.id, 999999)
+
+
+def test_receipt_shows_non_payee_for_credit_sale_without_any_payment(login_as) -> None:
+    """Complète les deux autres statuts déjà couverts (PARTIELLEMENT_PAYEE,
+    PAYEE) : une vente à crédit sans aucun paiement doit afficher NON_PAYEE,
+    un montant payé nul et un reste égal au total."""
+    from app.models.enums import StatutPaiement
+    from app.services.sales.sale_service import VenteLigneInput
+
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    sale = stack.sales.create_sale(date(2026, 1, 15), [VenteLigneInput(article.id, Decimal("2"), Decimal("150"))])
+    validated = stack.sales.validate_sale(sale.id)  # aucun paiement_initial
+
+    receipt = stack.documents.build_sale_receipt(validated.id)
+
+    assert receipt.total == Decimal("300")
+    assert receipt.montant_paye == Decimal("0")
+    assert receipt.reste_a_payer == Decimal("300")
+    assert receipt.statut_paiement == StatutPaiement.NON_PAYEE
+
+
+# -- reçu de paiement : mode et référence (lot Harmonisation des reçus) ---------------
+
+
+def test_build_payment_receipt_includes_mode_and_reference_when_set(login_as) -> None:
+    """Le reçu PDF d'un paiement doit reprendre le mode de paiement et la
+    référence déjà saisis à l'enregistrement — déjà affichés dans
+    l'historique à l'écran (SaleDetailDialog.payments_table), ils ne
+    doivent pas disparaître sur le document imprimé/exporté."""
+    from app.services.sales.sale_service import VenteLigneInput
+
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    sale = stack.sales.create_sale(date(2026, 1, 15), [VenteLigneInput(article.id, Decimal("1"), Decimal("150"))])
+    validated = stack.sales.validate_sale(sale.id)
+    stack.sales.record_payment(
+        validated.id, Decimal("150"), mode_paiement="Mobile Money", reference="MM-REF-42"
+    )
+    paiement = stack.sales.list_payments(validated.id)[0]
+
+    receipt = stack.documents.build_payment_receipt(validated.id, paiement.id)
+
+    assert receipt.mode_paiement == "Mobile Money"
+    assert receipt.reference == "MM-REF-42"
+
+
+def test_build_payment_receipt_omits_mode_and_reference_when_not_set(login_as) -> None:
+    from app.services.sales.sale_service import VenteLigneInput
+
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    sale = stack.sales.create_sale(date(2026, 1, 15), [VenteLigneInput(article.id, Decimal("1"), Decimal("150"))])
+    validated = stack.sales.validate_sale(sale.id)
+    stack.sales.record_payment(validated.id, Decimal("150"))  # ni mode ni référence
+    paiement = stack.sales.list_payments(validated.id)[0]
+
+    receipt = stack.documents.build_payment_receipt(validated.id, paiement.id)
+
+    assert receipt.mode_paiement is None
+    assert receipt.reference is None
+
+
+def test_build_payment_receipt_for_final_payment_reaching_fully_paid(login_as) -> None:
+    """Reçu du dernier paiement d'une vente : le reste à payer doit tomber
+    exactement à zéro (§ item 5 de ce lot)."""
+    from app.models.enums import StatutPaiement
+    from app.services.sales.sale_service import VenteLigneInput
+
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    sale = stack.sales.create_sale(date(2026, 1, 15), [VenteLigneInput(article.id, Decimal("2"), Decimal("150"))])
+    validated = stack.sales.validate_sale(sale.id)
+    stack.sales.record_payment(validated.id, Decimal("200"))
+    final = stack.sales.record_payment(validated.id, Decimal("100"))
+    last_payment = stack.sales.list_payments(validated.id)[-1]
+
+    receipt = stack.documents.build_payment_receipt(validated.id, last_payment.id)
+
+    assert receipt.total_paye_apres == Decimal("300")
+    assert receipt.reste_a_payer == Decimal("0")
+    assert final.statut_paiement == StatutPaiement.PAYEE
+
+
+def test_build_payment_receipt_matches_cahier_des_charges_worked_example(login_as) -> None:
+    """Exemple exact du cahier des charges de ce lot : vente de 100 000,
+    trois paiements successifs de 20 000 / 30 000 / 50 000 — le reçu du
+    2e paiement doit refléter un cumul de 50 000 et un reste de 50 000,
+    jamais le solde actuel (qui serait nul après le 3e paiement)."""
+    from app.services.sales.sale_service import VenteLigneInput
+
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("10"))
+    sale = stack.sales.create_sale(
+        date(2026, 1, 15), [VenteLigneInput(article.id, Decimal("1"), Decimal("100000"))]
+    )
+    validated = stack.sales.validate_sale(sale.id)
+    stack.sales.record_payment(validated.id, Decimal("20000"))
+    stack.sales.record_payment(validated.id, Decimal("30000"))
+    stack.sales.record_payment(validated.id, Decimal("50000"))
+    payments = stack.sales.list_payments(validated.id)
+    assert len(payments) == 3
+
+    second_receipt = stack.documents.build_payment_receipt(validated.id, payments[1].id)
+
+    assert second_receipt.total_paye_apres == Decimal("50000")
+    assert second_receipt.reste_a_payer == Decimal("50000")
+    assert second_receipt.reste_a_payer != Decimal("0")
+
+
+def test_build_payment_receipt_without_client(login_as) -> None:
+    """Vente comptant sans client : le reçu de paiement doit fonctionner
+    sans invention de client (§ item 7 de ce lot)."""
+    from app.services.sales.sale_service import VenteLigneInput
+
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    sale = stack.sales.create_sale(date(2026, 1, 15), [VenteLigneInput(article.id, Decimal("1"), Decimal("150"))])
+    validated = stack.sales.validate_sale(sale.id)  # pas de client_id
+    stack.sales.record_payment(validated.id, Decimal("150"))
+    paiement = stack.sales.list_payments(validated.id)[0]
+
+    receipt = stack.documents.build_payment_receipt(validated.id, paiement.id)
+
+    assert receipt.client_nom is None
+
+
+def test_build_payment_receipt_decimal_precision_is_preserved(login_as) -> None:
+    """Montants non ronds : la somme historique des paiements doit rester
+    exacte en Decimal, sans dérive d'arrondi (§ item 8 de ce lot)."""
+    from app.services.sales.sale_service import VenteLigneInput
+
+    stack, _ = login_as("Administrateur")
+    stack.parameters.update_config(nom="Société", adresse=None, telephone=None, email=None, devise="EUR")
+    article = _make_article(stack)
+    sale = stack.sales.create_sale(
+        date(2026, 1, 15), [VenteLigneInput(article.id, Decimal("1"), Decimal("100.33"))]
+    )
+    validated = stack.sales.validate_sale(sale.id)
+    stack.sales.record_payment(validated.id, Decimal("33.11"))
+    final = stack.sales.record_payment(validated.id, Decimal("67.22"))
+    payments = stack.sales.list_payments(validated.id)
+
+    first_receipt = stack.documents.build_payment_receipt(validated.id, payments[0].id)
+    second_receipt = stack.documents.build_payment_receipt(validated.id, payments[1].id)
+
+    assert first_receipt.total_paye_apres == Decimal("33.11")
+    assert second_receipt.total_paye_apres == Decimal("100.33")
+    assert second_receipt.reste_a_payer == Decimal("0.00") or second_receipt.reste_a_payer == Decimal("0")
+    assert final.montant_paye == Decimal("100.33")
+
+
+def test_building_payment_receipt_does_not_mutate_sale_or_payments(login_as) -> None:
+    """Symétrique de test_generating_receipt_does_not_change_sale_statut,
+    pour le reçu de paiement (§ item 10 de ce lot)."""
+    from app.services.sales.sale_service import VenteLigneInput
+
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    sale = stack.sales.create_sale(date(2026, 1, 15), [VenteLigneInput(article.id, Decimal("1"), Decimal("150"))])
+    validated = stack.sales.validate_sale(sale.id)
+    stack.sales.record_payment(validated.id, Decimal("50"))
+    paiement = stack.sales.list_payments(validated.id)[0]
+
+    stack.documents.build_payment_receipt(validated.id, paiement.id)
+    stack.documents.build_payment_receipt(validated.id, paiement.id)
+
+    reloaded_sale = stack.sales.get_sale(validated.id)
+    reloaded_payments = stack.sales.list_payments(validated.id)
+    assert reloaded_sale.montant_paye == Decimal("50")
+    assert len(reloaded_payments) == 1
+    assert reloaded_payments[0].montant == Decimal("50")

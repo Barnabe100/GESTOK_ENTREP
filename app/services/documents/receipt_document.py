@@ -293,6 +293,16 @@ def _build_payment_receipt_html(data: PaymentReceiptData) -> str:
         ) if line
     ) or "&nbsp;"
     client_line = f"<p style='margin:4px 0;'>Client : {_esc(data.client_nom)}</p>" if data.client_nom else ""
+    # Mêmes informations déjà visibles dans l'historique à l'écran
+    # (SaleDetailDialog.payments_table) — n'apparaissent ici que si
+    # renseignées, jamais une ligne vide/« — » (même convention que
+    # _header_lines/_client_fields pour le reçu de vente).
+    mode_paiement_line = (
+        f"<p style='margin:4px 0;'>Mode de paiement : {_esc(data.mode_paiement)}</p>" if data.mode_paiement else ""
+    )
+    reference_line = (
+        f"<p style='margin:4px 0;'>Référence : {_esc(data.reference)}</p>" if data.reference else ""
+    )
 
     return f"""
     <h2 style="margin:4px 0;">{entreprise_nom}</h2>
@@ -309,6 +319,8 @@ def _build_payment_receipt_html(data: PaymentReceiptData) -> str:
     <p style="margin:4px 0; font-size:14pt; font-weight:600;">
       Montant payé : {_fmt_money(data.montant, data.devise)}
     </p>
+    {mode_paiement_line}
+    {reference_line}
     <p style="margin:4px 0;">Total de la vente : {_fmt_money(data.total_vente, data.devise)}</p>
     <p style="margin:4px 0;">Total payé après ce paiement : {_fmt_money(data.total_paye_apres, data.devise)}</p>
     <p style="margin:4px 0; font-weight:600;">Reste à payer : {_fmt_money(data.reste_a_payer, data.devise)}</p>

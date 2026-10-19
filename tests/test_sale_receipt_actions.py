@@ -288,6 +288,25 @@ def test_export_payment_receipt_writes_pdf_file(qtbot, login_as, tmp_path) -> No
     assert out.read_bytes()[:5] == b"%PDF-"
 
 
+def test_export_payment_receipt_with_mode_and_reference_writes_pdf_file(qtbot, login_as, tmp_path) -> None:
+    """Régression du chemin complet (clic -> service -> gabarit -> PDF)
+    avec un mode de paiement et une référence renseignés — lot
+    Harmonisation des reçus."""
+    stack, _ = login_as("Administrateur")
+    dialog, sale = _build_dialog_for_validated_sale(qtbot, stack)
+    dialog._submit_payment(
+        {"montant": "100", "mode_paiement": "Mobile Money", "reference": "MM-REF-42", "commentaire": None}
+    )
+    paiement_id = stack.sales.list_payments(sale.id)[0].id
+
+    out = tmp_path / "recu_paiement_mode_reference.pdf"
+    result = dialog._export_payment_receipt_to(str(out), paiement_id)
+
+    assert result is True
+    assert out.exists()
+    assert out.read_bytes()[:5] == b"%PDF-"
+
+
 def test_export_payment_receipt_button_disabled_without_history(qtbot, login_as) -> None:
     stack, _ = login_as("Administrateur")
     dialog, _sale = _build_dialog_for_validated_sale(qtbot, stack)
