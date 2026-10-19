@@ -59,6 +59,11 @@ _LOW_STOCK_FG = QColor("#B45309")
 
 _STATUS_FILTERS = [("Tous", "tous"), ("Actifs", "actifs"), ("Inactifs", "inactifs")]
 
+_MODE_GESTION_LABELS = {
+    ModeGestionArticle.VENTE: "Vente",
+    ModeGestionArticle.LOCATION: "Location",
+}
+
 
 class ArticlesPage(QWidget):
     def __init__(
@@ -289,6 +294,7 @@ class ArticlesPage(QWidget):
             "code_barres": full.code_barres,
             "description": full.description,
             "tarif_location_jour": full.tarif_location_jour,
+            "mode_gestion": full.mode_gestion,
         }
 
     def _open_form(
@@ -314,7 +320,24 @@ class ArticlesPage(QWidget):
 
     def _submit_form(self, article_id: Optional[int], values: dict) -> bool:
         """Convertit la saisie, appelle le service et affiche le résultat.
-        Isolé de ``_open_form`` pour rester testable sans dialogue modal."""
+        Isolé de ``_open_form`` pour rester testable sans dialogue modal.
+
+        Le mode de gestion choisi dans le formulaire (lot « Gestion du mode
+        Vente / Location ») ne modifie jamais ``create_article``/
+        ``update_article`` eux-mêmes (qui n'ont et ne doivent avoir aucun
+        paramètre ``mode_gestion``, voir ``ArticleService``) : une fois les
+        autres champs enregistrés, si le mode choisi diffère du mode réel de
+        l'article, ``ArticleService.switch_mode_gestion`` est appelé
+        séparément — exactement comme le bouton « Mode de gestion… ».
+        L'absence de la clé ``mode_gestion`` dans ``values`` (anciens appels)
+        ne déclenche jamais de bascule, pour ne rien changer au comportement
+        déjà couvert par les tests existants.
+
+        Si la cible est LOCATION, un tarif journalier strictement positif
+        est exigé avant même d'appeler ``switch_mode_gestion`` — contrôle
+        propre à ce formulaire, qui ne modifie pas la règle plus permissive
+        de ``switch_mode_gestion`` lui-même (voir le bouton « Mode de
+        gestion… », qui continue d'autoriser une bascule sans tarif)."""
         try:
             category_id = values["category_id"]
             if category_id is None:
@@ -327,10 +350,17 @@ class ArticlesPage(QWidget):
             tarif_location_jour = parse_optional_decimal(
                 values.get("tarif_location_jour", ""), "tarif de location journalier"
             )
+            mode_gestion = values.get("mode_gestion")
+            if mode_gestion == ModeGestionArticle.LOCATION and (
+                tarif_location_jour is None or tarif_location_jour <= 0
+            ):
+                raise ValidationError(
+                    "Un tarif de location journalier strictement positif est requis pour le mode Location."
+                )
 
             if article_id is None:
                 stock_initial = parse_decimal(values["stock_initial"], "stock initial")
-                created = self._article_service.create_article(
+                document = self._article_service.create_article(
                     values["reference"],
                     values["designation"],
                     category_id,
@@ -346,11 +376,9 @@ class ArticlesPage(QWidget):
                     stock_initial=stock_initial,
                     tarif_location_jour=tarif_location_jour,
                 )
-                QMessageBox.information(
-                    self, "Article créé", f"L'article « {created.reference} » a été créé."
-                )
+                action_label = "créé"
             else:
-                updated = self._article_service.update_article(
+                document = self._article_service.update_article(
                     article_id,
                     values["reference"],
                     values["designation"],
@@ -366,12 +394,34 @@ class ArticlesPage(QWidget):
                     code_barres=values["code_barres"],
                     tarif_location_jour=tarif_location_jour,
                 )
-                QMessageBox.information(
-                    self, "Article modifié", f"L'article « {updated.reference} » a été modifié."
-                )
+                action_label = "modifié"
         except AppError as exc:
             QMessageBox.warning(self, "Opération refusée", str(exc))
             return False
+
+        if mode_gestion is None or mode_gestion == document.mode_gestion:
+            QMessageBox.information(
+                self, f"Article {action_label}", f"L'article « {document.reference} » a été {action_label}."
+            )
+            return True
+
+        try:
+            document = self._article_service.switch_mode_gestion(document.id, mode_gestion)
+        except AppError as exc:
+            QMessageBox.warning(
+                self, f"Article {action_label}, mode de gestion inchangé",
+                f"L'article « {document.reference} » a été {action_label} en mode "
+                f"{_MODE_GESTION_LABELS.get(document.mode_gestion, document.mode_gestion)}, mais le passage "
+                f"en mode {_MODE_GESTION_LABELS.get(mode_gestion, mode_gestion)} a été refusé : {exc}\n\n"
+                "Vous pouvez réessayer depuis « Mode de gestion… ».",
+            )
+            return True
+
+        QMessageBox.information(
+            self, f"Article {action_label}",
+            f"L'article « {document.reference} » a été {action_label} et configuré en mode "
+            f"{_MODE_GESTION_LABELS.get(mode_gestion, mode_gestion)}.",
+        )
         return True
 
     # -- consultation détaillée ----------------------------------------------
@@ -444,7 +494,9 @@ class ArticlesPage(QWidget):
             return
 
         def factory() -> ArticleModeGestionDialog:
-            return ArticleModeGestionDialog(article.reference, article.mode_gestion, parent=self)
+            return ArticleModeGestionDialog(
+                article.reference, article.mode_gestion, article.tarif_location_jour, parent=self
+            )
 
         def submit(dialog: ArticleModeGestionDialog) -> bool:
             return self._submit_mode_gestion(article_id, dialog.nouveau_mode())

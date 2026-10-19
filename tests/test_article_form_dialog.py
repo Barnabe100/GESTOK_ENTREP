@@ -1,6 +1,7 @@
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog
 
+from app.models.enums import ModeGestionArticle
 from app.views.article_form_dialog import ArticleFormDialog
 from tests.ui_test_helpers import (
     assert_field_is_marked_required,
@@ -149,3 +150,57 @@ def test_set_error_displays_message(qtbot) -> None:
     dialog.set_error("La référence « ART-1 » est déjà utilisée.")
 
     assert "déjà utilisée" in dialog.error_label.text()
+
+
+# -- Lot 12 : mode de gestion (Vente / Location) -----------------------------
+
+def test_mode_gestion_defaults_to_vente_in_create_mode(qtbot) -> None:
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, is_edit=False)
+    qtbot.addWidget(dialog)
+
+    assert dialog.values()["mode_gestion"] == ModeGestionArticle.VENTE
+
+
+def test_mode_gestion_shows_real_value_in_edit_mode(qtbot) -> None:
+    initial = {
+        "reference": "ART-LOC", "designation": "Article", "category_id": 1,
+        "mode_gestion": ModeGestionArticle.LOCATION, "tarif_location_jour": "500",
+    }
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, initial, is_edit=True)
+    qtbot.addWidget(dialog)
+
+    assert dialog.values()["mode_gestion"] == ModeGestionArticle.LOCATION
+
+
+def test_tarif_field_disabled_by_default_in_vente_mode(qtbot) -> None:
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, is_edit=False)
+    qtbot.addWidget(dialog)
+
+    assert dialog.tarif_location_jour_edit.isEnabled() is False
+
+
+def test_tarif_field_enabled_when_location_selected(qtbot) -> None:
+    initial = {"reference": "ART-LOC", "designation": "Article", "category_id": 1, "mode_gestion": ModeGestionArticle.LOCATION}
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, initial, is_edit=True)
+    qtbot.addWidget(dialog)
+
+    assert dialog.tarif_location_jour_edit.isEnabled() is True
+
+
+def test_switching_mode_updates_tarif_field_state_immediately(qtbot) -> None:
+    """§5 du lot : le passage d'un mode à l'autre actualise immédiatement
+    l'état du champ tarif, sans effacer une saisie déjà faite."""
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, is_edit=False)
+    qtbot.addWidget(dialog)
+    assert dialog.tarif_location_jour_edit.isEnabled() is False
+
+    index_location = dialog.mode_gestion_combo.findData(ModeGestionArticle.LOCATION)
+    dialog.mode_gestion_combo.setCurrentIndex(index_location)
+    assert dialog.tarif_location_jour_edit.isEnabled() is True
+
+    dialog.tarif_location_jour_edit.setText("500")
+    index_vente = dialog.mode_gestion_combo.findData(ModeGestionArticle.VENTE)
+    dialog.mode_gestion_combo.setCurrentIndex(index_vente)
+
+    assert dialog.tarif_location_jour_edit.isEnabled() is False
+    assert dialog.tarif_location_jour_edit.text() == "500"  # jamais effacée par un aller-retour

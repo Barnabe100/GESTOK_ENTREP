@@ -480,3 +480,256 @@ def test_create_article_accepts_tarif_location_jour(qtbot, login_as) -> None:
     assert result is True
     created = next(a for a in stack.articles.list_articles() if a.reference == "ART-TARIF")
     assert created.tarif_location_jour == Decimal("500")
+
+
+# -- Lot 12 : mode de gestion exposé dans les formulaires création/modif ----
+
+def _base_values(category_id, **overrides) -> dict:
+    values = {
+        "reference": "ART-MODE", "designation": "Article", "category_id": category_id,
+        "fournisseur_principal_id": None, "unite": "unité", "prix_achat": "100", "prix_vente": "150",
+        "stock_min": "0", "stock_max": "", "emplacement": "", "code_barres": "", "description": "",
+        "stock_initial": "0", "tarif_location_jour": "",
+    }
+    values.update(overrides)
+    return values
+
+
+def test_submit_form_creates_article_in_vente_mode_by_default(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    category = stack.categories.create_category("Matériel")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    values = _base_values(category.id, mode_gestion=ModeGestionArticle.VENTE)
+
+    result = page._submit_form(None, values)
+
+    assert result is True
+    created = next(a for a in stack.articles.list_articles() if a.reference == "ART-MODE")
+    assert created.mode_gestion == ModeGestionArticle.VENTE
+
+
+def test_submit_form_creates_article_directly_in_location_mode(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    category = stack.categories.create_category("Matériel")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    values = _base_values(category.id, mode_gestion=ModeGestionArticle.LOCATION, tarif_location_jour="500")
+
+    result = page._submit_form(None, values)
+
+    assert result is True
+    created = next(a for a in stack.articles.list_articles() if a.reference == "ART-MODE")
+    assert created.mode_gestion == ModeGestionArticle.LOCATION
+    assert created.tarif_location_jour == Decimal("500")
+
+
+def test_submit_form_rejects_missing_tarif_for_location_mode_without_creating(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    category = stack.categories.create_category("Matériel")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    values = _base_values(category.id, mode_gestion=ModeGestionArticle.LOCATION, tarif_location_jour="")
+
+    result = page._submit_form(None, values)
+
+    assert result is False
+    assert stack.articles.list_articles(search="ART-MODE") == []
+
+
+def test_submit_form_rejects_zero_tarif_for_location_mode(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    category = stack.categories.create_category("Matériel")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    values = _base_values(category.id, mode_gestion=ModeGestionArticle.LOCATION, tarif_location_jour="0")
+
+    result = page._submit_form(None, values)
+
+    assert result is False
+    assert stack.articles.list_articles(search="ART-MODE") == []
+
+
+def test_submit_form_rejects_negative_tarif_for_location_mode(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    category = stack.categories.create_category("Matériel")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    values = _base_values(category.id, mode_gestion=ModeGestionArticle.LOCATION, tarif_location_jour="-10")
+
+    result = page._submit_form(None, values)
+
+    assert result is False
+    assert stack.articles.list_articles(search="ART-MODE") == []
+
+
+def test_load_edit_initial_includes_mode_gestion(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    category = stack.categories.create_category("Matériel")
+    article = stack.articles.create_article(
+        "ART-EDIT-MODE", "Article", category.id, "unité", Decimal("100"), Decimal("150"), Decimal("0"),
+        tarif_location_jour=Decimal("500"),
+    )
+    stack.articles.switch_mode_gestion(article.id, ModeGestionArticle.LOCATION)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    initial = page._load_edit_initial(article.id)
+
+    assert initial is not None
+    assert initial["mode_gestion"] == ModeGestionArticle.LOCATION
+    assert initial["tarif_location_jour"] == Decimal("500")
+
+
+def test_submit_form_switches_existing_article_from_vente_to_location(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    category = stack.categories.create_category("Matériel")
+    article = stack.articles.create_article(
+        "ART-V2L", "Article", category.id, "unité", Decimal("100"), Decimal("150"), Decimal("0"),
+    )
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    values = _base_values(
+        category.id, reference="ART-V2L", mode_gestion=ModeGestionArticle.LOCATION, tarif_location_jour="500",
+    )
+
+    result = page._submit_form(article.id, values)
+
+    assert result is True
+    updated = stack.articles.get_article(article.id)
+    assert updated.mode_gestion == ModeGestionArticle.LOCATION
+    assert updated.tarif_location_jour == Decimal("500")
+
+
+def test_submit_form_switches_existing_article_from_location_to_vente(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    category = stack.categories.create_category("Matériel")
+    article = stack.articles.create_article(
+        "ART-L2V", "Article", category.id, "unité", Decimal("100"), Decimal("150"), Decimal("0"),
+        tarif_location_jour=Decimal("500"),
+    )
+    stack.articles.switch_mode_gestion(article.id, ModeGestionArticle.LOCATION)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    values = _base_values(
+        category.id, reference="ART-L2V", mode_gestion=ModeGestionArticle.VENTE, tarif_location_jour="500",
+    )
+
+    result = page._submit_form(article.id, values)
+
+    assert result is True
+    updated = stack.articles.get_article(article.id)
+    assert updated.mode_gestion == ModeGestionArticle.VENTE
+
+
+def test_submit_form_refuses_switch_to_vente_while_location_in_progress(qtbot, login_as) -> None:
+    """§6.9 du lot : une location physiquement en cours (qte_en_location
+    non nulle) doit toujours bloquer le passage en mode Vente — même
+    déclenché depuis ce formulaire — exactement comme le ferait le bouton
+    « Mode de gestion… », puisque c'est le même service qui est appelé."""
+    stack, _ = login_as("Administrateur")
+    category = stack.categories.create_category("Matériel")
+    client = stack.clients.create_client("Client Test")
+    article = stack.articles.create_article(
+        "ART-BLOQUE", "Article", category.id, "unité", Decimal("100"), Decimal("0"), Decimal("0"),
+        stock_initial=Decimal("10"), tarif_location_jour=Decimal("500"),
+    )
+    stack.articles.switch_mode_gestion(article.id, ModeGestionArticle.LOCATION)
+    from app.services.rentals.location_service import LocationLigneInput
+    from datetime import date
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("1"))]
+    )
+    stack.rentals.confirm_location(location.id)
+    stack.rentals.depart_location(location.id, date(2026, 1, 1))
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    values = _base_values(
+        category.id, reference="ART-BLOQUE", mode_gestion=ModeGestionArticle.VENTE, tarif_location_jour="500",
+    )
+
+    result = page._submit_form(article.id, values)
+
+    assert result is True  # les autres champs sont tout de même enregistrés
+    updated = stack.articles.get_article(article.id)
+    assert updated.mode_gestion == ModeGestionArticle.LOCATION  # la bascule elle-même a été refusée
+
+
+def test_submit_form_preserves_data_after_update_without_mode_key(qtbot, login_as) -> None:
+    """Non-régression explicite : un appel sans la clé ``mode_gestion``
+    (comme les appels existants avant ce lot) ne doit jamais déclencher de
+    bascule, même si l'article est en mode Location."""
+    stack, _ = login_as("Administrateur")
+    category = stack.categories.create_category("Matériel")
+    article = stack.articles.create_article(
+        "ART-NOKEY", "Article", category.id, "unité", Decimal("100"), Decimal("150"), Decimal("0"),
+        tarif_location_jour=Decimal("500"),
+    )
+    stack.articles.switch_mode_gestion(article.id, ModeGestionArticle.LOCATION)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    values = _base_values(category.id, reference="ART-NOKEY", tarif_location_jour="500")
+    assert "mode_gestion" not in values  # absent, comme avant ce lot (clé jamais ajoutée)
+
+    result = page._submit_form(article.id, values)
+
+    assert result is True
+    assert stack.articles.get_article(article.id).mode_gestion == ModeGestionArticle.LOCATION
+
+
+def test_submit_form_history_records_switch_triggered_from_form(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    category = stack.categories.create_category("Matériel")
+    article = stack.articles.create_article(
+        "ART-HIST", "Article", category.id, "unité", Decimal("100"), Decimal("150"), Decimal("0"),
+    )
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    values = _base_values(
+        category.id, reference="ART-HIST", mode_gestion=ModeGestionArticle.LOCATION, tarif_location_jour="500",
+    )
+    page._submit_form(article.id, values)
+
+    from app.config.settings import get_settings
+    from app.db.session import session_scope
+    from app.models.catalog import ArticleModeGestionChangement
+    with session_scope(get_settings()) as session:
+        changements = (
+            session.query(ArticleModeGestionChangement)
+            .filter(ArticleModeGestionChangement.article_id == article.id)
+            .all()
+        )
+        assert len(changements) == 1
+        assert changements[0].nouveau_mode == ModeGestionArticle.LOCATION
+
+
+# -- bouton « Mode de gestion… » existant : comportement inchangé ------------
+
+def test_submit_mode_gestion_still_allows_switch_without_tarif(qtbot, login_as) -> None:
+    """Non-régression explicite (§4D/§6.3 du lot) : le parcours existant
+    « Mode de gestion… » reste aussi permissif qu'avant ce lot — seul le
+    nouveau formulaire exige un tarif positif avant d'appeler ce même
+    service."""
+    stack, _ = login_as("Administrateur")
+    category = stack.categories.create_category("Matériel")
+    article = stack.articles.create_article(
+        "ART-SANS-TARIF-BTN", "Article", category.id, "unité", Decimal("100"), Decimal("150"), Decimal("0"),
+    )
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    result = page._submit_mode_gestion(article.id, ModeGestionArticle.LOCATION)
+
+    assert result is True
+    assert stack.articles.get_article(article.id).mode_gestion == ModeGestionArticle.LOCATION

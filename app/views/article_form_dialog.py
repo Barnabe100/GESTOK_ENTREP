@@ -11,6 +11,14 @@ librement modifiable. En création, seul un « stock initial » est proposé
 comme une affectation directe). En modification, le stock actuel et le CMUP
 sont affichés en lecture seule, avec une mention explicite qu'ils sont
 pilotés par le système.
+
+Lot « Gestion du mode Vente / Location » : expose également un sélecteur de
+mode de gestion (Vente/Location, Vente par défaut à la création) et active
+en conséquence le champ tarif de location journalier. Ce choix ne modifie
+jamais directement ``Article.mode_gestion`` : c'est :class:`ArticlesPage`
+qui, après création/modification des autres champs, appelle
+``ArticleService.switch_mode_gestion`` si le mode diffère de celui déjà
+enregistré — exactement comme le bouton « Mode de gestion… » existant.
 """
 from __future__ import annotations
 
@@ -29,10 +37,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.models.enums import ModeGestionArticle
 from app.utils.quantity import format_quantity
 from app.views.common import build_required_field_legend, required_label
 
 UNIT_SUGGESTIONS = ["pièce", "unité", "carton", "paquet", "kg", "litre", "mètre"]
+
+_MODE_GESTION_LABELS = {
+    ModeGestionArticle.VENTE: "Vente",
+    ModeGestionArticle.LOCATION: "Location",
+}
 
 
 class ArticleFormDialog(QDialog):
@@ -90,17 +104,32 @@ class ArticleFormDialog(QDialog):
         self.prix_vente_edit.setText(_as_text(initial.get("prix_vente"), default="0"))
         form.addRow(required_label("Prix de vente"), self.prix_vente_edit)
 
-        # Module Locations (lot dédié) : tarif catalogue journalier de
-        # location, sans objet tant que l'article reste en mode Vente (voir
-        # ArticlesPage, bouton « Mode de gestion… », pour la bascule
-        # elle-même). Toujours affiché pour rester modifiable à l'avance,
-        # avant même de basculer l'article en mode Location.
+        # Module Locations (lot dédié) puis lot « Gestion du mode Vente /
+        # Location » : le mode choisi ici ne modifie jamais directement
+        # Article.mode_gestion — ArticlesPage._submit_form appelle
+        # ArticleService.switch_mode_gestion après création/modification des
+        # autres champs, exactement comme le bouton « Mode de gestion… »
+        # déjà existant (conservé, inchangé). Toujours Vente par défaut pour
+        # un nouvel article (comportement préservé).
+        self.mode_gestion_combo = QComboBox(self)
+        for mode, label in _MODE_GESTION_LABELS.items():
+            self.mode_gestion_combo.addItem(label, mode)
+        self._select_combo_data(
+            self.mode_gestion_combo, initial.get("mode_gestion", ModeGestionArticle.VENTE)
+        )
+        form.addRow("Mode de gestion", self.mode_gestion_combo)
+
+        # Tarif catalogue journalier de location — désactivé (mais jamais
+        # effacé) en mode Vente, où il reste sans objet ; activé en mode
+        # Location, où ArticlesPage exige qu'il soit strictement positif
+        # avant d'appliquer la bascule (voir ArticlesPage._submit_form).
         self.tarif_location_jour_edit = QLineEdit(self)
         self.tarif_location_jour_edit.setText(
             _as_text(initial.get("tarif_location_jour")) if initial.get("tarif_location_jour") is not None else ""
         )
-        self.tarif_location_jour_edit.setPlaceholderText("Sans objet en mode Vente")
         form.addRow("Tarif de location (par jour)", self.tarif_location_jour_edit)
+        self.mode_gestion_combo.currentIndexChanged.connect(self._update_tarif_field_state)
+        self._update_tarif_field_state()
 
         self.stock_min_edit = QLineEdit(self)
         self.stock_min_edit.setText(
@@ -175,6 +204,17 @@ class ArticleFormDialog(QDialog):
         if index >= 0:
             combo.setCurrentIndex(index)
 
+    def _update_tarif_field_state(self) -> None:
+        """Actualise immédiatement l'état du champ tarif au changement de
+        mode (§5 du lot) : désactivé mais jamais vidé en mode Vente — la
+        saisie déjà faite n'est jamais perdue par un simple aller-retour
+        entre les deux modes avant enregistrement."""
+        is_location = self.mode_gestion_combo.currentData() == ModeGestionArticle.LOCATION
+        self.tarif_location_jour_edit.setEnabled(is_location)
+        self.tarif_location_jour_edit.setPlaceholderText(
+            "Tarif strictement positif requis en mode Location" if is_location else "Sans objet en mode Vente"
+        )
+
     def values(self) -> dict:
         return {
             "reference": self.reference_edit.text(),
@@ -182,6 +222,7 @@ class ArticleFormDialog(QDialog):
             "category_id": self.category_combo.currentData(),
             "fournisseur_principal_id": self.supplier_combo.currentData(),
             "unite": self.unite_combo.currentText(),
+            "mode_gestion": self.mode_gestion_combo.currentData(),
             "prix_achat": self.prix_achat_edit.text(),
             "prix_vente": self.prix_vente_edit.text(),
             "stock_min": self.stock_min_edit.text(),
