@@ -92,6 +92,7 @@ class LocationDetailDialog(QDialog):
         location_service: LocationService,
         permission_service: PermissionService,
         parent: QWidget | None = None,
+        read_only: bool = False,
     ) -> None:
         super().__init__(parent)
         self._location_id = location.id
@@ -99,6 +100,10 @@ class LocationDetailDialog(QDialog):
         self._location_service = location_service
         self._permissions = permission_service
         self._location = location
+        # Lot 16 : accès de consultation explicite conservé quand le module
+        # Location est désactivé — jamais de permission contournée, juste
+        # aucune action mutante proposée (voir _update_action_buttons).
+        self._read_only = read_only
 
         self.setWindowTitle(f"Location — {location.numero}")
         self.setModal(True)
@@ -250,6 +255,16 @@ class LocationDetailDialog(QDialog):
             form.removeRow(0)
 
     def _update_action_buttons(self) -> None:
+        if self._read_only:
+            # Lot 16 : aucune action mutante depuis le chemin de consultation
+            # en lecture seule, quelle que soit la permission de l'utilisateur
+            # — la règle réelle reste entièrement dans LocationService.
+            for button in (
+                self.confirm_button, self.depart_button, self.return_button,
+                self.cancel_location_button, self.caution_button, self.payment_button,
+            ):
+                button.setEnabled(False)
+            return
         statut = self._location.statut
         self.confirm_button.setEnabled(
             statut == StatutLocation.BROUILLON and self._permissions.has_permission("LOCATION_CONFIRM")

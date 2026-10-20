@@ -74,6 +74,7 @@ class LocationsPage(QWidget):
         client_service: ClientService,
         permission_service: PermissionService,
         parent: QWidget | None = None,
+        read_only: bool = False,
     ) -> None:
         super().__init__(parent)
         self._location_service = location_service
@@ -81,6 +82,11 @@ class LocationsPage(QWidget):
         self._client_service = client_service
         self._permissions = permission_service
         self._currency_code = get_effective_currency()
+        # Lot 16 : chemin de consultation explicite conservé quand le module
+        # Location est désactivé (voir MainWindow) — création/modification/
+        # suppression désactivées quelle que soit la permission ; seule la
+        # consultation (liste, filtres, détail) reste disponible.
+        self._read_only = read_only
 
         layout = QVBoxLayout(self)
 
@@ -101,15 +107,15 @@ class LocationsPage(QWidget):
         toolbar.addStretch(1)
 
         self.add_button = QPushButton("Nouvelle location", self)
-        self.add_button.setEnabled(self._permissions.has_permission("LOCATION_CREATE"))
+        self.add_button.setEnabled(not self._read_only and self._permissions.has_permission("LOCATION_CREATE"))
         toolbar.addWidget(self.add_button)
 
         self.edit_button = QPushButton("Modifier", self)
-        self.edit_button.setEnabled(self._permissions.has_permission("LOCATION_UPDATE"))
+        self.edit_button.setEnabled(not self._read_only and self._permissions.has_permission("LOCATION_UPDATE"))
         toolbar.addWidget(self.edit_button)
 
         self.delete_button = QPushButton("Supprimer", self)
-        self.delete_button.setEnabled(self._permissions.has_permission("LOCATION_UPDATE"))
+        self.delete_button.setEnabled(not self._read_only and self._permissions.has_permission("LOCATION_UPDATE"))
         toolbar.addWidget(self.delete_button)
 
         self.detail_button = QPushButton("Détails", self)
@@ -199,10 +205,12 @@ class LocationsPage(QWidget):
         has_selection = statut is not None
 
         self.edit_button.setEnabled(
-            has_selection and is_brouillon and self._permissions.has_permission("LOCATION_UPDATE")
+            not self._read_only
+            and has_selection and is_brouillon and self._permissions.has_permission("LOCATION_UPDATE")
         )
         self.delete_button.setEnabled(
-            has_selection and is_brouillon and self._permissions.has_permission("LOCATION_UPDATE")
+            not self._read_only
+            and has_selection and is_brouillon and self._permissions.has_permission("LOCATION_UPDATE")
         )
 
     # -- chargement des listes pour les formulaires -------------------------
@@ -431,7 +439,8 @@ class LocationsPage(QWidget):
         if location is None:
             return
         dialog = LocationDetailDialog(
-            location, self._currency_code, self._location_service, self._permissions, parent=self
+            location, self._currency_code, self._location_service, self._permissions,
+            parent=self, read_only=self._read_only,
         )
         dialog.exec()
         self.refresh()

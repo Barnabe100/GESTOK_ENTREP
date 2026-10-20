@@ -9,6 +9,7 @@ from app.views.about_dialog import AboutDialog
 from app.views.main_window import MainWindow
 from app.views.onboarding_dialog import OnboardingDialog
 from app.views.pages.dashboard_page import DashboardPage
+from app.views.pages.locations_page import LocationsPage
 from app.views.pages.placeholder_page import PlaceholderPage
 from app.views.pages.reports_page import ReportsPage
 
@@ -454,3 +455,112 @@ def test_navigation_away_from_caisse_with_unsaved_sale_is_blocked_until_confirme
     )
     window.navigation_list.setCurrentRow(articles_index)
     assert window.page_stack.currentIndex() == articles_index  # confirmé : autorisé
+
+
+# -- module Location, activation/désactivation (Lot 16) -----------------------------
+
+
+def test_locations_entry_visible_when_module_active_and_permission_present(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    stack.parameters.set_rental_module_enabled(True)
+
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+
+    assert "Locations" in window.visible_modules
+
+
+def test_locations_entry_hidden_when_module_disabled(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    stack.parameters.set_rental_module_enabled(False)
+
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+
+    assert "Locations" not in window.visible_modules
+    assert window.navigation_list.count() == 19
+
+
+def test_other_modules_unaffected_by_locations_deactivation(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    stack.parameters.set_rental_module_enabled(False)
+
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+
+    for module in (
+        "Dashboard", "Articles", "Ventes", "Créances", "Clients", "Paramètres", "Rapports", "Licences",
+    ):
+        assert module in window.visible_modules
+
+
+def test_readonly_locations_button_hidden_when_module_active(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    stack.parameters.set_rental_module_enabled(True)
+
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+
+    assert window.locations_readonly_button.isHidden() is True
+
+
+def test_readonly_locations_button_visible_when_module_disabled_with_permission(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    stack.parameters.set_rental_module_enabled(False)
+
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+
+    assert window.locations_readonly_button.isHidden() is False
+
+
+def test_readonly_locations_button_hidden_without_location_view_permission(qtbot, login_as) -> None:
+    admin_stack, _ = login_as("Administrateur")
+    admin_stack.parameters.set_rental_module_enabled(False)
+    role_id = next(r.id for r in admin_stack.roles.list_roles() if r.nom == "Vendeur")
+    current_codes = admin_stack.roles.get_role_permissions(role_id)
+    admin_stack.roles.update_role_permissions(role_id, [c for c in current_codes if c != "LOCATION_VIEW"])
+
+    stack, _ = login_as("Vendeur")
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+
+    assert window.locations_readonly_button.isHidden() is True
+
+
+def test_readonly_locations_dialog_builds_read_only_page(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    stack.parameters.set_rental_module_enabled(False)
+
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+
+    monkeypatch.setattr("app.views.main_window.QDialog.exec", lambda self: None)
+    captured: list[LocationsPage] = []
+    monkeypatch.setattr(
+        "app.views.main_window.LocationsPage",
+        lambda *a, **k: captured.append(LocationsPage(*a, **k)) or captured[-1],
+    )
+
+    window._on_open_locations_readonly_clicked()
+
+    assert len(captured) == 1
+    page = captured[0]
+    assert page._read_only is True
+    assert page.add_button.isEnabled() is False
+
+
+def test_readonly_locations_page_does_not_expose_mutating_actions(qtbot, login_as) -> None:
+    """Le chemin de consultation ne doit permettre aucune création, ni
+    modification, ni action mutante — seule la consultation reste active."""
+    stack, _ = login_as("Administrateur")
+    page = LocationsPage(
+        stack.rentals, stack.articles, stack.clients, stack.permissions, read_only=True,
+    )
+    qtbot.addWidget(page)
+
+    assert page.add_button.isEnabled() is False
+    assert page.edit_button.isEnabled() is False
+    assert page.delete_button.isEnabled() is False
+    # La consultation elle-même (détail) reste accessible.
+    assert page.detail_button is not None

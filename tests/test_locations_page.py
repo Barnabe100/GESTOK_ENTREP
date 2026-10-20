@@ -589,3 +589,59 @@ def test_submit_form_can_clear_client_on_update(qtbot, login_as) -> None:
 
     assert result is True
     assert stack.rentals.get_location(location.id).client_id is None
+
+
+# -- chemin de consultation en lecture seule (Lot 16) --------------------------------
+
+
+def test_read_only_disables_create_edit_delete_regardless_of_permission(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = LocationsPage(stack.rentals, stack.articles, stack.clients, stack.permissions, read_only=True)
+    qtbot.addWidget(page)
+
+    assert page.add_button.isEnabled() is False
+    assert page.edit_button.isEnabled() is False
+    assert page.delete_button.isEnabled() is False
+
+
+def test_read_only_preserves_search_filter_and_detail(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    client = _make_client(stack)
+    stack.rentals.create_location(date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("1"))])
+
+    page = LocationsPage(stack.rentals, stack.articles, stack.clients, stack.permissions, read_only=True)
+    qtbot.addWidget(page)
+
+    assert page.table.rowCount() == 1
+
+
+def test_read_only_opens_detail_dialog_also_read_only(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    client = _make_client(stack)
+    location = stack.rentals.create_location(date(2026, 1, 1), client.id, [])
+
+    page = LocationsPage(stack.rentals, stack.articles, stack.clients, stack.permissions, read_only=True)
+    qtbot.addWidget(page)
+    page.refresh()
+    page.table.selectRow(0)
+
+    captured = {}
+    monkeypatch.setattr(
+        "app.views.pages.locations_page.LocationDetailDialog",
+        lambda *a, **k: captured.update(kwargs=k) or type("_FakeDialog", (), {"exec": lambda self: None})(),
+    )
+
+    page._on_detail_clicked()
+
+    assert captured["kwargs"]["read_only"] is True
+
+
+def test_not_read_only_by_default_preserves_existing_behaviour(qtbot, login_as) -> None:
+    """Non-régression explicite : l'absence du paramètre reproduit
+    exactement le comportement d'avant le Lot 16."""
+    stack, _ = login_as("Administrateur")
+    page = LocationsPage(stack.rentals, stack.articles, stack.clients, stack.permissions)
+    qtbot.addWidget(page)
+
+    assert page.add_button.isEnabled() is True

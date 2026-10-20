@@ -14,6 +14,7 @@ from typing import Optional
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QFormLayout,
@@ -27,16 +28,29 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.models.enums import StatutLocation
 from app.services.auth.account_recovery_service import AccountRecoveryService
 from app.services.auth.permission_service import PermissionService
+from app.services.rentals.location_service import LocationService
 from app.services.settings.company_settings_service import (
     CompanySettingsConfig,
     CompanySettingsService,
     SUPPORTED_CURRENCIES,
+    is_rental_module_enabled,
 )
 from app.utils.exceptions import AppError
 from app.views.common import build_required_field_legend, confirm_action, required_label
 from app.views.recovery_code_display_dialog import RecoveryCodeDisplayDialog
+
+# Lot 16 : seul le statut EN_COURS représente une location « encore en
+# cours » au sens de la décision métier (le départ, CONFIRMEE -> EN_COURS,
+# est le seul moment où LocationService décrémente réellement le stock —
+# voir sa docstring de module : BROUILLON/CONFIRMEE ne réservent rien
+# physiquement et peuvent être modifiées/annulées/supprimées sans aucune
+# conséquence sur le stock, les paiements ou la caution). Avertir aussi
+# pour BROUILLON/CONFIRMEE élargirait l'avertissement sans justification
+# opérationnelle réelle.
+_ONGOING_LOCATION_STATUSES = (StatutLocation.EN_COURS,)
 
 _LOGO_PREVIEW_SIZE = 160
 
@@ -47,20 +61,24 @@ class SettingsPage(QWidget):
         settings_service: CompanySettingsService,
         permission_service: PermissionService,
         account_recovery_service: AccountRecoveryService,
+        rental_service: LocationService,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._settings_service = settings_service
         self._permissions = permission_service
         self._account_recovery_service = account_recovery_service
+        self._rental_service = rental_service
 
         layout = QVBoxLayout(self)
         layout.addWidget(self._build_profile_group())
         layout.addWidget(self._build_logo_group())
+        layout.addWidget(self._build_modules_group())
         layout.addWidget(self._build_security_group())
         layout.addStretch(1)
 
         self._load_config_into_form()
+        self._load_modules_into_form()
 
     # -- profil de l'entreprise -----------------------------------------------
 
@@ -202,6 +220,74 @@ class SettingsPage(QWidget):
             QMessageBox.warning(self, "Logo refusé", str(exc))
             return False
         self._load_config_into_form()
+        return True
+
+    # -- modules optionnels (Lot 16) ---------------------------------------------
+
+    def _build_modules_group(self) -> QGroupBox:
+        group = QGroupBox("Modules optionnels", self)
+        layout = QVBoxLayout(group)
+
+        self.locations_module_checkbox = QCheckBox("Activer le module Location", self)
+        layout.addWidget(self.locations_module_checkbox)
+
+        can_update = self._permissions.has_permission("SETTINGS_UPDATE")
+        self.locations_module_checkbox.setEnabled(can_update)
+
+        self.save_modules_button = QPushButton("Enregistrer", self)
+        self.save_modules_button.setEnabled(can_update)
+        layout.addWidget(self.save_modules_button)
+
+        self.save_modules_button.clicked.connect(self._on_save_modules_clicked)
+
+        return group
+
+    def _load_modules_into_form(self) -> None:
+        self.locations_module_checkbox.setChecked(is_rental_module_enabled())
+
+    def _has_ongoing_locations(self) -> bool:
+        """Utilisée uniquement pour l'avertissement non bloquant avant une
+        désactivation — ``LocationService.list_locations`` existant,
+        jamais modifié ni dupliqué ; le filtrage « en cours » reste une
+        simple lecture du statut déjà exposé par ``LocationSummary``."""
+        try:
+            locations = self._rental_service.list_locations()
+        except AppError:
+            return False
+        return any(location.statut in _ONGOING_LOCATION_STATUSES for location in locations)
+
+    def _on_save_modules_clicked(self) -> None:
+        self._save_modules()
+
+    def _save_modules(self) -> bool:
+        """Isolé de ``_on_save_modules_clicked`` pour rester testable sans
+        boîte modale. Le changement prend effet à la prochaine ouverture de
+        la fenêtre principale (navigation calculée une fois à la
+        construction, voir ``MainWindow``) — jamais en direct dans cette
+        même session."""
+        enabled = self.locations_module_checkbox.isChecked()
+        is_deactivating = not enabled and is_rental_module_enabled()
+        if is_deactivating and self._has_ongoing_locations():
+            if not confirm_action(
+                self, "Confirmation",
+                "Des locations sont encore en cours (article(s) remis au client, retour non "
+                "effectué). Désactiver le module Location rendra leur suivi opérationnel "
+                "(retour, paiement, caution) inaccessible jusqu'à réactivation — aucune donnée "
+                "ni aucun statut ne sera modifié. Voulez-vous vraiment continuer ?",
+            ):
+                return False
+
+        try:
+            self._settings_service.set_rental_module_enabled(enabled)
+            QMessageBox.information(
+                self, "Paramètres enregistrés",
+                "Le module Location a été mis à jour. Ce changement prendra effet à la "
+                "prochaine ouverture de la fenêtre principale.",
+            )
+        except AppError as exc:
+            QMessageBox.warning(self, "Enregistrement refusé", str(exc))
+            return False
+        self._load_modules_into_form()
         return True
 
     # -- récupération administrateur --------------------------------------------

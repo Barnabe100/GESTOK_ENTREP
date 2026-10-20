@@ -1,9 +1,14 @@
+from datetime import date
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QMessageBox
 
+from app.models.enums import ModeGestionArticle
+from app.services.rentals.location_service import LocationLigneInput
+from app.services.settings.company_settings_service import is_rental_module_enabled
 from app.views.pages.settings_page import SettingsPage
 from tests.ui_test_helpers import (
     assert_field_is_marked_required,
@@ -19,7 +24,7 @@ def _no_blocking_dialogs(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _build_page(stack) -> SettingsPage:
-    return SettingsPage(stack.parameters, stack.permissions, stack.account_recovery)
+    return SettingsPage(stack.parameters, stack.permissions, stack.account_recovery, stack.rentals)
 
 
 def _make_test_image(path: Path, width: int = 20, height: int = 20) -> None:
@@ -205,3 +210,180 @@ def test_generate_recovery_code_returns_code_and_shows_dialog(qtbot, login_as, m
 
     assert code is not None and len(code) >= 32
     assert shown_codes == [code]
+
+
+# -- module Location (Lot 16) -------------------------------------------------------
+
+
+def _make_rental_article(stack, reference="ART-LOC"):
+    category = stack.categories.create_category(f"Cat-{reference}")
+    article = stack.articles.create_article(
+        reference, "Article de location", category.id, "unité",
+        Decimal("1000"), Decimal("0"), Decimal("0"),
+        stock_initial=Decimal("10"), tarif_location_jour=Decimal("500"),
+    )
+    stack.articles.switch_mode_gestion(article.id, ModeGestionArticle.LOCATION)
+    return stack.articles.get_article(article.id)
+
+
+def _make_draft_location(stack):
+    """BROUILLON : ne réserve ni ne modifie jamais le stock (voir docstring
+    de module de ``LocationService``) — ne doit donc jamais déclencher
+    l'avertissement de désactivation (seul EN_COURS le doit)."""
+    article = _make_rental_article(stack)
+    client = stack.clients.create_client("Client Location")
+    return stack.rentals.create_location(date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("2"))])
+
+
+def _make_confirmed_location(stack):
+    """CONFIRMEE : toujours sans effet sur le stock (le départ n'a pas eu
+    lieu) — ne doit pas non plus déclencher l'avertissement."""
+    return stack.rentals.confirm_location(_make_draft_location(stack).id)
+
+
+def _make_ongoing_location(stack):
+    """EN_COURS : le seul statut où le départ a réellement décrémenté le
+    stock (voir docstring de module de ``LocationService``) — c'est le
+    seul cas où l'avertissement de désactivation doit se déclencher."""
+    confirmed = _make_confirmed_location(stack)
+    return stack.rentals.depart_location(confirmed.id, date(2026, 1, 1))
+
+
+def test_modules_checkbox_reflects_real_value_at_opening(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    stack.parameters.set_rental_module_enabled(False)
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.locations_module_checkbox.isChecked() is False
+
+
+def test_modules_checkbox_defaults_to_checked_when_key_absent(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.locations_module_checkbox.isChecked() is True
+
+
+def test_save_modules_allowed_with_settings_update(qtbot, login_as, test_settings) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    page.locations_module_checkbox.setChecked(False)
+    result = page._save_modules()
+
+    assert result is True
+    assert is_rental_module_enabled(test_settings) is False
+
+
+@pytest.mark.parametrize("role_name", ["Gestionnaire de stock", "Vendeur", "Consultation"])
+def test_modules_controls_disabled_without_settings_update(qtbot, login_as, role_name) -> None:
+    stack, _ = login_as(role_name)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.locations_module_checkbox.isEnabled() is False
+    assert page.save_modules_button.isEnabled() is False
+
+
+def test_warning_shown_when_deactivating_with_ongoing_locations(qtbot, login_as, monkeypatch, test_settings) -> None:
+    stack, _ = login_as("Administrateur")
+    _make_ongoing_location(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    confirm_calls = []
+    monkeypatch.setattr(
+        "app.views.pages.settings_page.confirm_action",
+        lambda *a, **k: confirm_calls.append(1) or True,
+    )
+
+    page.locations_module_checkbox.setChecked(False)
+    result = page._save_modules()
+
+    assert confirm_calls == [1]
+    assert result is True
+    assert is_rental_module_enabled(test_settings) is False
+
+
+def test_cancelling_warning_does_not_save_deactivation(qtbot, login_as, monkeypatch, test_settings) -> None:
+    stack, _ = login_as("Administrateur")
+    _make_ongoing_location(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    monkeypatch.setattr("app.views.pages.settings_page.confirm_action", lambda *a, **k: False)
+
+    page.locations_module_checkbox.setChecked(False)
+    result = page._save_modules()
+
+    assert result is False
+    assert is_rental_module_enabled(test_settings) is True
+
+
+def test_no_warning_when_no_ongoing_locations(qtbot, login_as, monkeypatch, test_settings) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    confirm_calls = []
+    monkeypatch.setattr(
+        "app.views.pages.settings_page.confirm_action",
+        lambda *a, **k: confirm_calls.append(1) or True,
+    )
+
+    page.locations_module_checkbox.setChecked(False)
+    result = page._save_modules()
+
+    assert confirm_calls == []
+    assert result is True
+    assert is_rental_module_enabled(test_settings) is False
+
+
+@pytest.mark.parametrize("make_location", [_make_draft_location, _make_confirmed_location])
+def test_no_warning_for_draft_or_confirmed_locations_only(qtbot, login_as, monkeypatch, test_settings, make_location) -> None:
+    """Revue Lot 16, point A : seul EN_COURS déclenche l'avertissement — un
+    BROUILLON ou une location CONFIRMEE (sans départ, donc sans aucun effet
+    sur le stock) ne doit jamais le déclencher, conformément à la décision
+    métier initiale (« locations encore en cours »)."""
+    stack, _ = login_as("Administrateur")
+    make_location(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    confirm_calls = []
+    monkeypatch.setattr(
+        "app.views.pages.settings_page.confirm_action",
+        lambda *a, **k: confirm_calls.append(1) or True,
+    )
+
+    page.locations_module_checkbox.setChecked(False)
+    result = page._save_modules()
+
+    assert confirm_calls == []
+    assert result is True
+    assert is_rental_module_enabled(test_settings) is False
+
+
+def test_no_warning_when_activating_module(qtbot, login_as, monkeypatch, test_settings) -> None:
+    stack, _ = login_as("Administrateur")
+    stack.parameters.set_rental_module_enabled(False)
+    _make_ongoing_location(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    confirm_calls = []
+    monkeypatch.setattr(
+        "app.views.pages.settings_page.confirm_action",
+        lambda *a, **k: confirm_calls.append(1) or True,
+    )
+
+    page.locations_module_checkbox.setChecked(True)
+    result = page._save_modules()
+
+    assert confirm_calls == []
+    assert result is True
+    assert is_rental_module_enabled(test_settings) is True

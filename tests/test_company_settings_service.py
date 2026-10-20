@@ -4,7 +4,11 @@ import pytest
 from PySide6.QtGui import QImage
 
 from app.resources import APP_ICON_PATH
-from app.services.settings.company_settings_service import DEFAULT_CURRENCY, get_effective_currency
+from app.services.settings.company_settings_service import (
+    DEFAULT_CURRENCY,
+    get_effective_currency,
+    is_rental_module_enabled,
+)
 from app.utils.exceptions import PermissionDeniedError, ValidationError
 
 
@@ -249,3 +253,61 @@ def test_get_effective_currency_reflects_saved_value(login_as, test_settings) ->
     stack.parameters.update_config(nom="Société", adresse=None, telephone=None, email=None, devise="EUR")
 
     assert get_effective_currency(test_settings) == "EUR"
+
+
+# -- module Location (Lot 16) ------------------------------------------------------------
+
+
+def test_rental_module_enabled_by_default_when_key_absent(login_as, test_settings) -> None:
+    login_as("Administrateur")
+
+    assert is_rental_module_enabled(test_settings) is True
+
+
+def test_rental_module_enabled_true_after_explicit_activation(login_as, test_settings) -> None:
+    stack, _ = login_as("Administrateur")
+
+    stack.parameters.set_rental_module_enabled(True)
+
+    assert is_rental_module_enabled(test_settings) is True
+
+
+def test_rental_module_disabled_after_explicit_deactivation(login_as, test_settings) -> None:
+    stack, _ = login_as("Administrateur")
+
+    stack.parameters.set_rental_module_enabled(False)
+
+    assert is_rental_module_enabled(test_settings) is False
+
+
+@pytest.mark.parametrize("role_name", ["Gestionnaire de stock", "Vendeur", "Consultation"])
+def test_set_rental_module_enabled_denied_without_settings_update(login_as, test_settings, role_name) -> None:
+    stack, _ = login_as(role_name)
+
+    with pytest.raises(PermissionDeniedError):
+        stack.parameters.set_rental_module_enabled(False)
+
+    # Aucune écriture ne doit avoir eu lieu malgré le refus.
+    assert is_rental_module_enabled(test_settings) is True
+
+
+def test_set_rental_module_enabled_denied_does_not_modify_existing_value(login_as, test_settings) -> None:
+    admin_stack, _ = login_as("Administrateur")
+    admin_stack.parameters.set_rental_module_enabled(False)
+
+    other_stack, _ = login_as("Vendeur")
+    with pytest.raises(PermissionDeniedError):
+        other_stack.parameters.set_rental_module_enabled(True)
+
+    # La valeur déjà enregistrée par l'administrateur reste inchangée.
+    assert is_rental_module_enabled(test_settings) is False
+
+
+def test_rental_module_value_persists_across_reads(login_as, test_settings) -> None:
+    stack, _ = login_as("Administrateur")
+
+    stack.parameters.set_rental_module_enabled(False)
+    assert is_rental_module_enabled(test_settings) is False
+
+    stack.parameters.set_rental_module_enabled(True)
+    assert is_rental_module_enabled(test_settings) is True

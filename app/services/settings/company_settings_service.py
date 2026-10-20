@@ -40,6 +40,15 @@ _KEY_EMAIL = "entreprise.email"
 _KEY_DEVISE = "entreprise.devise"
 _KEY_LOGO_PATH = "entreprise.logo_path"
 
+# Lot 16 — activation administrateur du module Location. Indépendant de la
+# licence/``FeatureGate`` (app.services.licensing.permission_map) : ce drapeau
+# ne retire ni n'accorde jamais une permission ``LOCATION_*``, il décide
+# seulement si l'entrée de navigation principale est proposée (voir
+# ``MainWindow``). Absence de clé = module actif : une mise à jour d'une
+# installation existante ne doit jamais masquer silencieusement un module
+# déjà utilisé.
+_KEY_LOCATIONS_ACTIF = "locations.actif"
+
 _MAX_LENGTHS = {
     "nom": 150,
     "adresse": 255,
@@ -98,6 +107,19 @@ def get_effective_currency(settings: Optional[Settings] = None) -> str:
     with session_scope(effective_settings) as session:
         devise = ParameterRepository(session).get_value(_KEY_DEVISE)
     return devise or effective_settings.default_currency
+
+
+def is_rental_module_enabled(settings: Optional[Settings] = None) -> bool:
+    """Le module Location est-il actif (Lot 16) ? Fonction autonome, sans
+    vérification de permission, symétrique de ``get_effective_currency()`` :
+    appelée par la navigation (``MainWindow``) pour tout utilisateur, qu'il
+    dispose ou non de ``SETTINGS_VIEW``/``SETTINGS_UPDATE`` — ne donne accès
+    à rien de plus qu'un booléen déjà sans conséquence si lu sans ce
+    contrôle. Absence de clé = module actif (voir ``_KEY_LOCATIONS_ACTIF``)."""
+    effective_settings = settings or get_settings()
+    with session_scope(effective_settings) as session:
+        valeur = ParameterRepository(session).get_value(_KEY_LOCATIONS_ACTIF)
+    return (valeur or "true") == "true"
 
 
 @dataclass(frozen=True)
@@ -285,3 +307,23 @@ class CompanySettingsService:
         self._audit("SETTINGS_LOGO_CLEAR", ResultatAudit.SUCCES)
         logger.info("Logo de l'entreprise supprimé.")
         return self._read_config()
+
+    # -- modules optionnels (Lot 16) ------------------------------------------------
+
+    def set_rental_module_enabled(self, enabled: bool) -> None:
+        """Active/désactive l'entrée de navigation du module Location —
+        jamais la licence, jamais les permissions ``LOCATION_*`` elles-mêmes,
+        et jamais les données déjà enregistrées (aucune location n'est
+        supprimée ni rendue inaccessible en base par ce seul appel ; voir
+        ``MainWindow`` pour le chemin de consultation en lecture seule
+        conservé quand le module est désactivé)."""
+        self._permissions.require_permission("SETTINGS_UPDATE")
+
+        with session_scope(self._settings) as session:
+            ParameterRepository(session).set_value(_KEY_LOCATIONS_ACTIF, "true" if enabled else "false")
+
+        self._audit(
+            "SETTINGS_UPDATE", ResultatAudit.SUCCES,
+            details=f"module Location {'activé' if enabled else 'désactivé'}",
+        )
+        logger.info("Module Location %s.", "activé" if enabled else "désactivé")

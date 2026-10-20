@@ -15,6 +15,7 @@ from typing import Optional
 from PySide6.QtCore import QSize, QTimer, Signal
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
+    QDialog,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -29,6 +30,7 @@ from PySide6.QtWidgets import (
 from app.db.seed import INITIAL_ADMIN_USERNAME
 from app.resources import APP_ICON_PATH
 from app.services.registry import ServiceRegistry
+from app.services.settings.company_settings_service import is_rental_module_enabled
 from app.utils.logging_config import get_logger
 from app.version import __version__
 from app.views.about_dialog import AboutDialog
@@ -124,10 +126,18 @@ class MainWindow(QMainWindow):
         self._services = services
         self._permissions = services.permissions
 
+        # Lot 16 : « Locations » n'apparaît dans la navigation principale que
+        # si le module est actif (``locations.actif``), en plus de la
+        # permission déjà requise — jamais l'inverse d'une permission, et
+        # indépendant de la licence/FeatureGate. Le consultation des
+        # locations existantes reste possible même désactivé, via un chemin
+        # explicite distinct (voir _build_top_bar/_open_locations_readonly_dialog),
+        # qui revérifie LOCATION_VIEW indépendamment de cette liste.
         self.visible_modules: list[str] = [
             module
             for module in NAVIGATION_MODULES
             if self._permissions.has_permission(NAVIGATION_PERMISSIONS[module])
+            and (module != "Locations" or is_rental_module_enabled())
         ]
 
         self.setWindowTitle("StockManager Desktop")
@@ -240,7 +250,10 @@ class MainWindow(QMainWindow):
                 self._services.exit_reasons, self._permissions,
             )
         if module_name == "Paramètres":
-            return SettingsPage(self._services.parameters, self._permissions, self._services.account_recovery)
+            return SettingsPage(
+                self._services.parameters, self._permissions, self._services.account_recovery,
+                self._services.rentals,
+            )
         if module_name == "Sauvegardes":
             return BackupsPage(self._services.backups, self._permissions, self._services.data_reset)
         if module_name == "Audit":
@@ -267,6 +280,18 @@ class MainWindow(QMainWindow):
         )
         self.user_label = QLabel(user_text, top_bar)
         top_bar_layout.addWidget(self.user_label)
+
+        # Lot 16 : chemin de consultation explicite des locations existantes
+        # quand le module est désactivé — visible seulement dans ce cas (si
+        # actif, l'entrée de navigation normale suffit déjà) et seulement
+        # pour un utilisateur ayant LOCATION_VIEW (revérifié aussi par
+        # LocationService à chaque appel, jamais contourné par ce bouton).
+        self.locations_readonly_button = QPushButton("Consulter les locations (lecture seule)", top_bar)
+        self.locations_readonly_button.setVisible(
+            self._permissions.has_permission("LOCATION_VIEW") and not is_rental_module_enabled()
+        )
+        self.locations_readonly_button.clicked.connect(self._on_open_locations_readonly_clicked)
+        top_bar_layout.addWidget(self.locations_readonly_button)
 
         self.onboarding_button = QPushButton("Guide de démarrage", top_bar)
         self.onboarding_button.setEnabled(self._permissions.has_permission("SETTINGS_VIEW"))
@@ -363,6 +388,24 @@ class MainWindow(QMainWindow):
             on_navigate=self.switch_to_module,
             parent=self,
         )
+        dialog.exec()
+
+    def _on_open_locations_readonly_clicked(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Locations — consultation (lecture seule)")
+        dialog.resize(1000, 650)
+        layout = QVBoxLayout(dialog)
+
+        page = LocationsPage(
+            self._services.rentals, self._services.articles, self._services.clients, self._permissions,
+            parent=dialog, read_only=True,
+        )
+        layout.addWidget(page)
+
+        close_button = QPushButton("Fermer", dialog)
+        close_button.clicked.connect(dialog.accept)
+        layout.addWidget(close_button)
+
         dialog.exec()
 
     def _on_about_clicked(self) -> None:

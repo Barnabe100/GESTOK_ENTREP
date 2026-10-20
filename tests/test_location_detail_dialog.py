@@ -284,3 +284,62 @@ def test_detail_dialog_shows_client_name_when_present(qtbot, login_as) -> None:
         for i in range(dialog._header_form.rowCount())
     ]
     assert client.nom in labels
+
+
+# -- chemin de consultation en lecture seule (Lot 16) --------------------------------
+
+
+def test_read_only_disables_all_mutating_actions_regardless_of_status(qtbot, login_as) -> None:
+    """Quel que soit le statut et quelle que soit la permission accordée,
+    aucune action mutante ne doit rester disponible en lecture seule."""
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    client = _make_client(stack)
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("2"))]
+    )
+
+    dialog = LocationDetailDialog(location, "XOF", stack.rentals, stack.permissions, read_only=True)
+    qtbot.addWidget(dialog)
+
+    assert dialog.confirm_button.isEnabled() is False
+    assert dialog.depart_button.isEnabled() is False
+    assert dialog.return_button.isEnabled() is False
+    assert dialog.cancel_location_button.isEnabled() is False
+    assert dialog.caution_button.isEnabled() is False
+    assert dialog.payment_button.isEnabled() is False
+
+
+def test_read_only_still_shows_consultation_data(qtbot, login_as) -> None:
+    """La consultation (lignes, statut, paiements, caution) reste
+    entièrement disponible — seules les actions mutantes sont retirées."""
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    client = _make_client(stack)
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("2"))]
+    )
+
+    dialog = LocationDetailDialog(location, "XOF", stack.rentals, stack.permissions, read_only=True)
+    qtbot.addWidget(dialog)
+
+    assert location.numero in dialog.windowTitle()
+    assert dialog.lines_table.rowCount() == 1
+
+
+def test_not_read_only_by_default_preserves_existing_behaviour(qtbot, login_as) -> None:
+    """Non-régression explicite : l'absence du paramètre reproduit
+    exactement le comportement d'avant le Lot 16."""
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    client = _make_client(stack)
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("1"))]
+    )
+    confirmed = stack.rentals.confirm_location(location.id)
+
+    dialog = LocationDetailDialog(confirmed, "XOF", stack.rentals, stack.permissions)
+    qtbot.addWidget(dialog)
+
+    assert dialog.confirm_button.isEnabled() is False  # déjà confirmée
+    assert dialog.cancel_location_button.isEnabled() is True  # toujours annulable
