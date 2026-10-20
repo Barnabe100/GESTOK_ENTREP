@@ -2,9 +2,10 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog, QMessageBox
 
-from app.models.enums import StatutOperation
+from app.models.enums import ModeGestionArticle, StatutOperation
 from app.services.sales.sale_service import VenteLigneInput
 from app.views.pages.sales_page import SalesPage
 
@@ -737,6 +738,87 @@ def test_edit_button_opens_caisse_view_prefilled(qtbot, login_as) -> None:
     assert page.caisse_client_combo.currentData() == client.id
 
 
+def _make_location_article(stack, reference="ART-LOC", code_barres=None):
+    category = stack.categories.create_category(f"Cat-{reference}")
+    article = stack.articles.create_article(
+        reference, "Article de location", category.id, "unité",
+        Decimal("100"), Decimal("150"), Decimal("0"), stock_initial=Decimal("10"), code_barres=code_barres,
+    )
+    stack.articles.switch_mode_gestion(article.id, ModeGestionArticle.LOCATION)
+    return stack.articles.get_article(article.id)
+
+
+def test_caisse_shows_all_sellable_articles_immediately_on_open(qtbot, login_as) -> None:
+    """Lot 19 : la liste des articles vendables doit être visible dès
+    l'ouverture de la caisse, sans attendre une saisie dans la recherche."""
+    stack, _ = login_as("Administrateur")
+    _make_article(stack, reference="ART-1")
+    _make_article(stack, reference="ART-2")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    page._on_add_clicked()
+
+    assert page.caisse_search_edit.text() == ""
+    assert page.caisse_search_results.count() == 2
+
+
+def test_caisse_initial_list_excludes_location_only_articles(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    sellable = _make_article(stack, reference="ART-VENTE")
+    _make_location_article(stack, reference="ART-LOC")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    page._on_add_clicked()
+
+    assert page.caisse_search_results.count() == 1
+    item_data = page.caisse_search_results.item(0).data(Qt.ItemDataRole.UserRole)
+    assert item_data[0] == sellable.id
+
+
+def test_caisse_search_matches_designation_case_insensitively(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, reference="ART-X")  # désignation "Article de test"
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+
+    page.caisse_search_edit.setText("ARTICLE DE TEST")
+
+    assert page.caisse_search_results.count() == 1
+    assert page.caisse_search_results.item(0).data(Qt.ItemDataRole.UserRole)[0] == article.id
+
+
+def test_caisse_search_matches_reference_case_insensitively(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, reference="ART-REF-123")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+
+    page.caisse_search_edit.setText("art-ref-123")
+
+    assert page.caisse_search_results.count() == 1
+    assert page.caisse_search_results.item(0).data(Qt.ItemDataRole.UserRole)[0] == article.id
+
+
+def test_caisse_clearing_search_shows_full_list_again(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    _make_article(stack, reference="ART-1")
+    _make_article(stack, reference="ART-2")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+
+    page.caisse_search_edit.setText("ART-1")
+    assert page.caisse_search_results.count() == 1
+
+    page.caisse_search_edit.setText("")
+
+    assert page.caisse_search_results.count() == 2
+
+
 def test_caisse_search_filters_and_adds_line_on_double_click(qtbot, login_as) -> None:
     stack, _ = login_as("Administrateur")
     article = _make_article(stack, reference="ART-EAU")
@@ -756,7 +838,10 @@ def test_caisse_search_filters_and_adds_line_on_double_click(qtbot, login_as) ->
     assert "150" in page.caisse_total_label.text()
 
 
-def test_caisse_search_no_match_shows_empty_results(qtbot, login_as) -> None:
+def test_caisse_search_no_match_shows_explicit_message(qtbot, login_as) -> None:
+    """Lot 19 : une recherche sans correspondance affiche un message
+    explicite — plus une liste vide — et ce message n'est jamais traité
+    comme un résultat sélectionnable (double-clic sans effet)."""
     stack, _ = login_as("Administrateur")
     _make_article(stack, reference="ART-EAU")
     page = _build_page(stack)
@@ -765,7 +850,13 @@ def test_caisse_search_no_match_shows_empty_results(qtbot, login_as) -> None:
 
     page.caisse_search_edit.setText("inexistant")
 
-    assert page.caisse_search_results.count() == 0
+    assert page.caisse_search_results.count() == 1
+    message_item = page.caisse_search_results.item(0)
+    assert "Aucun article" in message_item.text()
+    assert message_item.data(Qt.ItemDataRole.UserRole) is None
+
+    page._on_caisse_search_result_activated(message_item)
+    assert page._caisse_lines == []
 
 
 def test_caisse_scan_adds_line_with_quantity_one(qtbot, login_as) -> None:
@@ -797,6 +888,34 @@ def test_caisse_scan_unknown_barcode_shows_warning_and_adds_nothing(qtbot, login
     page._on_caisse_scan_entered()
 
     assert page._caisse_lines == []
+
+
+def test_caisse_scan_location_article_shows_distinct_message_and_adds_nothing(qtbot, login_as, monkeypatch) -> None:
+    """Lot 19 : un article existant mais configuré pour la location doit
+    être distingué d'un code-barres réellement inconnu, et ne jamais être
+    ajouté à la vente par scan."""
+    stack, _ = login_as("Administrateur")
+    article = _make_location_article(stack, reference="ART-LOC-SCAN", code_barres="5551234567")
+
+    warnings: list[tuple] = []
+    monkeypatch.setattr(
+        "app.views.pages.sales_page.QMessageBox.warning",
+        lambda *a, **k: warnings.append(a[1:]) or None,
+    )
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+
+    page.caisse_scan_edit.setText("5551234567")
+    page._on_caisse_scan_entered()
+
+    assert page._caisse_lines == []
+    assert len(warnings) == 1
+    title, message = warnings[0]
+    assert title == "Article non vendable"
+    assert "location" in message.lower()
+    assert article.reference in message
 
 
 def test_caisse_quantity_edit_updates_total_without_calling_service(qtbot, login_as, monkeypatch) -> None:

@@ -63,7 +63,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.models.enums import StatutOperation
+from app.models.enums import ModeGestionArticle, StatutOperation
 from app.services.articles.article_service import ArticleService
 from app.services.auth.permission_service import PermissionService
 from app.services.clients.client_service import ClientService
@@ -303,21 +303,33 @@ class SalesPage(QWidget):
     # -- chargement des listes pour les formulaires -------------------------
 
     def _load_articles_for_form(self) -> list[tuple[int, str, str]]:
+        """Seuls les articles actifs en mode VENTE sont proposés à la
+        caisse (Lot 19) — un article configuré pour la location serait de
+        toute façon refusé par ``SaleService.create_sale``/``update_sale``
+        (voir leur vérification ``mode_gestion == LOCATION``) ; ce filtre
+        n'est qu'une anticipation côté interface, jamais une nouvelle règle."""
         try:
             articles = self._article_service.list_articles(include_inactive=False)
         except AppError:
             articles = []
-        return [(a.id, f"{a.reference} — {a.designation}", str(a.prix_vente)) for a in articles]
+        return [
+            (a.id, f"{a.reference} — {a.designation}", str(a.prix_vente))
+            for a in articles
+            if a.mode_gestion == ModeGestionArticle.VENTE
+        ]
 
     def _lookup_article_by_barcode(self, code: str) -> Optional[tuple[int, str, str]]:
         """Point d'entrée du scan (lecteur USB « keyboard wedge ») : ne
-        renvoie qu'un article actif, au même format que
-        ``_load_articles_for_form`` pour rester directement exploitable."""
+        renvoie qu'un article actif ET en mode VENTE, au même format que
+        ``_load_articles_for_form`` pour rester directement exploitable.
+        Un article actif mais configuré pour la location n'est jamais
+        renvoyé ici — voir ``_show_scan_rejection_message`` pour le message
+        distinct présenté à l'utilisateur dans ce cas précis."""
         try:
             article = self._article_service.find_by_barcode(code)
         except AppError:
             return None
-        if article is None:
+        if article is None or article.mode_gestion != ModeGestionArticle.VENTE:
             return None
         return article.id, f"{article.reference} — {article.designation}", str(article.prix_vente)
 
@@ -711,7 +723,14 @@ class SalesPage(QWidget):
         self.caisse_date_edit.setDate(date_to_qdate(initial.get("date") or date.today()))
         self._refresh_caisse_client_combo(selected_id=initial.get("client_id"))
         self.caisse_search_edit.clear()
-        self.caisse_search_results.clear()
+        # Appel explicite (Lot 19) plutôt qu'une dépendance au signal de
+        # ``clear()`` ci-dessus : ``QLineEdit.clear()`` n'émet
+        # ``textChanged`` que si le texte change réellement — si le champ
+        # était déjà vide (cas le plus fréquent, réouverture de la caisse),
+        # la liste ne serait jamais peuplée sans cet appel direct. La liste
+        # des articles vendables doit être visible dès l'ouverture, sans
+        # attendre une saisie.
+        self._refresh_caisse_search_results()
         self.caisse_scan_edit.clear()
         self.caisse_error_label.setText("")
         self.caisse_save_draft_button.setEnabled(True)
@@ -760,20 +779,46 @@ class SalesPage(QWidget):
     # -- recherche d'articles -------------------------------------------------
 
     def _on_caisse_search_text_changed(self, text: str) -> None:
+        self._refresh_caisse_search_results()
+
+    def _refresh_caisse_search_results(self) -> None:
+        """Repeuple la liste à partir du texte courant du champ de
+        recherche — appelée au changement de texte, mais aussi directement
+        à l'ouverture de la caisse (Lot 19) pour que la liste des articles
+        vendables soit visible immédiatement, sans attendre une saisie.
+        Texte vide -> tous les articles vendables (``_caisse_articles_cache``,
+        déjà filtré sur le mode VENTE) ; texte non vide -> filtrage
+        insensible à la casse sur le libellé référence+désignation déjà
+        concaténé ; aucune correspondance avec un texte saisi -> un message
+        explicite, jamais interprété comme un article sélectionnable."""
         self.caisse_search_results.clear()
-        normalized = text.strip().lower()
-        if not normalized:
+        normalized = self.caisse_search_edit.text().strip().lower()
+        candidates = self._caisse_articles_cache
+        if normalized:
+            candidates = [
+                (article_id, label, prix_vente)
+                for article_id, label, prix_vente in candidates
+                if normalized in label.lower()
+            ]
+        if not candidates and normalized:
+            empty_item = QListWidgetItem("Aucun article ne correspond à la recherche.", self.caisse_search_results)
+            empty_item.setFlags(empty_item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
             return
-        for article_id, label, prix_vente in self._caisse_articles_cache:
-            if normalized in label.lower():
-                item = QListWidgetItem(label, self.caisse_search_results)
-                item.setData(Qt.ItemDataRole.UserRole, (article_id, label, prix_vente))
+        for article_id, label, prix_vente in candidates:
+            display = f"{label}  —  {format_money(Decimal(str(prix_vente)), self._currency_code)}"
+            item = QListWidgetItem(display, self.caisse_search_results)
+            item.setData(Qt.ItemDataRole.UserRole, (article_id, label, prix_vente))
 
     def _on_caisse_search_result_activated(self, item: QListWidgetItem) -> None:
-        article_id, label, prix_vente = item.data(Qt.ItemDataRole.UserRole)
+        # Garde-fou (Lot 19) : le message « aucun résultat » est affiché
+        # dans ce même QListWidget mais ne porte aucune donnée — un
+        # double-clic dessus ne doit jamais tenter d'ajouter une ligne.
+        data = item.data(Qt.ItemDataRole.UserRole)
+        if data is None:
+            return
+        article_id, label, prix_vente = data
         self._add_caisse_line(article_id, label, Decimal("1"), Decimal(str(prix_vente)))
         self.caisse_search_edit.clear()
-        self.caisse_search_results.clear()
 
     # -- scan code-barres (lecteur USB « keyboard wedge ») -------------------
 
@@ -789,13 +834,33 @@ class SalesPage(QWidget):
             return
         result = self._lookup_article_by_barcode(code)
         if result is None:
-            QMessageBox.warning(
-                self, "Article introuvable",
-                f"Aucun article actif ne correspond au code-barres « {code} ».",
-            )
+            self._show_scan_rejection_message(code)
             return
         article_id, label, prix_vente = result
         self._add_caisse_line(article_id, label, Decimal("1"), Decimal(str(prix_vente)))
+
+    def _show_scan_rejection_message(self, code: str) -> None:
+        """Isolé de ``_on_caisse_scan_entered`` (Lot 19) : distingue un
+        code-barres réellement inconnu (ou inactif) d'un article existant
+        mais configuré pour la location — une seconde lecture via
+        ``find_by_barcode`` (déjà utilisé par ``_lookup_article_by_barcode``,
+        jamais de nouvel appel mutant ni de règle métier supplémentaire)
+        permet de distinguer les deux cas pour l'utilisateur."""
+        try:
+            article = self._article_service.find_by_barcode(code)
+        except AppError:
+            article = None
+        if article is not None and article.mode_gestion == ModeGestionArticle.LOCATION:
+            QMessageBox.warning(
+                self, "Article non vendable",
+                f"L'article « {article.reference} — {article.designation} » est configuré pour "
+                "la location : il ne peut pas être ajouté à une vente.",
+            )
+            return
+        QMessageBox.warning(
+            self, "Article introuvable",
+            f"Aucun article actif ne correspond au code-barres « {code} ».",
+        )
 
     # -- gestion centralisée des lignes --------------------------------------
 
