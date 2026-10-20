@@ -45,6 +45,7 @@ from app.utils.exceptions import AppError
 from app.utils.money import format_money
 from app.utils.pdf_export import build_page_layout, export_document_to_pdf
 from app.utils.quantity import format_quantity
+from app.views.cancellation_reason_dialog import CancellationReasonDialog
 from app.views.common import parse_decimal
 from app.views.payment_form_dialog import PaymentFormDialog
 
@@ -113,20 +114,34 @@ class SaleDetailDialog(QDialog):
         content_layout = QVBoxLayout(content)
 
         # -- en-tête ---------------------------------------------------------------
+        self._content = content
         header_group = QGroupBox("Informations générales", content)
+        self._header_group = header_group
         form = QFormLayout(header_group)
+        self._header_form = form
 
         form.addRow("Numéro", QLabel(sale.numero, header_group))
         form.addRow("Date", QLabel(str(sale.date), header_group))
         form.addRow("Client", QLabel(sale.client_nom or "—", header_group))
         form.addRow("Créée par", QLabel(sale.username, header_group))
-        form.addRow("Statut", QLabel(_STATUT_LABELS.get(sale.statut, str(sale.statut)), header_group))
+        self.statut_label = QLabel(_STATUT_LABELS.get(sale.statut, str(sale.statut)), header_group)
+        form.addRow("Statut", self.statut_label)
+        self._motif_label: Optional[QLabel] = None
         if sale.statut == StatutOperation.ANNULEE:
-            motif_label = QLabel(sale.annulation_motif or "—", header_group)
-            motif_label.setWordWrap(True)
-            form.addRow("Motif d'annulation", motif_label)
+            self._motif_label = QLabel(sale.annulation_motif or "—", header_group)
+            self._motif_label.setWordWrap(True)
+            form.addRow("Motif d'annulation", self._motif_label)
         form.addRow("Créée le", QLabel(sale.date_creation.strftime("%Y-%m-%d %H:%M"), header_group))
         form.addRow("Modifiée le", QLabel(sale.date_modification.strftime("%Y-%m-%d %H:%M"), header_group))
+
+        # Annulation (Lot 15 — étape 2) : réutilise directement SaleService.
+        # cancel_sale et CancellationReasonDialog, exactement comme
+        # SalesPage._on_cancel_clicked/_cancel_selected — aucune règle de
+        # permission/propriété réimplémentée (voir can_manage_sale ci-dessous).
+        self.cancel_sale_button = QPushButton("Annuler la vente", header_group)
+        self.cancel_sale_button.setEnabled(False)
+        form.addRow(self.cancel_sale_button)
+        self.cancel_sale_button.clicked.connect(self._on_cancel_sale_clicked)
 
         content_layout.addWidget(header_group)
 
@@ -185,51 +200,25 @@ class SaleDetailDialog(QDialog):
         self.record_payment_button.clicked.connect(self._on_record_payment_clicked)
         self.export_payment_receipt_button.clicked.connect(self._on_export_payment_receipt_clicked)
 
-        self._refresh_payment_section()
-
-        # -- mouvements de stock : affichés seulement s'il en existe --------------
-        # (une vente en brouillon n'en a structurellement jamais, cf.
-        # StockService — ce critère couvre donc aussi ce cas sans le dupliquer).
-        self.movements_table: Optional[QTableWidget] = None
-        if movements:
-            movements_group = QGroupBox("Mouvements de stock générés", content)
-            movements_layout = QVBoxLayout(movements_group)
-            movements_table = QTableWidget(len(movements), len(_MOVEMENT_COLUMNS), movements_group)
-            movements_table.setHorizontalHeaderLabels(_MOVEMENT_COLUMNS)
-            movements_table.horizontalHeader().setStretchLastSection(True)
-            movements_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-            for row, mouvement in enumerate(movements):
-                movements_table.setItem(row, 0, QTableWidgetItem(mouvement.date_heure.strftime("%Y-%m-%d %H:%M")))
-                movements_table.setItem(row, 1, QTableWidgetItem(mouvement.type.value))
-                movements_table.setItem(row, 2, QTableWidgetItem(format_quantity(mouvement.quantite)))
-                movements_table.setItem(row, 3, QTableWidgetItem(format_quantity(mouvement.stock_avant)))
-                movements_table.setItem(row, 4, QTableWidgetItem(format_quantity(mouvement.stock_apres)))
-                movements_table.setItem(row, 5, QTableWidgetItem(mouvement.username))
-            movements_layout.addWidget(movements_table)
-            content_layout.addWidget(movements_group)
-            self.movements_table = movements_table
-
-        # -- reçu : uniquement pour une vente validée (§4 de ce lot) --------------
+        # -- reçu : uniquement pour une vente validée (§4 du lot « reçus ») -------
+        # Activation réelle différée à ``_update_receipt_controls`` (appelée une
+        # fois tous les widgets construits, puis après toute annulation).
         receipt_group = QGroupBox("Reçu", content)
+        self._receipt_group = receipt_group
         receipt_row = QHBoxLayout(receipt_group)
-        can_view_receipt = sale.statut == StatutOperation.VALIDEE and self._permissions.has_permission("SALE_VIEW")
 
         self.receipt_format_combo = QComboBox(receipt_group)
         for receipt_format, label in _FORMAT_LABELS.items():
             self.receipt_format_combo.addItem(label, receipt_format)
-        self.receipt_format_combo.setEnabled(can_view_receipt)
         receipt_row.addWidget(self.receipt_format_combo)
 
         self.print_receipt_button = QPushButton("Imprimer le reçu", receipt_group)
-        self.print_receipt_button.setEnabled(can_view_receipt)
         receipt_row.addWidget(self.print_receipt_button)
 
         self.export_a4_button = QPushButton("Exporter en PDF (A4)", receipt_group)
-        self.export_a4_button.setEnabled(can_view_receipt)
         receipt_row.addWidget(self.export_a4_button)
 
         self.export_ticket_button = QPushButton("Exporter en PDF (Ticket 80 mm)", receipt_group)
-        self.export_ticket_button.setEnabled(can_view_receipt)
         receipt_row.addWidget(self.export_ticket_button)
 
         receipt_row.addStretch(1)
@@ -238,6 +227,16 @@ class SaleDetailDialog(QDialog):
         self.print_receipt_button.clicked.connect(self._on_print_clicked)
         self.export_a4_button.clicked.connect(self._on_export_a4_clicked)
         self.export_ticket_button.clicked.connect(self._on_export_ticket_clicked)
+
+        # -- mouvements de stock : affichés seulement s'il en existe --------------
+        # (une vente en brouillon n'en a structurellement jamais, cf.
+        # StockService — ce critère couvre donc aussi ce cas sans le dupliquer).
+        # Construit via ``_build_movements_group`` (inséré juste avant la
+        # section Reçu) afin de réutiliser la même logique après une
+        # annulation (nouveaux mouvements ANNULATION, Lot 15 — étape 2).
+        self.movements_table: Optional[QTableWidget] = None
+        if movements:
+            self._build_movements_group(movements)
 
         content_layout.addStretch(1)
         scroll_area.setWidget(content)
@@ -249,6 +248,11 @@ class SaleDetailDialog(QDialog):
         self.close_button.clicked.connect(self.accept)
         button_row.addWidget(self.close_button)
         layout.addLayout(button_row)
+
+        # Chargement initial unique (états de paiement, reçu et annulation) —
+        # toujours depuis la source de vérité, jamais de valeur calculée à la
+        # main (voir ``_refresh_payment_section``).
+        self._refresh_payment_section()
 
     # -- export PDF ----------------------------------------------------------------
 
@@ -360,6 +364,126 @@ class SaleDetailDialog(QDialog):
         )
         self.record_payment_button.setEnabled(can_pay)
         self.export_payment_receipt_button.setEnabled(len(self._payments) > 0)
+
+        # Le statut peut avoir changé (annulation) : les contrôles de reçu et
+        # d'annulation dépendent tous deux de ``sale.statut``, donc toujours
+        # recalculés ici, à la même source de vérité que le reste de cette
+        # méthode (Lot 15 — étape 2).
+        self._update_receipt_controls()
+        self._update_cancel_button()
+
+    def _update_receipt_controls(self) -> None:
+        """Active les contrôles de reçu uniquement pour une vente validée —
+        même condition que ``ReceiptService``/``test_receipt_refused_for_annulee``,
+        jamais réimplémentée côté règle, seulement reflétée côté affichage."""
+        can_view_receipt = (
+            self._sale.statut == StatutOperation.VALIDEE and self._permissions.has_permission("SALE_VIEW")
+        )
+        self.receipt_format_combo.setEnabled(can_view_receipt)
+        self.print_receipt_button.setEnabled(can_view_receipt)
+        self.export_a4_button.setEnabled(can_view_receipt)
+        self.export_ticket_button.setEnabled(can_view_receipt)
+
+    def _update_cancel_button(self) -> None:
+        """Confort d'interface uniquement : la règle réelle (permission +
+        propriété Vendeur) reste entièrement dans ``SaleService.cancel_sale``,
+        revérifiée à chaque appel — ``can_manage_sale`` ne fait ici que
+        décider d'activer ou non le bouton, jamais de contourner la règle."""
+        can_cancel = (
+            self._sale_service is not None
+            and self._sale.statut == StatutOperation.VALIDEE
+            and self._sale_service.can_manage_sale(self._sale_id, "SALE_CANCEL")
+        )
+        self.cancel_sale_button.setEnabled(can_cancel)
+
+    # -- annulation (Lot 15 — étape 2) ------------------------------------------------
+
+    def _on_cancel_sale_clicked(self) -> None:
+        if self._sale_service is None:
+            return
+        dialog = CancellationReasonDialog(f"la vente « {self._sale_numero} »", parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._submit_cancel_sale(dialog.reason())
+
+    def _submit_cancel_sale(self, motif: str) -> bool:
+        """Isolé de ``_on_cancel_sale_clicked`` pour rester testable sans
+        dialogue modal — appelle ``SaleService.cancel_sale`` directement,
+        exactement comme ``SalesPage._cancel_selected`` : aucune règle
+        métier n'est dupliquée, seule cette fine orchestration UI l'est,
+        déjà le cas pour le paiement dans ce même dialogue."""
+        try:
+            self._sale_service.cancel_sale(self._sale_id, motif)
+        except AppError as exc:
+            QMessageBox.warning(self, "Opération refusée", str(exc))
+            return False
+        QMessageBox.information(self, "Vente annulée", "La vente a été annulée avec succès.")
+        # Rafraîchissement complet « en place » : paiement (+ reçu + bouton
+        # d'annulation, voir fin de ``_refresh_payment_section``), en-tête,
+        # puis mouvements de stock — jamais de reconstruction du dialogue.
+        self._refresh_payment_section()
+        self._refresh_header_section()
+        self._refresh_movements_section()
+        return True
+
+    def _refresh_header_section(self) -> None:
+        """Reflète le nouveau statut et, le cas échéant, le motif
+        d'annulation — insère la ligne « Motif d'annulation » si elle
+        n'existait pas encore (vente qui vient d'être annulée), sans
+        reconstruire le reste de l'en-tête."""
+        sale = self._sale
+        self.statut_label.setText(_STATUT_LABELS.get(sale.statut, str(sale.statut)))
+        if sale.statut != StatutOperation.ANNULEE:
+            return
+        if self._motif_label is None:
+            self._motif_label = QLabel(sale.annulation_motif or "—", self._header_group)
+            self._motif_label.setWordWrap(True)
+            self._header_form.insertRow(5, "Motif d'annulation", self._motif_label)
+        else:
+            self._motif_label.setText(sale.annulation_motif or "—")
+
+    def _populate_movements_table(self, table: QTableWidget, movements: list[MouvementSummary]) -> None:
+        table.setRowCount(len(movements))
+        for row, mouvement in enumerate(movements):
+            table.setItem(row, 0, QTableWidgetItem(mouvement.date_heure.strftime("%Y-%m-%d %H:%M")))
+            table.setItem(row, 1, QTableWidgetItem(mouvement.type.value))
+            table.setItem(row, 2, QTableWidgetItem(format_quantity(mouvement.quantite)))
+            table.setItem(row, 3, QTableWidgetItem(format_quantity(mouvement.stock_avant)))
+            table.setItem(row, 4, QTableWidgetItem(format_quantity(mouvement.stock_apres)))
+            table.setItem(row, 5, QTableWidgetItem(mouvement.username))
+
+    def _build_movements_group(self, movements: list[MouvementSummary]) -> None:
+        movements_group = QGroupBox("Mouvements de stock générés", self._content)
+        movements_layout = QVBoxLayout(movements_group)
+        movements_table = QTableWidget(0, len(_MOVEMENT_COLUMNS), movements_group)
+        movements_table.setHorizontalHeaderLabels(_MOVEMENT_COLUMNS)
+        movements_table.horizontalHeader().setStretchLastSection(True)
+        movements_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._populate_movements_table(movements_table, movements)
+        movements_layout.addWidget(movements_table)
+        self._content.layout().insertWidget(
+            self._content.layout().indexOf(self._receipt_group), movements_group
+        )
+        self.movements_table = movements_table
+
+    def _refresh_movements_section(self) -> None:
+        """Recharge les mouvements depuis le service — jamais si
+        l'utilisateur n'a pas la permission ``STOCK_MOVEMENT_VIEW``, exactement
+        la même condition que ``SalesPage._load_sale_for_detail`` (double
+        vérification : le service lui-même refuse aussi via
+        ``require_permission`` dans ``get_sale_movements``)."""
+        if self._sale_service is None or not self._permissions.has_permission("STOCK_MOVEMENT_VIEW"):
+            return
+        try:
+            movements = self._sale_service.get_sale_movements(self._sale_id)
+        except AppError:
+            return
+        if not movements:
+            return
+        if self.movements_table is not None:
+            self._populate_movements_table(self.movements_table, movements)
+        else:
+            self._build_movements_group(movements)
 
     def _on_record_payment_clicked(self) -> None:
         if self._sale_service is None:

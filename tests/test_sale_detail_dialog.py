@@ -169,8 +169,13 @@ def test_detail_dialog_hides_motif_row_when_not_annulee(qtbot) -> None:
     qtbot.addWidget(dialog)
 
     form = dialog.findChild(QFormLayout)
+    # La ligne du bouton « Annuler la vente » (Lot 15 — étape 2) n'a pas de
+    # label : elle occupe les deux colonnes et ``itemAt(i, LabelRole)`` y
+    # renvoie None, à ignorer ici (seuls les libellés nous intéressent).
     row_labels = [
-        form.itemAt(i, QFormLayout.ItemRole.LabelRole).widget().text() for i in range(form.rowCount())
+        label_item.widget().text()
+        for i in range(form.rowCount())
+        if (label_item := form.itemAt(i, QFormLayout.ItemRole.LabelRole)) is not None
     ]
     assert "Motif d'annulation" not in row_labels
 
