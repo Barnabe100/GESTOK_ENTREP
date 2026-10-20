@@ -290,6 +290,22 @@ class MainWindow(QMainWindow):
     def _on_navigation_changed(self, index: int) -> None:
         if index < 0:
             return
+        # Hook optionnel (voir SalesPage.confirm_can_leave, lot « Écran de
+        # caisse ») : une page peut refuser un changement de module si elle
+        # contient une saisie non enregistrée — contrairement à un dialogue
+        # modal, un écran intégré à la navigation comme la caisse n'empêche
+        # pas nativement de cliquer ailleurs dans la liste de gauche. Sans
+        # ce hook, cette saisie serait perdue silencieusement. Toute page
+        # sans cette méthode continue de fonctionner à l'identique (hasattr).
+        current_index = self.page_stack.currentIndex()
+        if current_index >= 0:
+            current_page = self.page_stack.widget(current_index)
+            if hasattr(current_page, "confirm_can_leave") and not current_page.confirm_can_leave():
+                self.navigation_list.blockSignals(True)
+                self.navigation_list.setCurrentRow(current_index)
+                self.navigation_list.blockSignals(False)
+                return
+
         self.page_stack.setCurrentIndex(index)
         self.page_title_label.setText(self.visible_modules[index])
         # Chaque page n'est construite qu'une seule fois (voir

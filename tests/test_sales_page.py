@@ -693,3 +693,653 @@ def test_submit_form_validate_action_denied_without_permission_keeps_draft_recov
     assert len(sales) == 1
     assert sales[0].statut == StatutOperation.BROUILLON
     assert admin_stack.articles.get_article(article.id).stock_actuel == Decimal("50")
+
+
+# -- Lot 14 : écran de caisse plein format -----------------------------------
+
+def test_view_stack_starts_on_list_view(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page._view_stack.currentIndex() == 0
+
+
+def test_add_button_opens_caisse_view(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    page._on_add_clicked()
+
+    assert page._view_stack.currentIndex() == 1
+    assert page._caisse_sale_id is None
+    assert page._caisse_lines == []
+
+
+def test_edit_button_opens_caisse_view_prefilled(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    client = stack.clients.create_client("Client Test")
+    sale = stack.sales.create_sale(
+        date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("3"), Decimal("150"))], client_id=client.id
+    )
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    row = next(r for r in range(page.table.rowCount()) if page.table.item(r, 0).text() == sale.numero)
+    page.table.selectRow(row)
+
+    page._on_edit_clicked()
+
+    assert page._view_stack.currentIndex() == 1
+    assert page._caisse_sale_id == sale.id
+    assert len(page._caisse_lines) == 1
+    assert page.caisse_client_combo.currentData() == client.id
+
+
+def test_caisse_search_filters_and_adds_line_on_double_click(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, reference="ART-EAU")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+
+    page.caisse_search_edit.setText("eau")
+    assert page.caisse_search_results.count() == 1
+    item = page.caisse_search_results.item(0)
+    page._on_caisse_search_result_activated(item)
+
+    assert len(page._caisse_lines) == 1
+    assert page._caisse_lines[0]["article_id"] == article.id
+    assert page._caisse_lines[0]["quantite"] == Decimal("1")
+    assert page._caisse_lines[0]["prix_unitaire"] == Decimal("150")
+    assert "150" in page.caisse_total_label.text()
+
+
+def test_caisse_search_no_match_shows_empty_results(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    _make_article(stack, reference="ART-EAU")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+
+    page.caisse_search_edit.setText("inexistant")
+
+    assert page.caisse_search_results.count() == 0
+
+
+def test_caisse_scan_adds_line_with_quantity_one(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = stack.articles.create_article(
+        "ART-SCAN", "Article scanné", stack.categories.create_category("Cat-Scan").id, "unité",
+        Decimal("100"), Decimal("200"), Decimal("0"), stock_initial=Decimal("10"), code_barres="1234567890",
+    )
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+
+    page.caisse_scan_edit.setText("1234567890")
+    page._on_caisse_scan_entered()
+
+    assert len(page._caisse_lines) == 1
+    assert page._caisse_lines[0]["article_id"] == article.id
+    assert page._caisse_lines[0]["prix_unitaire"] == Decimal("200")
+    assert page.caisse_scan_edit.text() == ""
+
+
+def test_caisse_scan_unknown_barcode_shows_warning_and_adds_nothing(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+
+    page.caisse_scan_edit.setText("CODE-INCONNU")
+    page._on_caisse_scan_entered()
+
+    assert page._caisse_lines == []
+
+
+def test_caisse_quantity_edit_updates_total_without_calling_service(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+    page._add_caisse_line(article.id, "ART-1 — x", Decimal("1"), Decimal("150"))
+
+    calls = {"n": 0}
+    monkeypatch.setattr(stack.sales, "create_sale", lambda *a, **k: calls.__setitem__("n", calls["n"] + 1))
+    monkeypatch.setattr(stack.sales, "update_sale", lambda *a, **k: calls.__setitem__("n", calls["n"] + 1))
+
+    quantity_item = page.caisse_lines_table.item(0, 1)
+    quantity_item.setText("4")
+
+    assert page._caisse_lines[0]["quantite"] == Decimal("4")
+    assert "600" in page.caisse_total_label.text()
+    assert calls["n"] == 0  # aucun appel service pour une simple modification locale
+
+
+def test_caisse_quantity_edit_rejects_invalid_value_and_reverts(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+    page._add_caisse_line(article.id, "ART-1 — x", Decimal("2"), Decimal("150"))
+
+    quantity_item = page.caisse_lines_table.item(0, 1)
+    quantity_item.setText("abc")
+
+    assert page._caisse_lines[0]["quantite"] == Decimal("2")  # inchangée
+    assert page.caisse_lines_table.item(0, 1).text() == "2"  # cellule rétablie
+    assert page.caisse_error_label.text() != ""
+
+
+def test_caisse_quantity_edit_rejects_zero_and_negative(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+    page._add_caisse_line(article.id, "ART-1 — x", Decimal("2"), Decimal("150"))
+
+    quantity_item = page.caisse_lines_table.item(0, 1)
+    quantity_item.setText("0")
+
+    assert page._caisse_lines[0]["quantite"] == Decimal("2")
+
+
+def test_caisse_remove_line_updates_total(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+    page._add_caisse_line(article.id, "ART-1 — x", Decimal("2"), Decimal("150"))
+    page.caisse_lines_table.selectRow(0)
+
+    page._on_caisse_remove_line_clicked()
+
+    assert page._caisse_lines == []
+    assert page.caisse_lines_table.rowCount() == 0
+    assert "0" in page.caisse_total_label.text()
+
+
+def test_caisse_new_client_preserves_lines_and_selects_client(qtbot, login_as, monkeypatch) -> None:
+    """§5 du lot : la création rapide ne doit jamais faire perdre la saisie
+    de la vente en cours (ici : une ligne déjà ajoutée)."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+    page._add_caisse_line(article.id, "ART-1 — x", Decimal("3"), Decimal("150"))
+
+    monkeypatch.setattr(page, "_create_client_from_sale_form", lambda: (99, "Client tout neuf"))
+
+    page._on_caisse_new_client_clicked()
+
+    assert page.caisse_client_combo.currentData() == 99
+    assert page.caisse_client_combo.currentText() == "Client tout neuf"
+    assert len(page._caisse_lines) == 1
+    assert page._caisse_lines[0]["quantite"] == Decimal("3")
+
+
+def test_caisse_new_client_cancelled_keeps_current_selection(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    client = stack.clients.create_client("Client Existant")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._open_caisse(sale_id=None, initial={"date": date.today(), "client_id": client.id})
+
+    monkeypatch.setattr(page, "_create_client_from_sale_form", lambda: None)
+
+    page._on_caisse_new_client_clicked()
+
+    assert page.caisse_client_combo.currentData() == client.id
+
+
+def test_caisse_create_client_error_preserves_sale_in_progress(qtbot, login_as) -> None:
+    """§4/§6 du lot : un échec de création de client (ici nom vide) ne doit
+    jamais affecter la vente en cours de saisie."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+    page._add_caisse_line(article.id, "ART-1 — x", Decimal("2"), Decimal("150"))
+
+    result = page._create_client_from_values(
+        {"nom": "", "telephone": "", "email": "", "adresse": "", "observations": ""}
+    )
+
+    assert result is None
+    assert len(page._caisse_lines) == 1
+    assert stack.clients.list_clients() == []
+
+
+def test_caisse_save_draft_creates_sale_and_returns_to_list(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+    page._add_caisse_line(article.id, "ART-1 — x", Decimal("2"), Decimal("150"))
+
+    page._on_caisse_save_draft_clicked()
+
+    assert page._view_stack.currentIndex() == 0
+    created = stack.sales.list_sales()[0]
+    assert created.statut == StatutOperation.BROUILLON
+    assert stack.articles.get_article(article.id).stock_actuel == Decimal("50")
+    assert page.caisse_save_draft_button.isEnabled() is True
+    assert page.caisse_validate_button.isEnabled() is True
+
+
+def test_caisse_validate_creates_and_validates_sale_without_initial_payment(qtbot, login_as) -> None:
+    """§3 du lot : aucune création de paiement initial à la validation."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+    page._add_caisse_line(article.id, "ART-1 — x", Decimal("2"), Decimal("150"))
+
+    page._on_caisse_validate_clicked()
+
+    assert page._view_stack.currentIndex() == 0
+    validated = stack.sales.list_sales()[0]
+    assert validated.statut == StatutOperation.VALIDEE
+    assert validated.montant_paye == Decimal("0")
+    assert validated.reste_a_payer == validated.total
+    assert stack.articles.get_article(article.id).stock_actuel == Decimal("48")
+
+
+def test_caisse_validate_rejects_empty_sale_and_stays_open(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+
+    page._on_caisse_validate_clicked()
+
+    # create_sale avec une liste de lignes vide réussit (brouillon vide
+    # autorisé) ; c'est validate_sale qui refuse ensuite — la caisse se
+    # referme malgré tout (le brouillon est conservé, retrouvable dans la
+    # liste, jamais recréé en double).
+    assert page._view_stack.currentIndex() == 0
+    created = stack.sales.list_sales()[0]
+    assert created.statut == StatutOperation.BROUILLON
+
+
+def test_caisse_validate_insufficient_stock_keeps_draft_recoverable(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("1"))
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+    page._add_caisse_line(article.id, "ART-1 — x", Decimal("999"), Decimal("150"))
+
+    page._on_caisse_validate_clicked()
+
+    assert page._view_stack.currentIndex() == 0
+    created = stack.sales.list_sales()[0]
+    assert created.statut == StatutOperation.BROUILLON
+    assert stack.articles.get_article(article.id).stock_actuel == Decimal("1")
+
+
+def test_caisse_create_failure_keeps_caisse_open_with_lines(qtbot, login_as) -> None:
+    """Un échec dès la création/modification elle-même (ici : article
+    désactivé entre l'ajout de la ligne et l'enregistrement) laisse la
+    caisse ouverte avec la saisie intacte, plutôt que de revenir à la
+    liste."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+    page._add_caisse_line(article.id, "ART-1 — x", Decimal("2"), Decimal("150"))
+    stack.articles.deactivate_article(article.id)
+
+    page._on_caisse_save_draft_clicked()
+
+    assert page._view_stack.currentIndex() == 1
+    assert len(page._caisse_lines) == 1
+    assert stack.sales.list_sales() == []
+    assert page.caisse_save_draft_button.isEnabled() is True
+    assert page.caisse_validate_button.isEnabled() is True
+
+
+def test_caisse_back_button_no_confirmation_when_no_lines(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+
+    called = {"n": 0}
+    monkeypatch.setattr("app.views.common.QMessageBox.question", lambda *a, **k: called.__setitem__("n", called["n"] + 1))
+
+    page._on_caisse_back_clicked()
+
+    assert called["n"] == 0
+    assert page._view_stack.currentIndex() == 0
+
+
+def test_caisse_back_button_confirms_before_discarding_unsaved_lines(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+    page._add_caisse_line(article.id, "ART-1 — x", Decimal("1"), Decimal("150"))
+
+    monkeypatch.setattr(
+        "app.views.common.QMessageBox.question", lambda *a, **k: QMessageBox.StandardButton.No
+    )
+    page._on_caisse_back_clicked()
+    assert page._view_stack.currentIndex() == 1  # refus : on reste dans la caisse
+
+    monkeypatch.setattr(
+        "app.views.common.QMessageBox.question", lambda *a, **k: QMessageBox.StandardButton.Yes
+    )
+    page._on_caisse_back_clicked()
+    assert page._view_stack.currentIndex() == 0  # confirmé : retour à la liste
+
+
+def test_confirm_can_leave_true_when_no_unsaved_lines(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+
+    assert page.confirm_can_leave() is True
+
+
+def test_confirm_can_leave_true_on_list_view_even_with_stale_state(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.confirm_can_leave() is True
+
+
+def test_confirm_can_leave_respects_refusal(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+    page._add_caisse_line(article.id, "ART-1 — x", Decimal("1"), Decimal("150"))
+
+    monkeypatch.setattr(
+        "app.views.common.QMessageBox.question", lambda *a, **k: QMessageBox.StandardButton.No
+    )
+
+    assert page.confirm_can_leave() is False
+    assert page._view_stack.currentIndex() == 1
+
+
+# -- Lot 14 (correctif) : détection des modifications réelles de la caisse --
+
+def test_new_sale_with_lines_is_detected_as_unsaved(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+
+    page._add_caisse_line(article.id, "ART-1 — x", Decimal("1"), Decimal("150"))
+
+    assert page._caisse_has_unsaved_changes() is True
+
+
+def test_new_sale_without_lines_is_not_unsaved(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+
+    assert page._caisse_has_unsaved_changes() is False
+
+
+def test_existing_draft_reopened_without_modification_is_not_unsaved(qtbot, login_as) -> None:
+    """Le correctif de ce lot : rouvrir un brouillon existant tel quel ne
+    doit jamais être traité comme une modification non enregistrée."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    client = stack.clients.create_client("Client Test")
+    sale = stack.sales.create_sale(
+        date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("2"), Decimal("150"))], client_id=client.id
+    )
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    row = next(r for r in range(page.table.rowCount()) if page.table.item(r, 0).text() == sale.numero)
+    page.table.selectRow(row)
+
+    page._on_edit_clicked()
+
+    assert page._caisse_has_unsaved_changes() is False
+
+
+def test_quantity_modification_on_existing_draft_is_detected(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    sale = stack.sales.create_sale(
+        date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("2"), Decimal("150"))]
+    )
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    row = next(r for r in range(page.table.rowCount()) if page.table.item(r, 0).text() == sale.numero)
+    page.table.selectRow(row)
+    page._on_edit_clicked()
+    assert page._caisse_has_unsaved_changes() is False
+
+    page.caisse_lines_table.item(0, 1).setText("5")
+
+    assert page._caisse_has_unsaved_changes() is True
+
+
+def test_adding_a_line_on_existing_draft_is_detected(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article_a = _make_article(stack, reference="ART-A")
+    article_b = _make_article(stack, reference="ART-B")
+    sale = stack.sales.create_sale(
+        date(2026, 1, 1), [VenteLigneInput(article_a.id, Decimal("2"), Decimal("150"))]
+    )
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    row = next(r for r in range(page.table.rowCount()) if page.table.item(r, 0).text() == sale.numero)
+    page.table.selectRow(row)
+    page._on_edit_clicked()
+
+    page._add_caisse_line(article_b.id, "ART-B — y", Decimal("1"), Decimal("150"))
+
+    assert page._caisse_has_unsaved_changes() is True
+
+
+def test_removing_a_line_on_existing_draft_is_detected(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    sale = stack.sales.create_sale(
+        date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("2"), Decimal("150"))]
+    )
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    row = next(r for r in range(page.table.rowCount()) if page.table.item(r, 0).text() == sale.numero)
+    page.table.selectRow(row)
+    page._on_edit_clicked()
+
+    page.caisse_lines_table.selectRow(0)
+    page._on_caisse_remove_line_clicked()
+
+    assert page._caisse_has_unsaved_changes() is True
+
+
+def test_date_modification_on_existing_draft_is_detected(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    sale = stack.sales.create_sale(
+        date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("2"), Decimal("150"))]
+    )
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    row = next(r for r in range(page.table.rowCount()) if page.table.item(r, 0).text() == sale.numero)
+    page.table.selectRow(row)
+    page._on_edit_clicked()
+
+    from PySide6.QtCore import QDate
+    page.caisse_date_edit.setDate(QDate(2026, 1, 2))
+
+    assert page._caisse_has_unsaved_changes() is True
+
+
+def test_client_modification_on_existing_draft_is_detected(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    client = stack.clients.create_client("Nouveau client sélectionné")
+    sale = stack.sales.create_sale(
+        date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("2"), Decimal("150"))]
+    )
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    row = next(r for r in range(page.table.rowCount()) if page.table.item(r, 0).text() == sale.numero)
+    page.table.selectRow(row)
+    page._on_edit_clicked()
+
+    index = page.caisse_client_combo.findData(client.id)
+    page.caisse_client_combo.setCurrentIndex(index)
+
+    assert page._caisse_has_unsaved_changes() is True
+
+
+def test_reverting_to_initial_state_clears_unsaved_detection(qtbot, login_as) -> None:
+    """§5 du correctif : ajouter puis supprimer la même ligne doit ramener
+    la détection à « aucune modification », pas rester bloquée à vrai."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+    assert page._caisse_has_unsaved_changes() is False
+
+    page._add_caisse_line(article.id, "ART-1 — x", Decimal("1"), Decimal("150"))
+    assert page._caisse_has_unsaved_changes() is True
+
+    page.caisse_lines_table.selectRow(0)
+    page._on_caisse_remove_line_clicked()
+
+    assert page._caisse_has_unsaved_changes() is False
+
+
+def test_reverting_quantity_to_original_value_clears_unsaved_detection(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    sale = stack.sales.create_sale(
+        date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("2"), Decimal("150"))]
+    )
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    row = next(r for r in range(page.table.rowCount()) if page.table.item(r, 0).text() == sale.numero)
+    page.table.selectRow(row)
+    page._on_edit_clicked()
+
+    page.caisse_lines_table.item(0, 1).setText("9")
+    assert page._caisse_has_unsaved_changes() is True
+
+    page.caisse_lines_table.item(0, 1).setText("2")
+    assert page._caisse_has_unsaved_changes() is False
+
+
+def test_successful_save_resets_reference_state_for_next_caisse_session(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+    page._add_caisse_line(article.id, "ART-1 — x", Decimal("1"), Decimal("150"))
+
+    page._on_caisse_save_draft_clicked()
+    assert page._caisse_initial_snapshot is None  # caisse fermée, pas d'état de référence résiduel
+
+    page._on_add_clicked()
+    assert page._caisse_has_unsaved_changes() is False  # nouvelle session, repart de zéro
+
+
+def test_failed_save_does_not_clear_or_corrupt_unsaved_detection(qtbot, login_as) -> None:
+    """Un échec de create_sale/update_sale (ici : article désactivé entre
+    l'ajout de la ligne et l'enregistrement) ne doit ni effacer la
+    modification en cours, ni fausser la détection — la caisse reste
+    ouverte, toujours détectée comme non enregistrée."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+    page._add_caisse_line(article.id, "ART-1 — x", Decimal("2"), Decimal("150"))
+    stack.articles.deactivate_article(article.id)
+
+    page._on_caisse_save_draft_clicked()
+
+    assert page._view_stack.currentIndex() == 1
+    assert page._caisse_has_unsaved_changes() is True
+    assert page._caisse_initial_snapshot is not None
+
+
+def test_failed_validation_after_successful_save_does_not_corrupt_detection(qtbot, login_as) -> None:
+    """Création réussie puis validation refusée (stock insuffisant) : la
+    caisse se referme (le brouillon est conservé, retrouvable dans la
+    liste) — vérifie que l'état de référence est bien réinitialisé plutôt
+    que laissé dans un état incohérent."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("1"))
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+    page._add_caisse_line(article.id, "ART-1 — x", Decimal("999"), Decimal("150"))
+
+    page._on_caisse_validate_clicked()
+
+    assert page._view_stack.currentIndex() == 0
+    assert page._caisse_initial_snapshot is None
+    assert page._caisse_has_unsaved_changes() is False
+
+
+def test_confirm_can_leave_true_for_unmodified_reopened_draft(qtbot, login_as) -> None:
+    """Changement de module (confirm_can_leave) sans modification réelle :
+    jamais de confirmation, même en mode édition d'un brouillon existant."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    sale = stack.sales.create_sale(
+        date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("2"), Decimal("150"))]
+    )
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    row = next(r for r in range(page.table.rowCount()) if page.table.item(r, 0).text() == sale.numero)
+    page.table.selectRow(row)
+    page._on_edit_clicked()
+
+    assert page.confirm_can_leave() is True
+
+
+def test_confirm_can_leave_false_for_modified_reopened_draft_without_confirmation(
+    qtbot, login_as, monkeypatch
+) -> None:
+    """Changement de module avec une modification réelle : la confirmation
+    est demandée, et un refus bloque le départ."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    sale = stack.sales.create_sale(
+        date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("2"), Decimal("150"))]
+    )
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    row = next(r for r in range(page.table.rowCount()) if page.table.item(r, 0).text() == sale.numero)
+    page.table.selectRow(row)
+    page._on_edit_clicked()
+    page.caisse_lines_table.item(0, 1).setText("3")
+
+    monkeypatch.setattr(
+        "app.views.common.QMessageBox.question", lambda *a, **k: QMessageBox.StandardButton.No
+    )
+
+    assert page.confirm_can_leave() is False

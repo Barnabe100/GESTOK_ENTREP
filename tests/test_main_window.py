@@ -371,3 +371,86 @@ def test_dashboard_navigate_callback_switches_main_window_tab(qtbot, login_as) -
     dashboard_page.navigation_buttons["Ventes"].click()
 
     assert window.page_stack.currentIndex() == window.visible_modules.index("Ventes")
+
+
+# -- Lot 14 : hook confirm_can_leave (écran de caisse) -----------------------
+
+def test_navigation_respects_confirm_can_leave_refusal(qtbot, login_as, monkeypatch) -> None:
+    """Hook optionnel (voir SalesPage.confirm_can_leave) : si la page
+    courante refuse, la navigation reste sur place — ni le contenu affiché
+    ni le titre ne doivent changer."""
+    stack, _ = login_as("Administrateur")
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+
+    class _RefusingPage:
+        def confirm_can_leave(self) -> bool:
+            return False
+
+    dashboard_index = window.navigation_list.currentRow()
+    monkeypatch.setattr(window.page_stack, "widget", lambda index: _RefusingPage())
+
+    target_index = window.visible_modules.index("Ventes")
+    window.navigation_list.setCurrentRow(target_index)
+
+    assert window.navigation_list.currentRow() == dashboard_index
+    assert window.page_stack.currentIndex() == dashboard_index
+    assert window.page_title_label.text() == "Dashboard"
+
+
+def test_navigation_allows_leave_when_confirm_can_leave_returns_true(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+
+    class _AllowingPage:
+        def confirm_can_leave(self) -> bool:
+            return True
+
+        def refresh(self) -> None:
+            pass
+
+    monkeypatch.setattr(window.page_stack, "widget", lambda index: _AllowingPage())
+
+    target_index = window.visible_modules.index("Ventes")
+    window.navigation_list.setCurrentRow(target_index)
+
+    assert window.page_stack.currentIndex() == target_index
+    assert window.page_title_label.text() == "Ventes"
+
+
+def test_navigation_away_from_caisse_with_unsaved_sale_is_blocked_until_confirmed(
+    qtbot, login_as, monkeypatch
+) -> None:
+    """Scénario de bout en bout : la caisse (SalesPage) contient une ligne
+    non enregistrée, l'utilisateur clique sur un autre module — la
+    navigation doit être bloquée tant que l'abandon n'est pas confirmé."""
+    from PySide6.QtWidgets import QMessageBox
+
+    stack, _ = login_as("Administrateur")
+    category = stack.categories.create_category("Boissons")
+    article = stack.articles.create_article(
+        "ART-1", "Eau", category.id, "unité", Decimal("100"), Decimal("150"), Decimal("0"),
+        stock_initial=Decimal("50"),
+    )
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+
+    ventes_index = window.visible_modules.index("Ventes")
+    window.navigation_list.setCurrentRow(ventes_index)
+    sales_page = window.page_stack.widget(ventes_index)
+    sales_page._on_add_clicked()
+    sales_page._add_caisse_line(article.id, "ART-1 — Eau", Decimal("1"), Decimal("150"))
+
+    articles_index = window.visible_modules.index("Articles")
+    monkeypatch.setattr(
+        "app.views.common.QMessageBox.question", lambda *a, **k: QMessageBox.StandardButton.No
+    )
+    window.navigation_list.setCurrentRow(articles_index)
+    assert window.page_stack.currentIndex() == ventes_index  # bloqué : refus
+
+    monkeypatch.setattr(
+        "app.views.common.QMessageBox.question", lambda *a, **k: QMessageBox.StandardButton.Yes
+    )
+    window.navigation_list.setCurrentRow(articles_index)
+    assert window.page_stack.currentIndex() == articles_index  # confirmé : autorisé
