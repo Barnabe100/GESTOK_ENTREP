@@ -173,3 +173,116 @@ def test_detail_dialog_hides_motif_row_when_not_annulee(qtbot) -> None:
         form.itemAt(i, QFormLayout.ItemRole.LabelRole).widget().text() for i in range(form.rowCount())
     ]
     assert "Motif d'annulation" not in row_labels
+
+
+# -- Lot 15, étape 1 : regroupement visuel, mouvements conditionnels, défilement --
+
+def test_detail_dialog_sections_are_grouped(qtbot) -> None:
+    from PySide6.QtWidgets import QGroupBox
+
+    dialog = _build_dialog(_make_sale(statut=StatutOperation.VALIDEE), [_make_movement()])
+    qtbot.addWidget(dialog)
+
+    titles = {group.title() for group in dialog.findChildren(QGroupBox)}
+    assert {
+        "Informations générales", "Articles et montants", "Paiement",
+        "Mouvements de stock générés", "Reçu",
+    } <= titles
+
+
+def test_detail_dialog_uses_scroll_area(qtbot) -> None:
+    from PySide6.QtWidgets import QScrollArea
+
+    dialog = _build_dialog(_make_sale())
+    qtbot.addWidget(dialog)
+
+    scroll_areas = dialog.findChildren(QScrollArea)
+    assert len(scroll_areas) == 1
+    assert scroll_areas[0].widgetResizable() is True
+    assert scroll_areas[0].widget() is not None
+
+
+def test_movements_section_hidden_when_no_movements(qtbot) -> None:
+    from PySide6.QtWidgets import QGroupBox
+
+    dialog = _build_dialog(_make_sale(statut=StatutOperation.VALIDEE), [])
+    qtbot.addWidget(dialog)
+
+    assert dialog.movements_table is None
+    titles = {group.title() for group in dialog.findChildren(QGroupBox)}
+    assert "Mouvements de stock générés" not in titles
+
+
+def test_movements_section_hidden_for_brouillon_without_movements(qtbot) -> None:
+    dialog = _build_dialog(_make_sale(statut=StatutOperation.BROUILLON), [])
+    qtbot.addWidget(dialog)
+
+    assert dialog.movements_table is None
+
+
+def test_movements_section_shown_when_movements_present(qtbot) -> None:
+    dialog = _build_dialog(_make_sale(statut=StatutOperation.VALIDEE), [_make_movement()])
+    qtbot.addWidget(dialog)
+
+    assert dialog.movements_table is not None
+    assert dialog.movements_table.rowCount() == 1
+
+
+def test_movements_section_shown_for_annulee_with_movements(qtbot) -> None:
+    dialog = _build_dialog(_make_sale(statut=StatutOperation.ANNULEE), [_make_movement()])
+    qtbot.addWidget(dialog)
+
+    assert dialog.movements_table is not None
+    assert dialog.movements_table.rowCount() == 1
+
+
+def test_detail_dialog_remains_usable_with_large_content(qtbot) -> None:
+    from PySide6.QtWidgets import QScrollArea, QTableWidget
+
+    lignes = [
+        VenteLigneSummary(
+            id=i, article_id=i, article_reference=f"ART-{i}", article_designation=f"Article {i}",
+            quantite=Decimal("1"), prix_unitaire=Decimal("100"), sous_total=Decimal("100"),
+        )
+        for i in range(1, 51)
+    ]
+    movements = [_make_movement(id=i) for i in range(1, 51)]
+    dialog = _build_dialog(
+        _make_sale(statut=StatutOperation.VALIDEE, lignes=lignes, total=Decimal("5000")), movements
+    )
+    qtbot.addWidget(dialog)
+
+    lines_table = dialog.findChildren(QTableWidget)[0]
+    assert lines_table.rowCount() == 50
+    assert dialog.movements_table.rowCount() == 50
+
+    scroll_area = dialog.findChild(QScrollArea)
+    assert scroll_area is not None
+    assert scroll_area.widget() is not None
+
+
+def test_statut_paiement_label_reflects_payee_status(qtbot) -> None:
+    from app.models.enums import StatutPaiement
+
+    dialog = _build_dialog(
+        _make_sale(
+            statut=StatutOperation.VALIDEE, total=Decimal("8000"),
+            montant_paye=Decimal("8000"), statut_paiement=StatutPaiement.PAYEE,
+        )
+    )
+    qtbot.addWidget(dialog)
+
+    assert dialog.statut_paiement_label.text() == "Payée"
+    assert "color" in dialog.statut_paiement_label.styleSheet()
+
+
+def test_statut_paiement_label_reflects_non_payee_status(qtbot) -> None:
+    from app.models.enums import StatutPaiement
+
+    dialog = _build_dialog(
+        _make_sale(statut=StatutOperation.VALIDEE, total=Decimal("8000"), statut_paiement=StatutPaiement.NON_PAYEE)
+    )
+    qtbot.addWidget(dialog)
+
+    assert dialog.statut_paiement_label.text() == "Non payée"
+    assert "color" in dialog.statut_paiement_label.styleSheet()

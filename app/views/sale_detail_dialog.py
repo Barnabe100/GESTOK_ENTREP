@@ -18,10 +18,13 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFormLayout,
+    QFrame,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -61,6 +64,12 @@ _STATUT_PAIEMENT_LABELS = {
     StatutPaiement.PAYEE: "Payée",
 }
 
+_STATUT_PAIEMENT_COLORS = {
+    StatutPaiement.NON_PAYEE: "#b42318",
+    StatutPaiement.PARTIELLEMENT_PAYEE: "#b54708",
+    StatutPaiement.PAYEE: "#067647",
+}
+
 _FORMAT_LABELS = {
     ReceiptFormat.A4: "A4",
     ReceiptFormat.TICKET_80MM: "Ticket 80 mm",
@@ -93,24 +102,38 @@ class SaleDetailDialog(QDialog):
         self.setMinimumWidth(600)
 
         layout = QVBoxLayout(self)
-        form = QFormLayout()
 
-        form.addRow("Numéro", QLabel(sale.numero, self))
-        form.addRow("Date", QLabel(str(sale.date), self))
-        form.addRow("Client", QLabel(sale.client_nom or "—", self))
-        form.addRow("Créée par", QLabel(sale.username, self))
-        form.addRow("Statut", QLabel(_STATUT_LABELS.get(sale.statut, str(sale.statut)), self))
+        # -- zone défilante : regroupe toutes les sections pour rester -----------
+        # utilisable quel que soit le nombre de lignes/paiements/mouvements,
+        # sans imposer une fenêtre excessivement haute (Lot 15 — étape 1).
+        scroll_area = QScrollArea(self)
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        content = QWidget(scroll_area)
+        content_layout = QVBoxLayout(content)
+
+        # -- en-tête ---------------------------------------------------------------
+        header_group = QGroupBox("Informations générales", content)
+        form = QFormLayout(header_group)
+
+        form.addRow("Numéro", QLabel(sale.numero, header_group))
+        form.addRow("Date", QLabel(str(sale.date), header_group))
+        form.addRow("Client", QLabel(sale.client_nom or "—", header_group))
+        form.addRow("Créée par", QLabel(sale.username, header_group))
+        form.addRow("Statut", QLabel(_STATUT_LABELS.get(sale.statut, str(sale.statut)), header_group))
         if sale.statut == StatutOperation.ANNULEE:
-            motif_label = QLabel(sale.annulation_motif or "—", self)
+            motif_label = QLabel(sale.annulation_motif or "—", header_group)
             motif_label.setWordWrap(True)
             form.addRow("Motif d'annulation", motif_label)
-        form.addRow("Créée le", QLabel(sale.date_creation.strftime("%Y-%m-%d %H:%M"), self))
-        form.addRow("Modifiée le", QLabel(sale.date_modification.strftime("%Y-%m-%d %H:%M"), self))
+        form.addRow("Créée le", QLabel(sale.date_creation.strftime("%Y-%m-%d %H:%M"), header_group))
+        form.addRow("Modifiée le", QLabel(sale.date_modification.strftime("%Y-%m-%d %H:%M"), header_group))
 
-        layout.addLayout(form)
+        content_layout.addWidget(header_group)
 
-        layout.addWidget(QLabel("Lignes", self))
-        lines_table = QTableWidget(len(sale.lignes), len(_LINE_COLUMNS), self)
+        # -- articles et montants ---------------------------------------------------
+        lines_group = QGroupBox("Articles et montants", content)
+        lines_layout = QVBoxLayout(lines_group)
+        lines_table = QTableWidget(len(sale.lignes), len(_LINE_COLUMNS), lines_group)
         lines_table.setHorizontalHeaderLabels(_LINE_COLUMNS)
         lines_table.horizontalHeader().setStretchLastSection(True)
         lines_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -119,87 +142,106 @@ class SaleDetailDialog(QDialog):
             lines_table.setItem(row, 1, QTableWidgetItem(format_quantity(ligne.quantite)))
             lines_table.setItem(row, 2, QTableWidgetItem(format_money(ligne.prix_unitaire, currency_code)))
             lines_table.setItem(row, 3, QTableWidgetItem(format_money(ligne.sous_total, currency_code)))
-        layout.addWidget(lines_table)
+        lines_layout.addWidget(lines_table)
 
-        total_label = QLabel(f"Total : {format_money(sale.total, currency_code)}", self)
+        total_label = QLabel(f"Total : {format_money(sale.total, currency_code)}", lines_group)
         total_label.setStyleSheet("font-weight: 600;")
-        layout.addWidget(total_label)
+        lines_layout.addWidget(total_label)
+
+        content_layout.addWidget(lines_group)
 
         # -- paiement (ventes à crédit et paiements partiels, §5) -----------------
-        payment_form = QFormLayout()
-        self.montant_paye_label = QLabel("", self)
-        payment_form.addRow("Payé", self.montant_paye_label)
-        self.reste_a_payer_label = QLabel("", self)
-        self.reste_a_payer_label.setStyleSheet("font-weight: 600;")
-        payment_form.addRow("Reste à payer", self.reste_a_payer_label)
-        self.statut_paiement_label = QLabel("", self)
-        payment_form.addRow("Statut de paiement", self.statut_paiement_label)
-        layout.addLayout(payment_form)
+        payment_group = QGroupBox("Paiement", content)
+        payment_group_layout = QVBoxLayout(payment_group)
 
-        layout.addWidget(QLabel("Historique des paiements", self))
-        self.payments_table = QTableWidget(0, len(_PAYMENT_COLUMNS), self)
+        payment_form = QFormLayout()
+        self.montant_paye_label = QLabel("", payment_group)
+        payment_form.addRow("Payé", self.montant_paye_label)
+        self.reste_a_payer_label = QLabel("", payment_group)
+        payment_form.addRow("Reste à payer", self.reste_a_payer_label)
+        self.statut_paiement_label = QLabel("", payment_group)
+        payment_form.addRow("Statut de paiement", self.statut_paiement_label)
+        payment_group_layout.addLayout(payment_form)
+
+        payment_group_layout.addWidget(QLabel("Historique des paiements", payment_group))
+        self.payments_table = QTableWidget(0, len(_PAYMENT_COLUMNS), payment_group)
         self.payments_table.setHorizontalHeaderLabels(_PAYMENT_COLUMNS)
         self.payments_table.horizontalHeader().setStretchLastSection(True)
         self.payments_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.payments_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.payments_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        layout.addWidget(self.payments_table)
+        payment_group_layout.addWidget(self.payments_table)
 
         payment_button_row = QHBoxLayout()
-        self.record_payment_button = QPushButton("Enregistrer un paiement", self)
+        self.record_payment_button = QPushButton("Enregistrer un paiement", payment_group)
         payment_button_row.addWidget(self.record_payment_button)
-        self.export_payment_receipt_button = QPushButton("Reçu du paiement sélectionné (PDF)", self)
+        self.export_payment_receipt_button = QPushButton("Reçu du paiement sélectionné (PDF)", payment_group)
         payment_button_row.addWidget(self.export_payment_receipt_button)
         payment_button_row.addStretch(1)
-        layout.addLayout(payment_button_row)
+        payment_group_layout.addLayout(payment_button_row)
+
+        content_layout.addWidget(payment_group)
 
         self.record_payment_button.clicked.connect(self._on_record_payment_clicked)
         self.export_payment_receipt_button.clicked.connect(self._on_export_payment_receipt_clicked)
 
         self._refresh_payment_section()
 
-        layout.addWidget(QLabel("Mouvements de stock générés", self))
-        movements_table = QTableWidget(len(movements), len(_MOVEMENT_COLUMNS), self)
-        movements_table.setHorizontalHeaderLabels(_MOVEMENT_COLUMNS)
-        movements_table.horizontalHeader().setStretchLastSection(True)
-        movements_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        for row, mouvement in enumerate(movements):
-            movements_table.setItem(row, 0, QTableWidgetItem(mouvement.date_heure.strftime("%Y-%m-%d %H:%M")))
-            movements_table.setItem(row, 1, QTableWidgetItem(mouvement.type.value))
-            movements_table.setItem(row, 2, QTableWidgetItem(format_quantity(mouvement.quantite)))
-            movements_table.setItem(row, 3, QTableWidgetItem(format_quantity(mouvement.stock_avant)))
-            movements_table.setItem(row, 4, QTableWidgetItem(format_quantity(mouvement.stock_apres)))
-            movements_table.setItem(row, 5, QTableWidgetItem(mouvement.username))
-        layout.addWidget(movements_table)
+        # -- mouvements de stock : affichés seulement s'il en existe --------------
+        # (une vente en brouillon n'en a structurellement jamais, cf.
+        # StockService — ce critère couvre donc aussi ce cas sans le dupliquer).
+        self.movements_table: Optional[QTableWidget] = None
+        if movements:
+            movements_group = QGroupBox("Mouvements de stock générés", content)
+            movements_layout = QVBoxLayout(movements_group)
+            movements_table = QTableWidget(len(movements), len(_MOVEMENT_COLUMNS), movements_group)
+            movements_table.setHorizontalHeaderLabels(_MOVEMENT_COLUMNS)
+            movements_table.horizontalHeader().setStretchLastSection(True)
+            movements_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+            for row, mouvement in enumerate(movements):
+                movements_table.setItem(row, 0, QTableWidgetItem(mouvement.date_heure.strftime("%Y-%m-%d %H:%M")))
+                movements_table.setItem(row, 1, QTableWidgetItem(mouvement.type.value))
+                movements_table.setItem(row, 2, QTableWidgetItem(format_quantity(mouvement.quantite)))
+                movements_table.setItem(row, 3, QTableWidgetItem(format_quantity(mouvement.stock_avant)))
+                movements_table.setItem(row, 4, QTableWidgetItem(format_quantity(mouvement.stock_apres)))
+                movements_table.setItem(row, 5, QTableWidgetItem(mouvement.username))
+            movements_layout.addWidget(movements_table)
+            content_layout.addWidget(movements_group)
+            self.movements_table = movements_table
 
         # -- reçu : uniquement pour une vente validée (§4 de ce lot) --------------
-        receipt_row = QHBoxLayout()
+        receipt_group = QGroupBox("Reçu", content)
+        receipt_row = QHBoxLayout(receipt_group)
         can_view_receipt = sale.statut == StatutOperation.VALIDEE and self._permissions.has_permission("SALE_VIEW")
 
-        self.receipt_format_combo = QComboBox(self)
+        self.receipt_format_combo = QComboBox(receipt_group)
         for receipt_format, label in _FORMAT_LABELS.items():
             self.receipt_format_combo.addItem(label, receipt_format)
         self.receipt_format_combo.setEnabled(can_view_receipt)
         receipt_row.addWidget(self.receipt_format_combo)
 
-        self.print_receipt_button = QPushButton("Imprimer le reçu", self)
+        self.print_receipt_button = QPushButton("Imprimer le reçu", receipt_group)
         self.print_receipt_button.setEnabled(can_view_receipt)
         receipt_row.addWidget(self.print_receipt_button)
 
-        self.export_a4_button = QPushButton("Exporter en PDF (A4)", self)
+        self.export_a4_button = QPushButton("Exporter en PDF (A4)", receipt_group)
         self.export_a4_button.setEnabled(can_view_receipt)
         receipt_row.addWidget(self.export_a4_button)
 
-        self.export_ticket_button = QPushButton("Exporter en PDF (Ticket 80 mm)", self)
+        self.export_ticket_button = QPushButton("Exporter en PDF (Ticket 80 mm)", receipt_group)
         self.export_ticket_button.setEnabled(can_view_receipt)
         receipt_row.addWidget(self.export_ticket_button)
 
         receipt_row.addStretch(1)
-        layout.addLayout(receipt_row)
+        content_layout.addWidget(receipt_group)
 
         self.print_receipt_button.clicked.connect(self._on_print_clicked)
         self.export_a4_button.clicked.connect(self._on_export_a4_clicked)
         self.export_ticket_button.clicked.connect(self._on_export_ticket_clicked)
+
+        content_layout.addStretch(1)
+        scroll_area.setWidget(content)
+        layout.addWidget(scroll_area)
 
         button_row = QHBoxLayout()
         button_row.addStretch(1)
@@ -293,6 +335,12 @@ class SaleDetailDialog(QDialog):
         self.statut_paiement_label.setText(
             _STATUT_PAIEMENT_LABELS.get(sale.statut_paiement, str(sale.statut_paiement))
         )
+        # Mise en évidence (Lot 15 — étape 1) : habillage visuel des trois
+        # valeurs existantes de StatutPaiement, jamais de nouveau statut.
+        color = _STATUT_PAIEMENT_COLORS.get(sale.statut_paiement)
+        emphasis_style = f"font-weight: 600; color: {color};" if color else "font-weight: 600;"
+        self.reste_a_payer_label.setStyleSheet(emphasis_style)
+        self.statut_paiement_label.setStyleSheet(emphasis_style)
 
         self.payments_table.setRowCount(len(self._payments))
         for row, paiement in enumerate(self._payments):
