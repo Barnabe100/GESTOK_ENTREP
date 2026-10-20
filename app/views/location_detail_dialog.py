@@ -279,9 +279,22 @@ class LocationDetailDialog(QDialog):
             statut in (StatutLocation.BROUILLON, StatutLocation.CONFIRMEE)
             and self._permissions.has_permission("LOCATION_CANCEL")
         )
-        self.caution_button.setEnabled(self._permissions.has_permission("LOCATION_CAUTION_MANAGE"))
+        # Lot 17 : désactivés dès que le solde/la caution restante atteint
+        # zéro — « reste_a_payer » est la propriété déjà exposée par
+        # LocationSummary (jamais recalculée ici) ; la caution restante
+        # n'a pas d'équivalent exposé, donc calculée directement à partir
+        # des deux champs bruts déjà disponibles sur ``location``, sans
+        # toucher à LocationService (le service revérifie de toute façon
+        # ces deux limites à chaque appel, voir record_payment/
+        # record_caution_return — ces conditions ne sont qu'un confort
+        # d'affichage anticipant un refus déjà certain).
+        caution_restante = self._location.caution_montant - self._location.caution_rendue
+        self.caution_button.setEnabled(
+            caution_restante > 0 and self._permissions.has_permission("LOCATION_CAUTION_MANAGE")
+        )
         self.payment_button.setEnabled(
             statut in (StatutLocation.EN_COURS, StatutLocation.RETOURNEE)
+            and self._location.reste_a_payer > 0
             and self._permissions.has_permission("LOCATION_PAYMENT_CREATE")
         )
 
