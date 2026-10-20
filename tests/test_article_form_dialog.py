@@ -204,3 +204,107 @@ def test_switching_mode_updates_tarif_field_state_immediately(qtbot) -> None:
 
     assert dialog.tarif_location_jour_edit.isEnabled() is False
     assert dialog.tarif_location_jour_edit.text() == "500"  # jamais effacée par un aller-retour
+
+
+# -- Lot 18 : désactivation symétrique des champs de prix --------------------
+#
+# Le mode Vente désactivant déjà le tarif de location (couvert ci-dessus par
+# test_tarif_field_disabled_by_default_in_vente_mode /
+# test_tarif_field_enabled_when_location_selected, non dupliqués ici), seul
+# le comportement symétrique du prix de vente est testé dans cette section,
+# ainsi que les scénarios combinant les deux champs.
+
+def test_prix_vente_field_enabled_by_default_in_vente_mode(qtbot) -> None:
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, is_edit=False)
+    qtbot.addWidget(dialog)
+
+    assert dialog.values()["mode_gestion"] == ModeGestionArticle.VENTE
+    assert dialog.prix_vente_edit.isEnabled() is True
+
+
+def test_prix_vente_field_disabled_in_location_mode_at_opening(qtbot) -> None:
+    """L'état initial des deux champs doit être correct dès l'ouverture, en
+    modification d'un article déjà en mode Location — pas seulement après
+    un changement ultérieur du sélecteur."""
+    initial = {
+        "reference": "ART-LOC", "designation": "Article", "category_id": 1,
+        "mode_gestion": ModeGestionArticle.LOCATION, "tarif_location_jour": "500",
+    }
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, initial, is_edit=True)
+    qtbot.addWidget(dialog)
+
+    assert dialog.prix_vente_edit.isEnabled() is False
+    assert dialog.tarif_location_jour_edit.isEnabled() is True
+
+
+def test_existing_location_article_keeps_and_shows_prix_vente_disabled(qtbot) -> None:
+    """Un article existant en mode Location, avec un prix de vente déjà
+    enregistré (ex. hérité d'un ancien mode Vente), conserve et affiche
+    cette valeur dans un champ désactivé dès l'ouverture du formulaire."""
+    initial = {
+        "reference": "ART-LOC", "designation": "Article", "category_id": 1,
+        "mode_gestion": ModeGestionArticle.LOCATION, "tarif_location_jour": "500",
+        "prix_vente": "1200",
+    }
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, initial, is_edit=True)
+    qtbot.addWidget(dialog)
+
+    assert dialog.prix_vente_edit.isEnabled() is False
+    assert dialog.prix_vente_edit.text() == "1200"
+    assert dialog.values()["prix_vente"] == "1200"
+
+
+def test_switching_mode_updates_both_price_fields_immediately(qtbot) -> None:
+    """Le passage d'un mode à l'autre actualise immédiatement et
+    symétriquement l'état des deux champs de prix."""
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, is_edit=False)
+    qtbot.addWidget(dialog)
+    assert dialog.prix_vente_edit.isEnabled() is True
+    assert dialog.tarif_location_jour_edit.isEnabled() is False
+
+    index_location = dialog.mode_gestion_combo.findData(ModeGestionArticle.LOCATION)
+    dialog.mode_gestion_combo.setCurrentIndex(index_location)
+    assert dialog.prix_vente_edit.isEnabled() is False
+    assert dialog.tarif_location_jour_edit.isEnabled() is True
+
+    index_vente = dialog.mode_gestion_combo.findData(ModeGestionArticle.VENTE)
+    dialog.mode_gestion_combo.setCurrentIndex(index_vente)
+    assert dialog.prix_vente_edit.isEnabled() is True
+    assert dialog.tarif_location_jour_edit.isEnabled() is False
+
+
+def test_switching_mode_multiple_times_preserves_both_field_values(qtbot) -> None:
+    """Plusieurs bascules successives ne doivent jamais effacer les
+    valeurs des deux champs, désactivés ou non."""
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, is_edit=False)
+    qtbot.addWidget(dialog)
+
+    dialog.prix_vente_edit.setText("1500")
+    index_location = dialog.mode_gestion_combo.findData(ModeGestionArticle.LOCATION)
+    index_vente = dialog.mode_gestion_combo.findData(ModeGestionArticle.VENTE)
+
+    dialog.mode_gestion_combo.setCurrentIndex(index_location)
+    dialog.tarif_location_jour_edit.setText("500")
+    dialog.mode_gestion_combo.setCurrentIndex(index_vente)
+    dialog.mode_gestion_combo.setCurrentIndex(index_location)
+    dialog.mode_gestion_combo.setCurrentIndex(index_vente)
+    dialog.mode_gestion_combo.setCurrentIndex(index_location)
+
+    assert dialog.prix_vente_edit.text() == "1500"
+    assert dialog.tarif_location_jour_edit.text() == "500"
+    assert dialog.prix_vente_edit.isEnabled() is False
+    assert dialog.tarif_location_jour_edit.isEnabled() is True
+
+
+def test_values_returns_prix_vente_even_when_field_disabled(qtbot) -> None:
+    """``values()`` continue de renvoyer la valeur réelle d'un champ
+    désactivé — aucune perte de donnée liée au seul état d'activation."""
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, is_edit=False)
+    qtbot.addWidget(dialog)
+    dialog.prix_vente_edit.setText("999")
+
+    index_location = dialog.mode_gestion_combo.findData(ModeGestionArticle.LOCATION)
+    dialog.mode_gestion_combo.setCurrentIndex(index_location)
+
+    assert dialog.prix_vente_edit.isEnabled() is False
+    assert dialog.values()["prix_vente"] == "999"

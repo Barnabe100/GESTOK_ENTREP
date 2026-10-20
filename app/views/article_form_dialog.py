@@ -128,8 +128,8 @@ class ArticleFormDialog(QDialog):
             _as_text(initial.get("tarif_location_jour")) if initial.get("tarif_location_jour") is not None else ""
         )
         form.addRow("Tarif de location (par jour)", self.tarif_location_jour_edit)
-        self.mode_gestion_combo.currentIndexChanged.connect(self._update_tarif_field_state)
-        self._update_tarif_field_state()
+        self.mode_gestion_combo.currentIndexChanged.connect(self._update_price_fields_state)
+        self._update_price_fields_state()
 
         self.stock_min_edit = QLineEdit(self)
         self.stock_min_edit.setText(
@@ -204,16 +204,22 @@ class ArticleFormDialog(QDialog):
         if index >= 0:
             combo.setCurrentIndex(index)
 
-    def _update_tarif_field_state(self) -> None:
-        """Actualise immédiatement l'état du champ tarif au changement de
-        mode (§5 du lot) : désactivé mais jamais vidé en mode Vente — la
-        saisie déjà faite n'est jamais perdue par un simple aller-retour
-        entre les deux modes avant enregistrement."""
+    def _update_price_fields_state(self) -> None:
+        """Actualise immédiatement l'état des deux champs de prix au
+        changement de mode (Lot 18, symétrique du comportement déjà en
+        place pour le tarif de location depuis le lot « Gestion du mode
+        Vente / Location ») : désactivé mais jamais vidé dans le mode où il
+        est sans objet — la saisie déjà faite (ou déjà enregistrée) n'est
+        jamais perdue par un simple aller-retour entre les deux modes avant
+        enregistrement. ``setEnabled`` seul n'affecte jamais le texte d'un
+        ``QLineEdit`` : ``values()`` continue de renvoyer la valeur réelle
+        même pour un champ désactivé."""
         is_location = self.mode_gestion_combo.currentData() == ModeGestionArticle.LOCATION
         self.tarif_location_jour_edit.setEnabled(is_location)
         self.tarif_location_jour_edit.setPlaceholderText(
             "Tarif strictement positif requis en mode Location" if is_location else "Sans objet en mode Vente"
         )
+        self.prix_vente_edit.setEnabled(not is_location)
 
     def values(self) -> dict:
         return {
