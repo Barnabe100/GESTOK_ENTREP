@@ -68,7 +68,7 @@ from app.services.articles.article_service import ArticleService
 from app.services.auth.permission_service import PermissionService
 from app.services.clients.client_service import ClientService
 from app.services.documents.receipt_service import ReceiptService
-from app.services.sales.sale_service import SaleService, VenteLigneInput
+from app.services.sales.sale_service import SaleService, VenteLigneInput, VenteSummary
 from app.services.settings.company_settings_service import get_effective_currency
 from app.utils.exceptions import AppError, ValidationError
 from app.utils.money import format_money
@@ -76,6 +76,7 @@ from app.utils.quantity import format_quantity
 from app.views.cancellation_reason_dialog import CancellationReasonDialog
 from app.views.client_form_dialog import ClientFormDialog
 from app.views.common import confirm_action, date_to_qdate, parse_decimal, required_label
+from app.views.payment_form_dialog import PaymentFormDialog
 from app.views.sale_detail_dialog import SaleDetailDialog
 
 _COLUMNS = ["Numéro", "Date", "Client", "Créée par", "Total", "Statut"]
@@ -132,6 +133,14 @@ class SalesPage(QWidget):
         # face à une modification réelle, jamais à la simple réouverture
         # d'un brouillon inchangé.
         self._caisse_initial_snapshot: Optional[tuple] = None
+        # Vente validée depuis cette session de caisse (Lot 20) : ``None``
+        # tant qu'aucune validation n'a réussi — réinitialisé à chaque
+        # ouverture/fermeture de la caisse (``_open_caisse``/``_close_caisse``).
+        # Toujours la dernière valeur relue depuis ``SaleService``
+        # (``validate_sale``/``record_payment``), jamais recalculée ici —
+        # c'est ce qui permet le paiement direct (bouton « Payer ») sans
+        # rouvrir le détail de la vente.
+        self._caisse_validated_sale: Optional[VenteSummary] = None
 
         page_layout = QVBoxLayout(self)
         page_layout.setContentsMargins(0, 0, 0, 0)
@@ -404,12 +413,17 @@ class SalesPage(QWidget):
 
         ``action`` ('draft' ou 'validate') : si 'validate',
         ``SaleService.validate_sale`` est appelé dans la foulée, sans
-        paiement initial (la caisse ne collecte aucun paiement — la vente
-        validée reste à crédit, solde non payé ; le paiement s'enregistre
-        ensuite via le détail de la vente, sans changement de ce lot). Si
-        la création/modification réussit mais que la validation échoue
-        (stock insuffisant, article inactif...), la vente reste en
-        brouillon, retrouvable dans la liste — jamais recréée en double."""
+        paiement initial (Option A du Lot 20 — la vente validée reste à
+        crédit, solde non payé ; le paiement s'enregistre ensuite via un
+        appel distinct à ``SaleService.record_payment``, soit directement
+        depuis la caisse si elle reste ouverte sur la vente qui vient
+        d'être validée — voir ``self._caisse_validated_sale`` et
+        ``_update_caisse_payment_controls`` —, soit via le détail de la
+        vente, les deux partageant le même service sans aucune logique
+        dupliquée). Si la création/modification réussit mais que la
+        validation échoue (stock insuffisant, article inactif...), la
+        vente reste en brouillon, retrouvable dans la liste — jamais
+        recréée en double."""
         try:
             sale_date = values["date"]
             client_id = values.get("client_id")
@@ -432,6 +446,13 @@ class SalesPage(QWidget):
             QMessageBox.warning(self, "Opération refusée", str(exc))
             return False
 
+        # Conserve l'identifiant réel de la vente persistée (Lot 20) — une
+        # nouvelle vente n'avait jusqu'ici aucune trace dans
+        # ``self._caisse_sale_id`` tant qu'elle n'était pas rouverte depuis
+        # la liste ; c'est ce qui permet au paiement direct de cibler la
+        # bonne vente après une création+validation en une seule étape.
+        self._caisse_sale_id = document.id
+
         if action != "validate":
             if created_now:
                 QMessageBox.information(
@@ -452,6 +473,13 @@ class SalesPage(QWidget):
                 f"validée : {exc}\n\nVous pouvez la retrouver dans la liste pour la corriger ou la valider.",
             )
             return True
+
+        # Lot 20 : la vente validée reste en mémoire pour le paiement direct
+        # depuis la caisse — jamais recalculée, toujours la valeur renvoyée
+        # par le service. Laissé à ``None`` dans la branche ci-dessus
+        # (validation refusée) : le brouillon reste alors le seul état
+        # connu, exactement comme avant ce lot.
+        self._caisse_validated_sale = validated
 
         QMessageBox.information(
             self, "Vente validée", f"La vente « {validated.numero} » a été créée et validée."
@@ -689,14 +717,23 @@ class SalesPage(QWidget):
         self.caisse_validate_button.setStyleSheet("font-weight: 600;")
         layout.addWidget(self.caisse_validate_button)
 
+        # Paiement direct (Lot 20) : désactivé tant qu'aucune vente n'a été
+        # validée dans cette session de caisse — voir
+        # ``_update_caisse_payment_controls``, seule méthode qui pilote son
+        # état, jamais une activation locale ad hoc.
+        self.caisse_pay_button = QPushButton("Payer", panel)
+        layout.addWidget(self.caisse_pay_button)
+
         self.caisse_back_button = QPushButton("Retour à la liste", panel)
         layout.addWidget(self.caisse_back_button)
 
         self.caisse_save_draft_button.clicked.connect(self._on_caisse_save_draft_clicked)
         self.caisse_validate_button.clicked.connect(self._on_caisse_validate_clicked)
+        self.caisse_pay_button.clicked.connect(self._on_caisse_pay_clicked)
         self.caisse_back_button.clicked.connect(self._on_caisse_back_clicked)
 
         self._update_caisse_totals()
+        self._update_caisse_payment_controls()
 
         return panel
 
@@ -719,6 +756,11 @@ class SalesPage(QWidget):
         self._caisse_lines = [dict(line) for line in initial.get("lignes", [])]
         self._caisse_articles_cache = self._load_articles_for_form()
         self._caisse_clients = self._load_clients_for_form()
+        # Nouvelle session de caisse : aucune vente validée encore, le
+        # paiement direct (Lot 20) doit rester désactivé jusqu'à une
+        # validation réussie dans *cette* session (voir
+        # ``_update_caisse_payment_controls``, appelée plus bas).
+        self._caisse_validated_sale = None
 
         self.caisse_date_edit.setDate(date_to_qdate(initial.get("date") or date.today()))
         self._refresh_caisse_client_combo(selected_id=initial.get("client_id"))
@@ -733,8 +775,12 @@ class SalesPage(QWidget):
         self._refresh_caisse_search_results()
         self.caisse_scan_edit.clear()
         self.caisse_error_label.setText("")
-        self.caisse_save_draft_button.setEnabled(True)
-        self.caisse_validate_button.setEnabled(True)
+        # Remplace les deux ``setEnabled(True)`` d'avant ce lot : en plus de
+        # réactiver « Enregistrer en brouillon »/« Valider la vente », cette
+        # méthode désactive aussi « Payer » (aucune vente validée encore
+        # dans cette session) — un seul point de vérité pour l'état des
+        # quatre boutons d'action de la caisse.
+        self._update_caisse_payment_controls()
 
         self._refresh_caisse_lines_table()
         # Capturé en tout dernier, une fois tous les widgets de la caisse
@@ -747,6 +793,7 @@ class SalesPage(QWidget):
         self._caisse_sale_id = None
         self._caisse_lines = []
         self._caisse_initial_snapshot = None
+        self._caisse_validated_sale = None
         self._view_stack.setCurrentIndex(0)
         self.refresh()
 
@@ -990,8 +1037,21 @@ class SalesPage(QWidget):
             self._close_caisse()
 
     def _on_caisse_validate_clicked(self) -> None:
-        if self._submit_caisse("validate"):
-            self._close_caisse()
+        if not self._submit_caisse("validate"):
+            return
+        if self._caisse_validated_sale is not None:
+            # Validation réussie (Lot 20) : on reste dans la caisse pour
+            # permettre le paiement direct — ``_submit_caisse`` a réactivé
+            # les quatre boutons par défaut dans son ``finally``, donc cet
+            # appel est nécessaire pour les remettre dans leur état réel
+            # (Enregistrer/Valider désactivés, Payer activé si un reste est
+            # dû et la permission accordée).
+            self._update_caisse_payment_controls()
+            return
+        # Validation refusée mais brouillon conservé (voir ``_submit_form``) :
+        # comportement inchangé depuis les lots précédents, la caisse se
+        # referme malgré tout.
+        self._close_caisse()
 
     def _submit_caisse(self, action: str) -> bool:
         """Isolé de ``_on_caisse_save_draft_clicked``/``_on_caisse_validate_clicked``
@@ -1013,6 +1073,90 @@ class SalesPage(QWidget):
             return
         self._close_caisse()
 
+    # -- paiement direct depuis la caisse (Lot 20) ---------------------------
+
+    def _update_caisse_payment_controls(self) -> None:
+        """Point de vérité unique pour l'état des boutons « Enregistrer en
+        brouillon », « Valider la vente » et « Payer », ainsi que pour
+        l'affichage payé/reste du panneau droit, une fois une vente validée
+        dans cette session de caisse (``self._caisse_validated_sale``).
+
+        Tant qu'aucune vente n'est validée : Enregistrer/Valider restent
+        actifs (saisie normale d'un brouillon), Payer reste désactivé.
+        Une fois validée : Enregistrer/Valider sont désactivés (ni
+        modification ni seconde validation ne sont proposées — la vente
+        n'est plus en BROUILLON, voir ``SaleService``), et Payer n'est
+        activé que si la vente est bien ``VALIDEE``, qu'il reste un solde
+        strictement positif, et que ``can_manage_sale`` l'autorise — mêmes
+        conditions exactes que ``SaleDetailDialog._refresh_payment_section
+        .can_pay``, jamais une règle réécrite ici."""
+        sale = self._caisse_validated_sale
+        already_validated = sale is not None
+        self.caisse_save_draft_button.setEnabled(not already_validated)
+        self.caisse_validate_button.setEnabled(not already_validated)
+
+        can_pay = (
+            already_validated
+            and sale.statut == StatutOperation.VALIDEE
+            and sale.reste_a_payer > 0
+            and self._sale_service.can_manage_sale(sale.id, "SALE_PAYMENT_CREATE")
+        )
+        self.caisse_pay_button.setEnabled(can_pay)
+
+        if already_validated:
+            self.caisse_paye_label.setText(format_money(sale.montant_paye, self._currency_code))
+            self.caisse_reste_label.setText(format_money(sale.reste_a_payer, self._currency_code))
+
+    def _on_caisse_pay_clicked(self) -> None:
+        if self._caisse_validated_sale is None:
+            return
+        sale = self._caisse_validated_sale
+        dialog = PaymentFormDialog(sale.total, sale.montant_paye, sale.reste_a_payer, self._currency_code, parent=self)
+        # Même principe que ``SaleDetailDialog._on_record_payment_clicked`` :
+        # un échec rouvre le même dialogue (saisie conservée), jamais un
+        # nouveau dialogue vide ; une annulation ou un succès referme la
+        # boucle.
+        while dialog.exec() == QDialog.DialogCode.Accepted:
+            if self._submit_caisse_payment(dialog.values()):
+                return
+
+    def _submit_caisse_payment(self, values: dict) -> bool:
+        """Isolé de ``_on_caisse_pay_clicked`` pour rester testable sans
+        dialogue modal — même orchestration que
+        ``SaleDetailDialog._submit_payment`` (aucune validation de montant,
+        de solde ou de permission dupliquée ici : tout reste dans
+        ``SaleService.record_payment``).
+
+        Désactive « Payer » avant l'appel pour empêcher qu'un double-clic
+        ou une répétition d'action n'enregistre deux paiements, puis
+        recalcule dans un bloc ``finally`` son état réel via
+        ``_update_caisse_payment_controls`` — jamais une réactivation
+        aveugle : en cas d'échec le solde est inchangé et le bouton est
+        donc correctement réactivé ; en cas de succès, il est désactivé si
+        le paiement vient de solder la vente."""
+        sale = self._caisse_validated_sale
+        self.caisse_pay_button.setEnabled(False)
+        try:
+            montant = parse_decimal(values["montant"], "montant du paiement")
+            updated = self._sale_service.record_payment(
+                sale.id, montant,
+                mode_paiement=values.get("mode_paiement"),
+                reference=values.get("reference"),
+                commentaire=values.get("commentaire"),
+            )
+            # Toujours la valeur renvoyée par le service, jamais un calcul
+            # local — affectée avant le ``finally`` pour que
+            # ``_update_caisse_payment_controls`` reflète immédiatement le
+            # nouveau solde.
+            self._caisse_validated_sale = updated
+        except AppError as exc:
+            QMessageBox.warning(self, "Paiement refusé", str(exc))
+            return False
+        finally:
+            self._update_caisse_payment_controls()
+        QMessageBox.information(self, "Paiement enregistré", "Le paiement a été enregistré avec succès.")
+        return True
+
     def _caisse_has_unsaved_changes(self) -> bool:
         """Compare l'état courant à l'instantané capturé à l'ouverture de la
         caisse (voir ``_open_caisse``/``_caisse_snapshot``) — jamais un
@@ -1029,7 +1173,26 @@ class SalesPage(QWidget):
         ``confirm_can_leave`` (appelé par ``MainWindow`` avant tout
         changement de module) : ``True`` si la caisse peut être quittée sans
         confirmation supplémentaire (rien à perdre), ou si l'utilisateur a
-        explicitement confirmé l'abandon de la saisie en cours."""
+        explicitement confirmé l'abandon de la saisie en cours.
+
+        Une vente déjà validée dans cette session (Lot 20) n'est, par
+        construction, jamais « perdue » : elle est déjà enregistrée en
+        base. Le seul risque réel est de quitter sans avoir encaissé un
+        solde encore dû — d'où une confirmation dédiée, qui ne prétend
+        jamais que la vente elle-même serait perdue, prioritaire sur la
+        vérification de brouillon non enregistré (devenue sans objet : la
+        vente n'est plus modifiable une fois validée, voir
+        ``_update_caisse_payment_controls``)."""
+        sale = self._caisse_validated_sale
+        if sale is not None:
+            if sale.reste_a_payer <= 0:
+                return True
+            return confirm_action(
+                self, "Vente validée, solde impayé",
+                f"La vente « {sale.numero} » a déjà été validée et enregistrée, mais un solde de "
+                f"{format_money(sale.reste_a_payer, self._currency_code)} reste dû. "
+                "Voulez-vous vraiment quitter la caisse sans l'encaisser ?",
+            )
         if not self._caisse_has_unsaved_changes():
             return True
         return confirm_action(

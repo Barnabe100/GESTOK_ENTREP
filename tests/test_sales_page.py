@@ -5,8 +5,9 @@ import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog, QMessageBox
 
-from app.models.enums import ModeGestionArticle, StatutOperation
+from app.models.enums import ModeGestionArticle, StatutOperation, StatutPaiement
 from app.services.sales.sale_service import VenteLigneInput
+from app.utils.money import format_money
 from app.views.pages.sales_page import SalesPage
 
 
@@ -1056,7 +1057,12 @@ def test_caisse_save_draft_creates_sale_and_returns_to_list(qtbot, login_as) -> 
 
 
 def test_caisse_validate_creates_and_validates_sale_without_initial_payment(qtbot, login_as) -> None:
-    """§3 du lot : aucune création de paiement initial à la validation."""
+    """§3 du lot : aucune création de paiement initial à la validation.
+
+    Lot 20 : une validation réussie ne referme plus automatiquement la
+    caisse (comportement intentionnellement changé par ce lot, pour
+    permettre le paiement direct) — la caisse reste ouverte sur la vente
+    qui vient d'être validée, avec « Payer » désormais activé."""
     stack, _ = login_as("Administrateur")
     article = _make_article(stack)
     page = _build_page(stack)
@@ -1066,12 +1072,17 @@ def test_caisse_validate_creates_and_validates_sale_without_initial_payment(qtbo
 
     page._on_caisse_validate_clicked()
 
-    assert page._view_stack.currentIndex() == 0
+    assert page._view_stack.currentIndex() == 1
     validated = stack.sales.list_sales()[0]
     assert validated.statut == StatutOperation.VALIDEE
     assert validated.montant_paye == Decimal("0")
     assert validated.reste_a_payer == validated.total
     assert stack.articles.get_article(article.id).stock_actuel == Decimal("48")
+    assert page._caisse_validated_sale is not None
+    assert page._caisse_validated_sale.id == validated.id
+    assert page.caisse_save_draft_button.isEnabled() is False
+    assert page.caisse_validate_button.isEnabled() is False
+    assert page.caisse_pay_button.isEnabled() is True
 
 
 def test_caisse_validate_rejects_empty_sale_and_stays_open(qtbot, login_as) -> None:
@@ -1462,3 +1473,313 @@ def test_confirm_can_leave_false_for_modified_reopened_draft_without_confirmatio
     )
 
     assert page.confirm_can_leave() is False
+
+
+# -- Lot 20 : paiement direct depuis la caisse -------------------------------
+
+def _validate_caisse_sale(page, article, quantite=Decimal("2"), prix_unitaire=Decimal("150")) -> None:
+    """Ouvre la caisse, ajoute une ligne et valide — état de départ commun
+    à la plupart des tests de paiement direct ci-dessous (total = 300 pour
+    les valeurs par défaut)."""
+    page._on_add_clicked()
+    page._add_caisse_line(article.id, "ART-1 — x", quantite, prix_unitaire)
+    page._on_caisse_validate_clicked()
+
+
+def test_caisse_pay_button_disabled_before_validation(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+
+    assert page.caisse_pay_button.isEnabled() is False
+
+    page._add_caisse_line(article.id, "ART-1 — x", Decimal("2"), Decimal("150"))
+
+    assert page.caisse_pay_button.isEnabled() is False
+
+
+def test_caisse_pay_full_amount_settles_sale_and_disables_button(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    _validate_caisse_sale(page, article)
+    sale = page._caisse_validated_sale
+    assert page.caisse_pay_button.isEnabled() is True
+
+    result = page._submit_caisse_payment(
+        {"montant": str(sale.reste_a_payer), "mode_paiement": "Espèces", "reference": None, "commentaire": None}
+    )
+
+    assert result is True
+    assert page._caisse_validated_sale.statut_paiement == StatutPaiement.PAYEE
+    assert page._caisse_validated_sale.reste_a_payer == Decimal("0")
+    assert page.caisse_pay_button.isEnabled() is False
+    assert page.caisse_paye_label.text() == format_money(Decimal("300"), page._currency_code)
+    assert page.caisse_reste_label.text() == format_money(Decimal("0"), page._currency_code)
+
+
+def test_caisse_pay_partial_amount_updates_balance_and_labels(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    _validate_caisse_sale(page, article)
+
+    result = page._submit_caisse_payment(
+        {"montant": "100", "mode_paiement": "Espèces", "reference": None, "commentaire": None}
+    )
+
+    assert result is True
+    assert page._caisse_validated_sale.montant_paye == Decimal("100")
+    assert page._caisse_validated_sale.reste_a_payer == Decimal("200")
+    assert page._caisse_validated_sale.statut_paiement == StatutPaiement.PARTIELLEMENT_PAYEE
+    assert page.caisse_pay_button.isEnabled() is True
+    assert page.caisse_paye_label.text() == format_money(Decimal("100"), page._currency_code)
+    assert page.caisse_reste_label.text() == format_money(Decimal("200"), page._currency_code)
+
+
+def test_caisse_pay_remaining_balance_after_partial_payment_settles_sale(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    _validate_caisse_sale(page, article)
+    sale_id = page._caisse_validated_sale.id
+
+    assert page._submit_caisse_payment(
+        {"montant": "100", "mode_paiement": None, "reference": None, "commentaire": None}
+    ) is True
+    assert page._submit_caisse_payment(
+        {"montant": "200", "mode_paiement": None, "reference": None, "commentaire": None}
+    ) is True
+
+    assert page._caisse_validated_sale.reste_a_payer == Decimal("0")
+    assert page._caisse_validated_sale.statut_paiement == StatutPaiement.PAYEE
+    assert page.caisse_pay_button.isEnabled() is False
+    assert len(stack.sales.list_payments(sale_id)) == 2
+
+
+def test_caisse_pay_rejects_amount_exceeding_balance(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    _validate_caisse_sale(page, article)
+
+    result = page._submit_caisse_payment(
+        {"montant": "301", "mode_paiement": None, "reference": None, "commentaire": None}
+    )
+
+    assert result is False
+    assert page._caisse_validated_sale.montant_paye == Decimal("0")
+    assert page.caisse_pay_button.isEnabled() is True
+
+
+def test_caisse_pay_rejects_invalid_amount_text(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    _validate_caisse_sale(page, article)
+
+    result = page._submit_caisse_payment(
+        {"montant": "abc", "mode_paiement": None, "reference": None, "commentaire": None}
+    )
+
+    assert result is False
+    assert page._caisse_validated_sale.montant_paye == Decimal("0")
+    assert page.caisse_pay_button.isEnabled() is True
+
+
+def test_caisse_pay_failure_does_not_show_success_message(qtbot, login_as, monkeypatch) -> None:
+    """§C : en cas d'erreur, aucun message de succès ne doit être affiché —
+    recouvre ici le comportement par défaut de ``QMessageBox.information``/
+    ``warning`` fourni par la fixture ``_no_blocking_dialogs`` pour vérifier
+    précisément quels appels ont réellement eu lieu."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    _validate_caisse_sale(page, article)
+
+    info_calls: list = []
+    warning_calls: list = []
+    monkeypatch.setattr("app.views.pages.sales_page.QMessageBox.information", lambda *a, **k: info_calls.append(a))
+    monkeypatch.setattr("app.views.pages.sales_page.QMessageBox.warning", lambda *a, **k: warning_calls.append(a))
+
+    result = page._submit_caisse_payment(
+        {"montant": "999999", "mode_paiement": None, "reference": None, "commentaire": None}
+    )
+
+    assert result is False
+    assert info_calls == []
+    assert len(warning_calls) == 1
+
+
+def test_caisse_pay_button_disabled_during_call_and_reenabled_after_partial_payment(
+    qtbot, login_as, monkeypatch
+) -> None:
+    """§C : le bouton est désactivé pendant l'appel au service (protection
+    contre une double soumission), puis réactivé via
+    ``_update_caisse_payment_controls`` dans le bloc ``finally`` — ici après
+    un succès laissant un reste positif."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    _validate_caisse_sale(page, article)
+
+    observed: dict = {}
+    original_record_payment = stack.sales.record_payment
+
+    def _spy_record_payment(*args, **kwargs):
+        observed["enabled_during_call"] = page.caisse_pay_button.isEnabled()
+        return original_record_payment(*args, **kwargs)
+
+    monkeypatch.setattr(stack.sales, "record_payment", _spy_record_payment)
+
+    result = page._submit_caisse_payment(
+        {"montant": "100", "mode_paiement": None, "reference": None, "commentaire": None}
+    )
+
+    assert result is True
+    assert observed["enabled_during_call"] is False
+    assert page.caisse_pay_button.isEnabled() is True
+
+
+def test_caisse_pay_button_reenabled_after_failed_payment(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    _validate_caisse_sale(page, article)
+
+    result = page._submit_caisse_payment(
+        {"montant": "301", "mode_paiement": None, "reference": None, "commentaire": None}
+    )
+
+    assert result is False
+    assert page.caisse_pay_button.isEnabled() is True
+
+
+def test_caisse_pay_does_not_record_payment_twice_on_repeated_dialog_accept(qtbot, login_as, monkeypatch) -> None:
+    """Protection contre une double soumission (§C) : la boucle
+    ``_on_caisse_pay_clicked`` ne doit jamais rouvrir ni resoumettre le
+    dialogue après un paiement réussi, même si celui-ci serait accepté une
+    seconde fois (simulation d'un double-clic sur le bouton « Enregistrer »
+    du dialogue de paiement) — un seul ``Paiement`` doit être créé."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    _validate_caisse_sale(page, article)
+    sale_id = page._caisse_validated_sale.id
+
+    exec_calls = {"n": 0}
+
+    class _FakePaymentDialog:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def exec(self) -> QDialog.DialogCode:
+            exec_calls["n"] += 1
+            return QDialog.DialogCode.Accepted
+
+        def values(self) -> dict:
+            return {"montant": "300", "mode_paiement": None, "reference": None, "commentaire": None}
+
+    monkeypatch.setattr("app.views.pages.sales_page.PaymentFormDialog", _FakePaymentDialog)
+
+    page._on_caisse_pay_clicked()
+
+    assert exec_calls["n"] == 1
+    assert len(stack.sales.list_payments(sale_id)) == 1
+    assert stack.sales.get_sale(sale_id).montant_paye == Decimal("300")
+
+
+def test_caisse_pay_button_disabled_without_permission(qtbot, login_as) -> None:
+    admin_stack, _ = login_as("Administrateur")
+    article = _make_article(admin_stack)
+
+    role_id = next(r.id for r in admin_stack.roles.list_roles() if r.nom == "Vendeur")
+    codes = admin_stack.roles.get_role_permissions(role_id)
+    admin_stack.roles.update_role_permissions(role_id, [c for c in codes if c != "SALE_PAYMENT_CREATE"])
+
+    vendeur_stack, _ = login_as("Vendeur")
+    page = _build_page(vendeur_stack)
+    qtbot.addWidget(page)
+    _validate_caisse_sale(page, article)
+
+    assert page._caisse_validated_sale is not None
+    assert page.caisse_pay_button.isEnabled() is False
+
+
+def test_caisse_stays_open_after_successful_payment(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    _validate_caisse_sale(page, article)
+    assert page._view_stack.currentIndex() == 1
+
+    page._submit_caisse_payment({"montant": "100", "mode_paiement": None, "reference": None, "commentaire": None})
+
+    assert page._view_stack.currentIndex() == 1
+
+
+def test_caisse_back_button_confirms_before_leaving_unpaid_validated_sale(qtbot, login_as, monkeypatch) -> None:
+    """§D : la vente est déjà validée et enregistrée — le message ne doit
+    jamais prétendre qu'elle serait perdue, seulement qu'un solde reste
+    dû. Un refus garde la caisse ouverte."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    _validate_caisse_sale(page, article)
+
+    captured: dict = {}
+
+    def _fake_question(*args, **kwargs):
+        captured["title"] = args[1]
+        captured["text"] = args[2]
+        return QMessageBox.StandardButton.No
+
+    monkeypatch.setattr("app.views.common.QMessageBox.question", _fake_question)
+    page._on_caisse_back_clicked()
+
+    assert page._view_stack.currentIndex() == 1
+    assert "solde" in captured["text"].lower() or "dû" in captured["text"].lower()
+    assert "perdu" not in captured["text"].lower()
+    assert "non enregistrées" not in captured["text"].lower()
+
+    monkeypatch.setattr("app.views.common.QMessageBox.question", lambda *a, **k: QMessageBox.StandardButton.Yes)
+    page._on_caisse_back_clicked()
+
+    assert page._view_stack.currentIndex() == 0
+
+
+def test_caisse_back_button_no_warning_when_validated_sale_fully_paid(qtbot, login_as, monkeypatch) -> None:
+    """§D : une vente validée mais entièrement payée se quitte sans aucun
+    avertissement relatif à un solde impayé."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    _validate_caisse_sale(page, article)
+    sale = page._caisse_validated_sale
+    page._submit_caisse_payment(
+        {"montant": str(sale.reste_a_payer), "mode_paiement": None, "reference": None, "commentaire": None}
+    )
+
+    called = {"n": 0}
+    monkeypatch.setattr(
+        "app.views.common.QMessageBox.question", lambda *a, **k: called.__setitem__("n", called["n"] + 1)
+    )
+
+    page._on_caisse_back_clicked()
+
+    assert called["n"] == 0
+    assert page._view_stack.currentIndex() == 0
