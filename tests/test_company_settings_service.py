@@ -311,3 +311,82 @@ def test_rental_module_value_persists_across_reads(login_as, test_settings) -> N
 
     stack.parameters.set_rental_module_enabled(True)
     assert is_rental_module_enabled(test_settings) is True
+
+
+# -- pied de reçu (Lot 21 — reçu unifié) ------------------------------------------------
+
+
+def test_receipt_footer_default_when_unconfigured(login_as) -> None:
+    from app.services.settings.company_settings_service import DEFAULT_RECEIPT_FOOTER
+
+    stack, _ = login_as("Administrateur")
+
+    config = stack.parameters.get_config()
+
+    assert config.recu_pied_de_page == DEFAULT_RECEIPT_FOOTER
+
+
+def test_set_receipt_footer_persists_and_is_readable(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+
+    updated = stack.parameters.set_receipt_footer("À très vite !")
+
+    assert updated.recu_pied_de_page == "À très vite !"
+    assert stack.parameters.get_config().recu_pied_de_page == "À très vite !"
+
+
+def test_set_receipt_footer_empty_disables_footer_not_default(login_as) -> None:
+    """Une chaîne vide explicitement enregistrée doit rester vide à la
+    lecture — jamais retomber sur la phrase par défaut (voir §7 du lot :
+    « si la phrase est vide, aucun texte de fin n'est imprimé »)."""
+    stack, _ = login_as("Administrateur")
+    stack.parameters.set_receipt_footer("Une phrase quelconque")
+
+    updated = stack.parameters.set_receipt_footer("")
+
+    assert updated.recu_pied_de_page == ""
+    assert stack.parameters.get_config().recu_pied_de_page == ""
+
+
+def test_set_receipt_footer_strips_whitespace_only_to_empty(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+
+    updated = stack.parameters.set_receipt_footer("   ")
+
+    assert updated.recu_pied_de_page == ""
+
+
+@pytest.mark.parametrize("role_name", ["Gestionnaire de stock", "Vendeur", "Consultation"])
+def test_set_receipt_footer_denied_without_settings_update(login_as, role_name) -> None:
+    stack, _ = login_as(role_name)
+
+    with pytest.raises(PermissionDeniedError):
+        stack.parameters.set_receipt_footer("Une phrase")
+
+
+def test_set_receipt_footer_rejects_too_long_phrase(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+
+    with pytest.raises(ValidationError):
+        stack.parameters.set_receipt_footer("x" * 201)
+
+
+def test_set_receipt_footer_accepts_phrase_at_exact_max_length(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+
+    updated = stack.parameters.set_receipt_footer("x" * 200)
+
+    assert updated.recu_pied_de_page == "x" * 200
+
+
+def test_update_config_never_touches_receipt_footer(login_as) -> None:
+    """``update_config`` (profil/devise) ne doit jamais écraser le pied de
+    reçu — c'est ``set_receipt_footer`` qui en a la responsabilité exclusive,
+    pour ne jamais risquer de régression sur les nombreux appelants
+    existants de ``update_config``."""
+    stack, _ = login_as("Administrateur")
+    stack.parameters.set_receipt_footer("Phrase personnalisée")
+
+    stack.parameters.update_config(nom="Société", adresse=None, telephone=None, email=None, devise="EUR")
+
+    assert stack.parameters.get_config().recu_pied_de_page == "Phrase personnalisée"

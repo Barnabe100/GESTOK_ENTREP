@@ -588,3 +588,138 @@ def test_building_payment_receipt_does_not_mutate_sale_or_payments(login_as) -> 
     assert reloaded_sale.montant_paye == Decimal("50")
     assert len(reloaded_payments) == 1
     assert reloaded_payments[0].montant == Decimal("50")
+
+
+# -- Lot 21 : reçu unifié — historique des paiements -----------------------------------
+
+
+def test_sale_receipt_has_empty_payment_history_without_any_payment(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    sale = _create_and_validate_sale(stack, article)
+
+    receipt = stack.documents.build_sale_receipt(sale.id)
+
+    assert receipt.paiements == ()
+
+
+def test_sale_receipt_includes_single_partial_payment_in_history(login_as) -> None:
+    from app.services.sales.sale_service import VenteLigneInput
+
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    sale = stack.sales.create_sale(date(2026, 1, 15), [VenteLigneInput(article.id, Decimal("2"), Decimal("150"))])
+    validated = stack.sales.validate_sale(sale.id)
+    stack.sales.record_payment(validated.id, Decimal("100"), mode_paiement="Espèces", reference="REF-1")
+
+    receipt = stack.documents.build_sale_receipt(validated.id)
+
+    assert len(receipt.paiements) == 1
+    entry = receipt.paiements[0]
+    assert entry.montant == Decimal("100")
+    assert entry.mode_paiement == "Espèces"
+    assert entry.reference == "REF-1"
+    assert entry.commentaire is None
+
+
+def test_sale_receipt_includes_full_initial_payment_in_history(login_as) -> None:
+    from app.services.sales.sale_service import VenteLigneInput
+
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    sale = stack.sales.create_sale(date(2026, 1, 15), [VenteLigneInput(article.id, Decimal("2"), Decimal("150"))])
+    validated = stack.sales.validate_sale(sale.id, paiement_initial=Decimal("300"))
+
+    receipt = stack.documents.build_sale_receipt(validated.id)
+
+    assert len(receipt.paiements) == 1
+    assert receipt.paiements[0].montant == Decimal("300")
+    assert receipt.reste_a_payer == Decimal("0")
+
+
+def test_sale_receipt_includes_multiple_successive_payments_in_order(login_as) -> None:
+    from app.services.sales.sale_service import VenteLigneInput
+
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    sale = stack.sales.create_sale(date(2026, 1, 15), [VenteLigneInput(article.id, Decimal("2"), Decimal("150"))])
+    validated = stack.sales.validate_sale(sale.id)
+    stack.sales.record_payment(validated.id, Decimal("100"))
+    stack.sales.record_payment(validated.id, Decimal("200"))
+
+    receipt = stack.documents.build_sale_receipt(validated.id)
+
+    assert len(receipt.paiements) == 2
+    assert [p.montant for p in receipt.paiements] == [Decimal("100"), Decimal("200")]
+    # Jamais confondu : le total de la vente reste distinct de chaque paiement.
+    assert receipt.total == Decimal("300")
+    assert receipt.montant_paye == Decimal("300")
+
+
+def test_sale_receipt_payment_history_includes_commentaire_and_username(login_as) -> None:
+    from app.services.sales.sale_service import VenteLigneInput
+
+    stack, current_user = login_as("Administrateur")
+    article = _make_article(stack)
+    sale = stack.sales.create_sale(date(2026, 1, 15), [VenteLigneInput(article.id, Decimal("2"), Decimal("150"))])
+    validated = stack.sales.validate_sale(sale.id)
+    stack.sales.record_payment(validated.id, Decimal("100"), commentaire="Acompte à la commande")
+
+    receipt = stack.documents.build_sale_receipt(validated.id)
+
+    assert receipt.paiements[0].commentaire == "Acompte à la commande"
+    assert receipt.paiements[0].username == current_user.username
+
+
+def test_sale_receipt_payment_history_many_payments_does_not_truncate(login_as) -> None:
+    from app.services.sales.sale_service import VenteLigneInput
+
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("500"))
+    sale = stack.sales.create_sale(date(2026, 1, 15), [VenteLigneInput(article.id, Decimal("100"), Decimal("150"))])
+    validated = stack.sales.validate_sale(sale.id)
+    for _ in range(12):
+        stack.sales.record_payment(validated.id, Decimal("500"))
+
+    receipt = stack.documents.build_sale_receipt(validated.id)
+
+    assert len(receipt.paiements) == 12
+    assert sum((p.montant for p in receipt.paiements), Decimal("0")) == Decimal("6000")
+
+
+# -- Lot 21 : reçu unifié — phrase de pied de reçu --------------------------------------
+
+
+def test_sale_receipt_uses_default_footer_phrase_when_unconfigured(login_as) -> None:
+    from app.services.settings.company_settings_service import DEFAULT_RECEIPT_FOOTER
+
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    sale = _create_and_validate_sale(stack, article)
+
+    receipt = stack.documents.build_sale_receipt(sale.id)
+
+    assert receipt.pied_de_page == DEFAULT_RECEIPT_FOOTER
+
+
+def test_sale_receipt_uses_configured_footer_phrase(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    stack.parameters.set_receipt_footer("À très vite !")
+    article = _make_article(stack)
+    sale = _create_and_validate_sale(stack, article)
+
+    receipt = stack.documents.build_sale_receipt(sale.id)
+
+    assert receipt.pied_de_page == "À très vite !"
+
+
+def test_sale_receipt_footer_phrase_empty_when_explicitly_cleared(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    stack.parameters.set_receipt_footer("Une phrase")
+    stack.parameters.set_receipt_footer("")
+    article = _make_article(stack)
+    sale = _create_and_validate_sale(stack, article)
+
+    receipt = stack.documents.build_sale_receipt(sale.id)
+
+    assert receipt.pied_de_page == ""

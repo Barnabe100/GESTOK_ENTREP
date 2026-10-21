@@ -66,6 +66,22 @@ class SaleReceiptLine:
 
 
 @dataclass(frozen=True)
+class SaleReceiptPaymentLine:
+    """Une entrée de l'historique des paiements affiché sur le reçu unifié
+    (Lot 21) — mêmes champs que :class:`PaiementSummary`/``Paiement``,
+    jamais inventés : ``mode_paiement``/``reference``/``commentaire``
+    restent ``None`` s'ils n'ont pas été renseignés au moment du paiement,
+    jamais remplacés par une valeur par défaut fictive."""
+
+    date_heure: datetime
+    montant: Decimal
+    mode_paiement: Optional[str]
+    reference: Optional[str]
+    commentaire: Optional[str]
+    username: str
+
+
+@dataclass(frozen=True)
 class SaleReceiptData:
     """Données complètes d'un reçu de vente : vente + profil entreprise +
     devise effective, indépendant de tout format de rendu."""
@@ -95,6 +111,16 @@ class SaleReceiptData:
     # affichés sur tout reçu, comptant ou partiel, pour la même transparence.
     montant_paye: Decimal = Decimal("0")
     statut_paiement: StatutPaiement = StatutPaiement.PAYEE
+    # Lot 21 — reçu unifié : historique complet des paiements de la vente
+    # (jamais une simple liste d'ids), toujours en plus de ``montant_paye``/
+    # ``statut_paiement`` ci-dessus — le total de la vente, le total payé et
+    # chaque règlement individuel restent trois informations distinctes,
+    # jamais confondues sur le document (voir ``receipt_document.py``).
+    paiements: tuple[SaleReceiptPaymentLine, ...] = ()
+    # Phrase de pied de reçu configurable (Lot 21) — chaîne vide si
+    # explicitement désactivée dans les paramètres (voir
+    # ``CompanySettingsConfig.recu_pied_de_page``), jamais ``None``.
+    pied_de_page: str = ""
 
     @property
     def reste_a_payer(self) -> Decimal:
@@ -197,6 +223,22 @@ class ReceiptService:
             client_adresse = client.adresse if client is not None else None
             client_email = client.email if client is not None else None
 
+            # Historique des paiements (Lot 21) — même relation ORM déjà
+            # chargée dans cette session que ``SaleService.list_payments``,
+            # jamais réordonnée : l'ordre affiché sur le reçu est le même
+            # que celui déjà utilisé à l'écran (SaleDetailDialog.payments_table).
+            paiements = tuple(
+                SaleReceiptPaymentLine(
+                    date_heure=p.date_heure,
+                    montant=p.montant,
+                    mode_paiement=p.mode_paiement,
+                    reference=p.reference,
+                    commentaire=p.commentaire,
+                    username=p.user.username,
+                )
+                for p in vente.paiements
+            )
+
         profile = get_company_profile(self._settings)
         devise = get_effective_currency(self._settings)
 
@@ -219,6 +261,8 @@ class ReceiptService:
             client_email=client_email,
             montant_paye=montant_paye,
             statut_paiement=statut_paiement,
+            paiements=paiements,
+            pied_de_page=profile.recu_pied_de_page,
         )
 
     def build_payment_receipt(self, sale_id: int, paiement_id: int) -> PaymentReceiptData:

@@ -11,7 +11,12 @@ from app.services.documents.receipt_document import (
     build_payment_receipt_document,
     build_receipt_document,
 )
-from app.services.documents.receipt_service import PaymentReceiptData, SaleReceiptData, SaleReceiptLine
+from app.services.documents.receipt_service import (
+    PaymentReceiptData,
+    SaleReceiptData,
+    SaleReceiptLine,
+    SaleReceiptPaymentLine,
+)
 
 
 def _make_line(reference="ART-1", designation="Article", qty="1", prix="100", sous_total="100") -> SaleReceiptLine:
@@ -143,18 +148,24 @@ def test_missing_company_profile_shows_placeholder_not_stockmanager_identity(qap
     text = rendered.document.toPlainText()
 
     assert "non configurée" in text
-    # La mention StockManager reste uniquement le petit texte de pied de page,
-    # jamais affichée comme s'il s'agissait du nom de l'entreprise cliente.
-    assert text.count("StockManager") == 1
+    # Lot 21 : la mention StockManager est entièrement supprimée du reçu
+    # (jamais remplacée par une autre signature logicielle) — elle ne doit
+    # donc plus jamais apparaître, y compris comme s'il s'agissait du nom de
+    # l'entreprise cliente absente.
+    assert "StockManager" not in text
 
 
-def test_footer_mentions_stockmanager_distinctly_from_company_identity(qapp) -> None:
+def test_no_stockmanager_mention_on_sale_receipt(qapp) -> None:
+    """Lot 21 : « Document généré par StockManager » (et toute variante
+    équivalente) est supprimée du reçu de vente — jamais remplacée par une
+    autre publicité logicielle. L'identité de l'entreprise cliente, elle,
+    reste affichée normalement."""
     rendered = build_receipt_document(_make_data(), ReceiptFormat.A4)
     text = rendered.document.toPlainText()
 
-    assert "Document généré par StockManager" in text
+    assert "StockManager" not in text
+    assert "généré par" not in text.lower()
     assert "Boutique Étoile SARL" in text
-    assert text.index("Boutique Étoile SARL") < text.index("Document généré par StockManager")
 
 
 def test_missing_logo_does_not_crash(qapp) -> None:
@@ -447,3 +458,217 @@ def test_payment_receipt_omits_mode_and_reference_lines_when_absent(qapp) -> Non
     text = rendered.document.toPlainText()
     assert "Mode de paiement" not in text
     assert "Référence" not in text
+
+
+def test_payment_receipt_has_no_stockmanager_mention(qapp) -> None:
+    """Lot 21 : la mention logicielle est également supprimée du reçu de
+    paiement individuel, jamais remplacée."""
+    rendered = build_payment_receipt_document(_make_payment_receipt_data())
+
+    text = rendered.document.toPlainText()
+    assert "StockManager" not in text
+    assert "généré par" not in text.lower()
+
+
+# -- Lot 21 : logo redimensionné (40 x 18 mm maximum) ----------------------------------
+
+
+def test_logo_box_fit_wide_image_is_width_constrained(qapp) -> None:
+    from app.services.documents.receipt_document import _fit_logo_box
+
+    width_mm, height_mm = _fit_logo_box(400, 100)  # ratio 4:1, plus large que la boîte (40/18 ~= 2.22)
+
+    assert width_mm == 40.0
+    assert round(height_mm, 3) == round(40.0 / 4.0, 3)
+
+
+def test_logo_box_fit_tall_image_is_height_constrained(qapp) -> None:
+    from app.services.documents.receipt_document import _fit_logo_box
+
+    width_mm, height_mm = _fit_logo_box(100, 200)  # ratio 0.5, plus étroit que la boîte
+
+    assert height_mm == 18.0
+    assert round(width_mm, 3) == round(18.0 * 0.5, 3)
+
+
+def test_logo_box_fit_never_exceeds_max_dimensions(qapp) -> None:
+    from app.services.documents.receipt_document import _fit_logo_box
+
+    for width_px, height_px in [(400, 100), (100, 200), (300, 300), (1, 1), (4000, 1)]:
+        width_mm, height_mm = _fit_logo_box(width_px, height_px)
+        assert width_mm <= 40.0 + 1e-6
+        assert height_mm <= 18.0 + 1e-6
+
+
+def test_logo_box_fit_preserves_aspect_ratio(qapp) -> None:
+    from app.services.documents.receipt_document import _fit_logo_box
+
+    width_mm, height_mm = _fit_logo_box(200, 50)  # ratio 4:1
+    assert round(width_mm / height_mm, 3) == round(200 / 50, 3)
+
+
+def test_logo_sized_image_is_embedded_with_explicit_dimensions(qapp, tmp_path) -> None:
+    """Le logo valide doit porter des attributs width/height explicites
+    (jamais une taille fixe arbitraire) — c'est ce qui garantit le respect
+    de la boîte 40 x 18 mm quelle que soit la forme de l'image source."""
+    logo_path = tmp_path / "logo_wide.png"
+    _make_image_file(logo_path, width=400, height=100)
+    data = _make_data(entreprise_logo_path=logo_path)
+
+    rendered = build_receipt_document(data, ReceiptFormat.A4)
+    html = rendered.document.toHtml()
+
+    assert "<img" in html
+    assert 'width="' in html
+    assert 'height="' in html
+
+
+def test_ticket_logo_does_not_overflow_80mm_width(qapp, tmp_path) -> None:
+    """Le logo (40 mm maximum) doit toujours tenir dans la largeur de
+    contenu du ticket (80 - 2x4 mm de marge = 72 mm) — aucun débordement
+    horizontal possible par construction."""
+    from app.services.documents.receipt_document import _fit_logo_box
+
+    width_mm, _height_mm = _fit_logo_box(1000, 100)  # image très large
+    assert width_mm <= 40.0
+    assert width_mm < 72.0  # largeur de contenu du ticket 80 mm
+
+
+# -- Lot 21 : historique des paiements sur le reçu unifié ------------------------------
+
+
+def _make_payment_line(
+    montant="100", mode_paiement="Espèces", reference=None, commentaire=None, username="vendeur1",
+) -> SaleReceiptPaymentLine:
+    return SaleReceiptPaymentLine(
+        date_heure=datetime(2026, 1, 20, 10, 30),
+        montant=Decimal(montant),
+        mode_paiement=mode_paiement,
+        reference=reference,
+        commentaire=commentaire,
+        username=username,
+    )
+
+
+def test_a4_shows_no_payment_history_section_when_no_payments(qapp) -> None:
+    rendered = build_receipt_document(_make_data(paiements=()), ReceiptFormat.A4)
+    text = rendered.document.toPlainText()
+
+    assert "HISTORIQUE DES PAIEMENTS" not in text
+
+
+def test_a4_shows_each_payment_in_history(qapp) -> None:
+    data = _make_data(
+        paiements=(
+            _make_payment_line(montant="100", reference="REF-1"),
+            _make_payment_line(montant="50", mode_paiement="Mobile Money", reference="REF-2"),
+        )
+    )
+    rendered = build_receipt_document(data, ReceiptFormat.A4)
+    text = rendered.document.toPlainText()
+
+    assert "HISTORIQUE DES PAIEMENTS" in text
+    assert "REF-1" in text
+    assert "REF-2" in text
+    assert "Mobile Money" in text
+    assert "vendeur1" in text
+
+
+def test_a4_payment_history_shows_commentaire_when_set(qapp) -> None:
+    data = _make_data(paiements=(_make_payment_line(commentaire="Acompte à la commande"),))
+    rendered = build_receipt_document(data, ReceiptFormat.A4)
+    text = rendered.document.toPlainText()
+
+    assert "Acompte à la commande" in text
+
+
+def test_a4_payment_history_never_shows_dash_for_commentaire_when_absent(qapp) -> None:
+    """Aucune donnée inventée : un commentaire non renseigné ne doit laisser
+    aucune trace (ni ligne vide, ni "—"), contrairement à mode/référence qui
+    affichent un tiret explicite lorsqu'absents."""
+    data = _make_data(paiements=(_make_payment_line(mode_paiement=None, reference=None, commentaire=None),))
+    rendered = build_receipt_document(data, ReceiptFormat.A4)
+    html = rendered.document.toHtml()
+
+    assert html.count("font-style:italic") == 0
+
+
+def test_ticket_shows_each_payment_in_history(qapp) -> None:
+    data = _make_data(
+        paiements=(
+            _make_payment_line(montant="100", reference="REF-1"),
+            _make_payment_line(montant="50", mode_paiement="Mobile Money", reference="REF-2"),
+        )
+    )
+    rendered = build_receipt_document(data, ReceiptFormat.TICKET_80MM)
+    text = rendered.document.toPlainText()
+
+    assert "Historique des paiements" in text
+    assert "REF-1" in text
+    assert "REF-2" in text
+
+
+def test_ticket_payment_history_increases_height(qapp) -> None:
+    """La hauteur du ticket doit rester dynamique : davantage de paiements
+    produit un ticket plus haut, sans aucune troncature (réutilise le même
+    mécanisme de mesure que pour les lignes d'articles)."""
+    base = build_receipt_document(_make_data(paiements=()), ReceiptFormat.TICKET_80MM)
+    many_payments = tuple(_make_payment_line(montant="10", reference=f"REF-{i}") for i in range(15))
+    taller = build_receipt_document(_make_data(paiements=many_payments), ReceiptFormat.TICKET_80MM)
+
+    base_height = base.page_size.size(QPageSize.Unit.Millimeter).height()
+    taller_height = taller.page_size.size(QPageSize.Unit.Millimeter).height()
+    assert taller_height > base_height
+
+
+def test_payment_history_total_never_confused_with_sale_total(qapp) -> None:
+    """Un paiement partiel ne doit jamais apparaître comme si la vente était
+    intégralement réglée : le total de la vente et chaque paiement restent
+    des montants distincts et tous deux visibles."""
+    data = _make_data(
+        total=Decimal("300"), montant_paye=Decimal("100"),
+        paiements=(_make_payment_line(montant="100"),),
+    )
+    rendered = build_receipt_document(data, ReceiptFormat.A4)
+    text = rendered.document.toPlainText()
+
+    assert "Total : " in text
+    assert "200" in text  # reste à payer, jamais confondu avec le paiement de 100
+
+
+# -- Lot 21 : phrase de pied de reçu configurable --------------------------------------
+
+
+def test_a4_shows_configured_footer_phrase(qapp) -> None:
+    rendered = build_receipt_document(_make_data(pied_de_page="Merci pour votre confiance et à bientôt !"), ReceiptFormat.A4)
+    text = rendered.document.toPlainText()
+
+    assert "Merci pour votre confiance et à bientôt !" in text
+
+
+def test_ticket_shows_configured_footer_phrase(qapp) -> None:
+    rendered = build_receipt_document(
+        _make_data(pied_de_page="Merci pour votre confiance et à bientôt !"), ReceiptFormat.TICKET_80MM
+    )
+    text = rendered.document.toPlainText()
+
+    assert "Merci pour votre confiance et à bientôt !" in text
+
+
+def test_a4_shows_no_footer_phrase_when_empty(qapp) -> None:
+    rendered = build_receipt_document(_make_data(pied_de_page=""), ReceiptFormat.A4)
+    text_with_default = build_receipt_document(
+        _make_data(pied_de_page="Phrase personnalisée"), ReceiptFormat.A4
+    ).document.toPlainText()
+
+    assert "Phrase personnalisée" in text_with_default
+    # Avec une phrase vide, aucun texte de pied de reçu ne doit apparaître.
+    html = rendered.document.toHtml()
+    assert "margin-top:20px" not in html
+
+
+def test_ticket_shows_no_footer_phrase_when_empty(qapp) -> None:
+    rendered = build_receipt_document(_make_data(pied_de_page=""), ReceiptFormat.TICKET_80MM)
+    html = rendered.document.toHtml()
+
+    assert "margin-top:20px" not in html

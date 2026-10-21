@@ -49,11 +49,22 @@ _KEY_LOGO_PATH = "entreprise.logo_path"
 # déjà utilisé.
 _KEY_LOCATIONS_ACTIF = "locations.actif"
 
+# Lot 21 — reçu unifié : phrase de pied de reçu configurable. Stockée via le
+# même mécanisme clé-valeur que le reste de ce service (aucune migration).
+# Convention distincte de ``_clean_optional`` (jamais de conversion "" -> None) :
+# l'absence de clé (jamais configurée) applique ``DEFAULT_RECEIPT_FOOTER``,
+# alors qu'une chaîne vide explicitement enregistrée signifie « aucun pied de
+# reçu » — ces deux cas doivent rester distinguables en base (voir
+# ``_validate_receipt_footer``/``set_receipt_footer``).
+_KEY_RECU_PIED_DE_PAGE = "entreprise.recu_pied_de_page"
+DEFAULT_RECEIPT_FOOTER = "Merci pour votre confiance et à bientôt !"
+
 _MAX_LENGTHS = {
     "nom": 150,
     "adresse": 255,
     "telephone": 30,
     "email": 150,
+    "recu_pied_de_page": 200,
 }
 
 # Devises déjà prises en charge par le formatage monétaire (voir
@@ -96,6 +107,21 @@ def _validate_nom(nom: Optional[str]) -> str:
     return nom
 
 
+def _validate_receipt_footer(value: Optional[str]) -> str:
+    """Contrairement à ``_clean_optional`` : une chaîne vide (ou uniquement
+    des espaces) reste une chaîne vide, jamais convertie en ``None`` — c'est
+    précisément ce qui permet de distinguer « jamais configurée » (clé
+    absente, valeur par défaut appliquée à la lecture) de « explicitement
+    vidée » (aucun pied de reçu à imprimer, §7 du lot « reçu unifié »)."""
+    value = (value or "").strip()
+    max_length = _MAX_LENGTHS["recu_pied_de_page"]
+    if len(value) > max_length:
+        raise ValidationError(
+            f"Le pied de reçu ne doit pas dépasser {max_length} caractères."
+        )
+    return value
+
+
 def get_effective_currency(settings: Optional[Settings] = None) -> str:
     """Devise à utiliser pour l'affichage monétaire dans toute l'application :
     celle configurée dans Paramètres si elle a été enregistrée, sinon la
@@ -132,6 +158,10 @@ class CompanySettingsConfig:
     email: Optional[str]
     devise: str
     logo_path: Optional[Path]
+    # Lot 21 : jamais ``None`` — ``DEFAULT_RECEIPT_FOOTER`` si jamais
+    # configurée, sinon la valeur exacte enregistrée (y compris vide, voir
+    # ``_validate_receipt_footer``).
+    recu_pied_de_page: str
 
 
 def _read_profile_from_db(settings: Settings) -> CompanySettingsConfig:
@@ -143,10 +173,14 @@ def _read_profile_from_db(settings: Settings) -> CompanySettingsConfig:
         email = repo.get_value(_KEY_EMAIL)
         devise = repo.get_value(_KEY_DEVISE)
         logo_raw = repo.get_value(_KEY_LOGO_PATH)
+        recu_pied_de_page_raw = repo.get_value(_KEY_RECU_PIED_DE_PAGE)
     return CompanySettingsConfig(
         nom=nom, adresse=adresse, telephone=telephone, email=email,
         devise=devise or settings.default_currency,
         logo_path=Path(logo_raw) if logo_raw else None,
+        recu_pied_de_page=(
+            DEFAULT_RECEIPT_FOOTER if recu_pied_de_page_raw is None else recu_pied_de_page_raw
+        ),
     )
 
 
@@ -327,3 +361,25 @@ class CompanySettingsService:
             details=f"module Location {'activé' if enabled else 'désactivé'}",
         )
         logger.info("Module Location %s.", "activé" if enabled else "désactivé")
+
+    # -- pied de reçu (Lot 21 — reçu unifié) ----------------------------------------
+
+    def set_receipt_footer(self, phrase: Optional[str]) -> CompanySettingsConfig:
+        """Enregistre la phrase de pied de reçu — méthode dédiée (même
+        principe que ``set_rental_module_enabled``), jamais ajoutée comme
+        paramètre supplémentaire de ``update_config`` pour ne risquer
+        aucune régression sur ses nombreux appelants existants. Une chaîne
+        vide est acceptée et conservée telle quelle (voir
+        ``_validate_receipt_footer``) : c'est la façon explicite de ne plus
+        imprimer aucun pied de reçu, distincte d'une configuration jamais
+        faite."""
+        self._permissions.require_permission("SETTINGS_UPDATE")
+
+        phrase = _validate_receipt_footer(phrase)
+
+        with session_scope(self._settings) as session:
+            ParameterRepository(session).set_value(_KEY_RECU_PIED_DE_PAGE, phrase)
+
+        self._audit("SETTINGS_UPDATE", ResultatAudit.SUCCES, details="pied de reçu mis à jour")
+        logger.info("Pied de reçu mis à jour.")
+        return self._read_config()

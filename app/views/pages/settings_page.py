@@ -35,6 +35,7 @@ from app.services.rentals.location_service import LocationService
 from app.services.settings.company_settings_service import (
     CompanySettingsConfig,
     CompanySettingsService,
+    DEFAULT_RECEIPT_FOOTER,
     SUPPORTED_CURRENCIES,
     is_rental_module_enabled,
 )
@@ -73,6 +74,7 @@ class SettingsPage(QWidget):
         layout = QVBoxLayout(self)
         layout.addWidget(self._build_profile_group())
         layout.addWidget(self._build_logo_group())
+        layout.addWidget(self._build_receipt_footer_group())
         layout.addWidget(self._build_modules_group())
         layout.addWidget(self._build_security_group())
         layout.addStretch(1)
@@ -134,6 +136,7 @@ class SettingsPage(QWidget):
         if index != -1:
             self.devise_combo.setCurrentIndex(index)
         self._apply_logo_preview(config)
+        self.receipt_footer_edit.setText(config.recu_pied_de_page)
 
     def _on_save_profile_clicked(self) -> None:
         self._save_profile()
@@ -218,6 +221,53 @@ class SettingsPage(QWidget):
             QMessageBox.information(self, "Logo mis à jour", "Le logo de l'entreprise a été mis à jour.")
         except AppError as exc:
             QMessageBox.warning(self, "Logo refusé", str(exc))
+            return False
+        self._load_config_into_form()
+        return True
+
+    # -- pied de reçu (Lot 21 — reçu unifié) --------------------------------------
+
+    def _build_receipt_footer_group(self) -> QGroupBox:
+        group = QGroupBox("Pied de reçu", self)
+        form = QFormLayout(group)
+
+        self.receipt_footer_edit = QLineEdit(self)
+        self.receipt_footer_edit.setPlaceholderText(DEFAULT_RECEIPT_FOOTER)
+        form.addRow("Phrase affichée en bas du reçu", self.receipt_footer_edit)
+
+        hint = QLabel(
+            "Laissez ce champ vide pour n'imprimer aucun pied de reçu.", group
+        )
+        hint.setWordWrap(True)
+        form.addRow(hint)
+
+        can_update = self._permissions.has_permission("SETTINGS_UPDATE")
+        self.receipt_footer_edit.setEnabled(can_update)
+
+        self.save_receipt_footer_button = QPushButton("Enregistrer", self)
+        self.save_receipt_footer_button.setEnabled(can_update)
+        form.addRow(self.save_receipt_footer_button)
+
+        self.save_receipt_footer_button.clicked.connect(self._on_save_receipt_footer_clicked)
+
+        return group
+
+    def _on_save_receipt_footer_clicked(self) -> None:
+        self._save_receipt_footer()
+
+    def _save_receipt_footer(self) -> bool:
+        """Isolé de ``_on_save_receipt_footer_clicked`` pour rester testable
+        sans boîte modale. La modification ne touche jamais les ventes ou
+        paiements déjà enregistrés (voir ``CompanySettingsService.set_receipt_footer``,
+        une simple clé de paramètres) — seuls les futurs reçus imprimés en
+        tiennent compte."""
+        try:
+            self._settings_service.set_receipt_footer(self.receipt_footer_edit.text())
+            QMessageBox.information(
+                self, "Paramètres enregistrés", "Le pied de reçu a été mis à jour."
+            )
+        except AppError as exc:
+            QMessageBox.warning(self, "Enregistrement refusé", str(exc))
             return False
         self._load_config_into_form()
         return True

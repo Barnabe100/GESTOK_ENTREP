@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QDialog, QMessageBox
 
 from app.models.enums import ModeGestionArticle, StatutOperation, StatutPaiement
 from app.services.sales.sale_service import VenteLigneInput
+from app.utils.exceptions import AppError
 from app.utils.money import format_money
 from app.views.pages.sales_page import SalesPage
 
@@ -1783,3 +1784,198 @@ def test_caisse_back_button_no_warning_when_validated_sale_fully_paid(qtbot, log
 
     assert called["n"] == 0
     assert page._view_stack.currentIndex() == 0
+
+
+# -- Lot 21 : impression du reçu unifié après un paiement réussi depuis la caisse -----
+
+
+def test_caisse_pay_shows_distinct_message_when_no_printer_available(qtbot, login_as, monkeypatch) -> None:
+    """Cet environnement de test n'a jamais d'imprimante installée — c'est
+    précisément le cas « aucune imprimante disponible » à couvrir. Le
+    paiement doit rester enregistré, et le message doit explicitement dire
+    que le paiement est acquis, jamais parler de refus."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    _validate_caisse_sale(page, article)
+    sale_id = page._caisse_validated_sale.id
+
+    warnings: list = []
+    monkeypatch.setattr("app.views.pages.sales_page.QMessageBox.warning", lambda *a, **k: warnings.append(a[1:]))
+
+    result = page._submit_caisse_payment(
+        {"montant": "100", "mode_paiement": None, "reference": None, "commentaire": None}
+    )
+
+    assert result is True
+    assert stack.sales.get_sale(sale_id).montant_paye == Decimal("100")
+    assert len(stack.sales.list_payments(sale_id)) == 1
+    assert len(warnings) == 1
+    title, message = warnings[0]
+    assert "Paiement enregistré" in title
+    assert "refusé" not in title.lower()
+    assert "refusé" not in message.lower()
+    assert "imprimante" in message.lower()
+
+
+def test_caisse_pay_print_failure_does_not_undo_payment(qtbot, login_as, monkeypatch) -> None:
+    """Un échec de génération du reçu (même avec une imprimante présente)
+    ne doit jamais annuler, supprimer ni répéter le paiement déjà
+    enregistré — le message doit rester distinct d'un refus de paiement."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    _validate_caisse_sale(page, article)
+    sale_id = page._caisse_validated_sale.id
+
+    warnings: list = []
+    monkeypatch.setattr("app.views.pages.sales_page.QMessageBox.warning", lambda *a, **k: warnings.append(a[1:]))
+    monkeypatch.setattr(
+        "app.views.pages.sales_page.QPrinterInfo.availablePrinters", staticmethod(lambda: ["Imprimante factice"])
+    )
+
+    def _raise(*_args, **_kwargs):
+        raise AppError("Panne simulée du générateur de reçu")
+
+    monkeypatch.setattr(stack.documents, "build_sale_receipt", _raise)
+
+    result = page._submit_caisse_payment(
+        {"montant": "100", "mode_paiement": None, "reference": None, "commentaire": None}
+    )
+
+    assert result is True
+    assert stack.sales.get_sale(sale_id).montant_paye == Decimal("100")
+    assert len(stack.sales.list_payments(sale_id)) == 1
+    title, message = warnings[0]
+    assert "Paiement enregistré" in title
+    assert "refusé" not in title.lower()
+    assert "Panne simulée du générateur de reçu" in message
+
+
+def test_caisse_pay_print_cancelled_does_not_undo_payment(qtbot, login_as, monkeypatch) -> None:
+    """Fermer/annuler le dialogue d'impression n'est pas un échec : aucun
+    message d'avertissement ne doit apparaître, et le paiement reste
+    acquis."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    _validate_caisse_sale(page, article)
+    sale_id = page._caisse_validated_sale.id
+
+    warnings: list = []
+    monkeypatch.setattr("app.views.pages.sales_page.QMessageBox.warning", lambda *a, **k: warnings.append(a[1:]))
+    monkeypatch.setattr(
+        "app.views.pages.sales_page.QPrinterInfo.availablePrinters", staticmethod(lambda: ["Imprimante factice"])
+    )
+    monkeypatch.setattr(
+        "app.views.pages.sales_page.QPrintDialog.exec", lambda self: QDialog.DialogCode.Rejected
+    )
+
+    result = page._submit_caisse_payment(
+        {"montant": "100", "mode_paiement": None, "reference": None, "commentaire": None}
+    )
+
+    assert result is True
+    assert stack.sales.get_sale(sale_id).montant_paye == Decimal("100")
+    assert warnings == []
+
+
+def test_caisse_pay_print_succeeds_when_printer_available_and_dialog_accepted(
+    qtbot, login_as, monkeypatch
+) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    _validate_caisse_sale(page, article)
+    sale_id = page._caisse_validated_sale.id
+
+    monkeypatch.setattr(
+        "app.views.pages.sales_page.QPrinterInfo.availablePrinters", staticmethod(lambda: ["Imprimante factice"])
+    )
+    monkeypatch.setattr(
+        "app.views.pages.sales_page.QPrintDialog.exec", lambda self: QDialog.DialogCode.Accepted
+    )
+
+    print_result = page._print_receipt_after_payment(sale_id)
+
+    assert print_result is True
+
+
+def test_caisse_pay_print_uses_ticket_format_only(qtbot, login_as, monkeypatch) -> None:
+    """Décision du Lot 21 : toujours le ticket 80 mm depuis la caisse,
+    jamais de sélecteur de format — A4 reste réservé au détail de vente."""
+    from app.services.documents import receipt_document as receipt_document_module
+
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    _validate_caisse_sale(page, article)
+    sale_id = page._caisse_validated_sale.id
+
+    monkeypatch.setattr(
+        "app.views.pages.sales_page.QPrinterInfo.availablePrinters", staticmethod(lambda: ["Imprimante factice"])
+    )
+    monkeypatch.setattr(
+        "app.views.pages.sales_page.QPrintDialog.exec", lambda self: QDialog.DialogCode.Rejected
+    )
+
+    used_formats: list = []
+    original_build = receipt_document_module.build_receipt_document
+
+    def _spy_build(data, receipt_format):
+        used_formats.append(receipt_format)
+        return original_build(data, receipt_format)
+
+    monkeypatch.setattr("app.views.pages.sales_page.build_receipt_document", _spy_build)
+
+    page._print_receipt_after_payment(sale_id)
+
+    assert used_formats == [receipt_document_module.ReceiptFormat.TICKET_80MM]
+
+
+def test_caisse_pay_does_not_record_payment_twice_when_print_fails(qtbot, login_as, monkeypatch) -> None:
+    """Même en cas d'échec d'impression, aucun second appel à
+    ``record_payment`` ne doit jamais être déclenché pour « réessayer »."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    _validate_caisse_sale(page, article)
+
+    call_count = {"n": 0}
+    original_record_payment = stack.sales.record_payment
+
+    def _counting_record_payment(*args, **kwargs):
+        call_count["n"] += 1
+        return original_record_payment(*args, **kwargs)
+
+    monkeypatch.setattr(stack.sales, "record_payment", _counting_record_payment)
+
+    page._submit_caisse_payment(
+        {"montant": "100", "mode_paiement": None, "reference": None, "commentaire": None}
+    )
+
+    assert call_count["n"] == 1
+
+
+def test_caisse_pay_print_cancelled_keeps_caisse_open_with_updated_sale(qtbot, login_as, monkeypatch) -> None:
+    """Non-régression : l'échec/l'annulation de l'impression n'a aucun
+    effet sur l'état de la caisse elle-même (toujours ouverte, paiement
+    reflété)."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    _validate_caisse_sale(page, article)
+
+    page._submit_caisse_payment(
+        {"montant": "100", "mode_paiement": None, "reference": None, "commentaire": None}
+    )
+
+    assert page._view_stack.currentIndex() == 1
+    assert page._caisse_validated_sale.montant_paye == Decimal("100")

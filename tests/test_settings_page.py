@@ -173,6 +173,83 @@ def test_non_admin_role_sees_disabled_form(qtbot, login_as) -> None:
     assert page.nom_edit.isEnabled() is False
     assert page.save_profile_button.isEnabled() is False
     assert page.choose_logo_button.isEnabled() is False
+    assert page.receipt_footer_edit.isEnabled() is False
+    assert page.save_receipt_footer_button.isEnabled() is False
+
+
+# -- pied de reçu (Lot 21 — reçu unifié) ------------------------------------------------
+
+
+def test_receipt_footer_field_prefilled_with_default_when_unconfigured(qtbot, login_as) -> None:
+    from app.services.settings.company_settings_service import DEFAULT_RECEIPT_FOOTER
+
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.receipt_footer_edit.text() == DEFAULT_RECEIPT_FOOTER
+
+
+def test_receipt_footer_field_prefilled_with_configured_value(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    stack.parameters.set_receipt_footer("Phrase personnalisée")
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.receipt_footer_edit.text() == "Phrase personnalisée"
+
+
+def test_save_receipt_footer_persists_value(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    page.receipt_footer_edit.setText("Nouvelle phrase de fin")
+    result = page._save_receipt_footer()
+
+    assert result is True
+    assert stack.parameters.get_config().recu_pied_de_page == "Nouvelle phrase de fin"
+
+
+def test_save_receipt_footer_empty_disables_footer(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    stack.parameters.set_receipt_footer("Phrase initiale")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    page.receipt_footer_edit.setText("")
+    result = page._save_receipt_footer()
+
+    assert result is True
+    assert stack.parameters.get_config().recu_pied_de_page == ""
+
+
+def test_save_receipt_footer_does_not_touch_sales_or_payments(qtbot, login_as) -> None:
+    """§7 du lot : modifier la phrase de pied de reçu ne doit jamais
+    affecter les ventes ou paiements déjà enregistrés."""
+    from datetime import date
+    from decimal import Decimal
+
+    from app.services.sales.sale_service import VenteLigneInput
+
+    stack, _ = login_as("Administrateur")
+    category = stack.categories.create_category("Cat-1")
+    article = stack.articles.create_article(
+        "ART-1", "Article", category.id, "unité", Decimal("100"), Decimal("150"), Decimal("0"),
+        stock_initial=Decimal("10"),
+    )
+    sale = stack.sales.create_sale(date(2026, 1, 15), [VenteLigneInput(article.id, Decimal("1"), Decimal("150"))])
+    validated = stack.sales.validate_sale(sale.id, paiement_initial=Decimal("150"))
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page.receipt_footer_edit.setText("Nouvelle phrase")
+    page._save_receipt_footer()
+
+    reloaded = stack.sales.get_sale(validated.id)
+    assert reloaded.montant_paye == Decimal("150")
+    assert reloaded.statut.value == "VALIDEE"
 
 
 # -- génération du code de récupération administrateur -----------------------------

@@ -11,9 +11,18 @@ Le logo de l'entreprise cliente est intégré comme ressource du document
 (``QTextDocument.addResource``) directement depuis le fichier pointé par
 ``SaleReceiptData.entreprise_logo_path`` — jamais de fichier temporaire,
 et jamais le logo StockManager/SM (``app.resources``), qui n'apparaît nulle
-part ici : seule une mention textuelle discrète en pied de document
-distingue le logiciel qui a généré le reçu de l'entreprise cliente dont
-c'est le reçu.
+part ici. Redimensionné pour s'inscrire dans une boîte de 40 x 18 mm
+maximum en conservant ses proportions (voir ``_fit_logo_box``), toujours
+chargé en mémoire (``QImage``, synchrone) avant toute construction du HTML
+qui y fait référence — voir ``_add_logo_resource``.
+
+Lot 21 (reçu unifié) : aucune mention publicitaire pour StockManager n'est
+plus imprimée sur le reçu (l'ancienne mention « Document généré par
+StockManager » a été supprimée, jamais remplacée) — seule une phrase de
+pied de reçu configurable par l'entreprise cliente (voir
+``SaleReceiptData.pied_de_page``/``_footer_phrase_html``) peut apparaître
+en bas du document, et rien du tout si elle est explicitement vidée dans
+les paramètres.
 """
 from __future__ import annotations
 
@@ -22,11 +31,17 @@ import html
 from dataclasses import dataclass
 from decimal import Decimal
 
+from typing import Optional
+
 from PySide6.QtCore import QSizeF, QUrl
 from PySide6.QtGui import QImage, QPageSize, QTextDocument
 
 from app.models.enums import StatutPaiement
-from app.services.documents.receipt_service import PaymentReceiptData, SaleReceiptData
+from app.services.documents.receipt_service import (
+    PaymentReceiptData,
+    SaleReceiptData,
+    SaleReceiptPaymentLine,
+)
 from app.utils.money import format_money
 from app.utils.quantity import format_quantity
 
@@ -50,6 +65,14 @@ _TICKET_MIN_HEIGHT_MM = 40.0
 _TICKET_HEIGHT_BUFFER_MM = 8.0
 
 _LOGO_RESOURCE_URL = QUrl("stockmanager-receipt://logo-entreprise")
+
+# Taille d'impression maximale du logo (décision déjà actée, Lot 21) :
+# 40 x 18 mm, proportions toujours conservées — jamais déformé, jamais agrandi
+# au-delà de cette boîte. 40 mm reste largement inférieur à la largeur de
+# contenu d'un ticket 80 mm (80 - 2x4 mm de marge = 72 mm) : aucun débordement
+# horizontal possible sur ce format.
+_LOGO_MAX_WIDTH_MM = 40.0
+_LOGO_MAX_HEIGHT_MM = 18.0
 
 
 class ReceiptFormat(enum.Enum):
@@ -75,18 +98,48 @@ def _esc(value) -> str:
     return html.escape(str(value)) if value else ""
 
 
-def _add_logo_resource(document: QTextDocument, data: SaleReceiptData) -> bool:
-    """Charge le logo client (s'il existe) comme ressource du document.
-    Retourne False silencieusement si le fichier est absent/illisible —
+def _fit_logo_box(image_width_px: int, image_height_px: int) -> tuple[float, float]:
+    """Calcule la largeur/hauteur (mm) du logo pour qu'il s'inscrive dans la
+    boîte ``_LOGO_MAX_WIDTH_MM`` x ``_LOGO_MAX_HEIGHT_MM`` en conservant ses
+    proportions réelles — jamais de déformation, jamais de dépassement d'une
+    des deux dimensions. Fonction pure, indépendante de Qt, pour rester
+    testable sans document ni image réelle."""
+    if image_width_px <= 0 or image_height_px <= 0:
+        return (0.0, 0.0)
+    aspect = image_width_px / image_height_px
+    box_aspect = _LOGO_MAX_WIDTH_MM / _LOGO_MAX_HEIGHT_MM
+    if aspect >= box_aspect:
+        width_mm = _LOGO_MAX_WIDTH_MM
+        height_mm = _LOGO_MAX_WIDTH_MM / aspect
+    else:
+        height_mm = _LOGO_MAX_HEIGHT_MM
+        width_mm = _LOGO_MAX_HEIGHT_MM * aspect
+    return (width_mm, height_mm)
+
+
+def _add_logo_resource(document: QTextDocument, data: SaleReceiptData) -> Optional[tuple[float, float]]:
+    """Charge le logo client (s'il existe) comme ressource du document
+    **avant** toute construction du HTML (voir ``build_receipt_document`` :
+    l'ordre d'appel garantit que l'image est entièrement chargée — ``QImage``
+    décode le fichier de façon synchrone, aucun chargement différé — avant
+    que ``QTextDocument.setHtml`` ne résolve la balise ``<img>`` qui y fait
+    référence ; c'est cet ordre, pas un mécanisme supplémentaire, qui évite
+    qu'un logo chargé trop tard disparaisse à l'impression.
+
+    Retourne ``None`` silencieusement si le fichier est absent/illisible —
     un logo manquant ou invalide ne doit jamais empêcher la génération du
-    reçu (§6 du cahier des charges de ce lot)."""
+    reçu (§6 du cahier des charges de ce lot) — sinon la taille (largeur,
+    hauteur) en points à appliquer explicitement sur la balise ``<img>``
+    pour respecter la boîte 40 x 18 mm en conservant les proportions
+    (Lot 21, voir ``_fit_logo_box``)."""
     if data.entreprise_logo_path is None or not data.entreprise_logo_path.exists():
-        return False
+        return None
     image = QImage(str(data.entreprise_logo_path))
     if image.isNull():
-        return False
+        return None
     document.addResource(QTextDocument.ResourceType.ImageResource, _LOGO_RESOURCE_URL, image)
-    return True
+    width_mm, height_mm = _fit_logo_box(image.width(), image.height())
+    return (width_mm * _MM_TO_POINTS, height_mm * _MM_TO_POINTS)
 
 
 def _header_lines(data: SaleReceiptData) -> list[str]:
@@ -144,7 +197,87 @@ def _payment_rows_ticket(data: SaleReceiptData) -> str:
     """
 
 
-_FOOTER_MENTION = "Document généré par StockManager"
+def _footer_phrase_html(data: SaleReceiptData, font_size_pt: int) -> str:
+    """Phrase de pied de reçu configurable (Lot 21) — jamais de texte publi-
+    citaire pour le logiciel (la mention « Document généré par StockManager »
+    est supprimée, pas remplacée) : seule une phrase destinée au client,
+    configurable dans Paramètres, et rien du tout si elle a été explicitement
+    vidée (voir ``CompanySettingsConfig.recu_pied_de_page``)."""
+    if not data.pied_de_page:
+        return ""
+    return (
+        f'<p align="center" style="margin-top:20px; font-size:{font_size_pt}pt;">'
+        f"{_esc(data.pied_de_page)}</p>"
+    )
+
+
+def _payment_history_row_a4(p: SaleReceiptPaymentLine, devise: str) -> str:
+    row = (
+        f"<tr>"
+        f"<td>{_esc(p.date_heure.strftime('%Y-%m-%d %H:%M'))}</td>"
+        f"<td align='right'>{_fmt_money(p.montant, devise)}</td>"
+        f"<td>{_esc(p.mode_paiement) or '—'}</td>"
+        f"<td>{_esc(p.reference) or '—'}</td>"
+        f"<td>{_esc(p.username)}</td>"
+        f"</tr>"
+    )
+    if p.commentaire:
+        row += (
+            f"<tr><td colspan='5' style='font-style:italic; color:#555555;'>"
+            f"{_esc(p.commentaire)}</td></tr>"
+        )
+    return row
+
+
+def _payment_history_section_a4(data: SaleReceiptData) -> str:
+    """Historique complet des paiements (Lot 21), distinct du bloc
+    Payé/Reste/Statut ci-dessus — jamais affiché si la vente n'a reçu aucun
+    paiement (aucun titre, aucune table vide réservée, même convention que
+    ``_client_section_html_a4``)."""
+    if not data.paiements:
+        return ""
+    rows = "".join(_payment_history_row_a4(p, data.devise) for p in data.paiements)
+    return f"""
+    <p style="margin:16px 0 4px 0; font-weight:600;">HISTORIQUE DES PAIEMENTS</p>
+    <table width="100%" border="1" cellspacing="0" cellpadding="4" style="border-collapse:collapse; font-size:8pt;">
+      <tr style="background-color:#eeeeee;">
+        <th align="left">Date</th>
+        <th align="right">Montant</th>
+        <th align="left">Mode</th>
+        <th align="left">Référence</th>
+        <th align="left">Enregistré par</th>
+      </tr>
+      {rows}
+    </table>
+    """
+
+
+def _payment_history_row_ticket(p: SaleReceiptPaymentLine, devise: str) -> str:
+    parts = [
+        "<table width='100%' cellspacing='0' cellpadding='0'><tr>"
+        f"<td>{_esc(p.date_heure.strftime('%Y-%m-%d %H:%M'))}</td>"
+        f"<td align='right'>{_fmt_money(p.montant, devise)}</td>"
+        "</tr></table>"
+    ]
+    extra = [value for value in (_esc(p.mode_paiement), _esc(p.reference)) if value]
+    if extra:
+        parts.append(f"<p style='margin:0 0 2px 0; font-size:7pt;'>{' · '.join(extra)}</p>")
+    if p.commentaire:
+        parts.append(
+            f"<p style='margin:0 0 4px 0; font-size:7pt; font-style:italic;'>{_esc(p.commentaire)}</p>"
+        )
+    return "".join(parts)
+
+
+def _payment_history_section_ticket(data: SaleReceiptData) -> str:
+    if not data.paiements:
+        return ""
+    rows = "".join(_payment_history_row_ticket(p, data.devise) for p in data.paiements)
+    return f"""
+    <p align="center">------------------------------</p>
+    <p style="margin:2px 0; font-weight:600;">Historique des paiements</p>
+    {rows}
+    """
 
 
 def _client_section_html_a4(data: SaleReceiptData) -> str:
@@ -162,10 +295,14 @@ def _client_section_html_a4(data: SaleReceiptData) -> str:
     """
 
 
-def _build_a4_html(data: SaleReceiptData, has_logo: bool) -> str:
-    logo_html = (
-        f'<img src="{_LOGO_RESOURCE_URL.toString()}" width="120">' if has_logo else ""
-    )
+def _build_a4_html(data: SaleReceiptData, logo_size: Optional[tuple[float, float]]) -> str:
+    logo_html = ""
+    if logo_size is not None:
+        width_pt, height_pt = logo_size
+        logo_html = (
+            f'<img src="{_LOGO_RESOURCE_URL.toString()}" '
+            f'width="{width_pt:.1f}" height="{height_pt:.1f}">'
+        )
     entreprise_nom = _esc(data.entreprise_nom) or "(Entreprise non configurée — voir Paramètres)"
     header_lines = "<br/>".join(_header_lines(data)) or "&nbsp;"
     client_section = _client_section_html_a4(data)
@@ -181,6 +318,7 @@ def _build_a4_html(data: SaleReceiptData, has_logo: bool) -> str:
     )
 
     return f"""
+    <div style="font-size:10pt;">
     <table width="100%" cellspacing="0" cellpadding="0">
       <tr>
         <td width="55%" valign="top">
@@ -211,7 +349,9 @@ def _build_a4_html(data: SaleReceiptData, has_logo: bool) -> str:
     </table>
     <h2 align="right" style="margin-top:16px;">Total : {_fmt_money(data.total, data.devise)}</h2>
     {_payment_rows_a4(data)}
-    <p align="center" style="color:#999999; font-size:8pt; margin-top:40px;">{_FOOTER_MENTION}</p>
+    {_payment_history_section_a4(data)}
+    {_footer_phrase_html(data, font_size_pt=9)}
+    </div>
     """
 
 
@@ -226,10 +366,15 @@ def _client_block_ticket(data: SaleReceiptData) -> str:
     return f"<p style='margin:2px 0;'>{'<br/>'.join(parts)}</p>"
 
 
-def _build_ticket_html(data: SaleReceiptData, has_logo: bool) -> str:
-    logo_html = (
-        f'<p align="center"><img src="{_LOGO_RESOURCE_URL.toString()}" width="60"></p>' if has_logo else ""
-    )
+def _build_ticket_html(data: SaleReceiptData, logo_size: Optional[tuple[float, float]]) -> str:
+    logo_html = ""
+    if logo_size is not None:
+        width_pt, height_pt = logo_size
+        logo_html = (
+            '<p align="center">'
+            f'<img src="{_LOGO_RESOURCE_URL.toString()}" width="{width_pt:.1f}" height="{height_pt:.1f}">'
+            "</p>"
+        )
     entreprise_nom = _esc(data.entreprise_nom) or "(Entreprise non configurée)"
     header_lines = "<br/>".join(_header_lines(data))
     client_block = _client_block_ticket(data)
@@ -244,7 +389,7 @@ def _build_ticket_html(data: SaleReceiptData, has_logo: bool) -> str:
     )
 
     return f"""
-    <div style="font-family:monospace; font-size:9pt;">
+    <div style="font-family:monospace; font-size:8pt;">
       <p align="center" style="margin:2px 0;"><b>{entreprise_nom}</b></p>
       <p align="center" style="margin:2px 0;">{header_lines}</p>
       {logo_html}
@@ -263,8 +408,8 @@ def _build_ticket_html(data: SaleReceiptData, has_logo: bool) -> str:
         <td align="right"><b>{_fmt_money(data.total, data.devise)}</b></td>
       </tr></table>
       {_payment_rows_ticket(data)}
-      <p align="center" style="margin-top:10px;">Merci de votre visite</p>
-      <p align="center" style="color:#999999; font-size:7pt; margin-top:10px;">{_FOOTER_MENTION}</p>
+      {_payment_history_section_ticket(data)}
+      {_footer_phrase_html(data, font_size_pt=8)}
     </div>
     """
 
@@ -324,7 +469,6 @@ def _build_payment_receipt_html(data: PaymentReceiptData) -> str:
     <p style="margin:4px 0;">Total de la vente : {_fmt_money(data.total_vente, data.devise)}</p>
     <p style="margin:4px 0;">Total payé après ce paiement : {_fmt_money(data.total_paye_apres, data.devise)}</p>
     <p style="margin:4px 0; font-weight:600;">Reste à payer : {_fmt_money(data.reste_a_payer, data.devise)}</p>
-    <p align="center" style="color:#999999; font-size:8pt; margin-top:40px;">{_FOOTER_MENTION}</p>
     """
 
 
@@ -344,15 +488,15 @@ def build_receipt_document(data: SaleReceiptData, receipt_format: ReceiptFormat)
     format demandé. Ne modifie jamais ``data`` ni quoi que ce soit en base :
     pure fonction de rendu."""
     document = QTextDocument()
-    has_logo = _add_logo_resource(document, data)
+    logo_size = _add_logo_resource(document, data)
 
     if receipt_format is ReceiptFormat.A4:
-        document.setHtml(_build_a4_html(data, has_logo))
+        document.setHtml(_build_a4_html(data, logo_size))
         page_size = QPageSize(QPageSize.PageSizeId.A4)
         return RenderedReceipt(document=document, page_size=page_size, margin_mm=_A4_MARGIN_MM)
 
     if receipt_format is ReceiptFormat.TICKET_80MM:
-        document.setHtml(_build_ticket_html(data, has_logo))
+        document.setHtml(_build_ticket_html(data, logo_size))
         content_width_mm = _TICKET_WIDTH_MM - 2 * _TICKET_MARGIN_MM
         height_mm = _measure_ticket_height_mm(document, content_width_mm)
         page_size = QPageSize(QSizeF(_TICKET_WIDTH_MM, height_mm), QPageSize.Unit.Millimeter)

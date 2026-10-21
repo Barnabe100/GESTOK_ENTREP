@@ -43,6 +43,7 @@ from decimal import Decimal
 from typing import Optional
 
 from PySide6.QtCore import QDate, Qt
+from PySide6.QtPrintSupport import QPrintDialog, QPrinter, QPrinterInfo
 from PySide6.QtWidgets import (
     QComboBox,
     QDateEdit,
@@ -67,11 +68,13 @@ from app.models.enums import ModeGestionArticle, StatutOperation
 from app.services.articles.article_service import ArticleService
 from app.services.auth.permission_service import PermissionService
 from app.services.clients.client_service import ClientService
+from app.services.documents.receipt_document import ReceiptFormat, build_receipt_document
 from app.services.documents.receipt_service import ReceiptService
 from app.services.sales.sale_service import SaleService, VenteLigneInput, VenteSummary
 from app.services.settings.company_settings_service import get_effective_currency
 from app.utils.exceptions import AppError, ValidationError
 from app.utils.money import format_money
+from app.utils.pdf_export import build_page_layout
 from app.utils.quantity import format_quantity
 from app.views.cancellation_reason_dialog import CancellationReasonDialog
 from app.views.client_form_dialog import ClientFormDialog
@@ -1155,6 +1158,66 @@ class SalesPage(QWidget):
         finally:
             self._update_caisse_payment_controls()
         QMessageBox.information(self, "Paiement enregistré", "Le paiement a été enregistré avec succès.")
+        # Lot 21 : impression du reçu unifié juste après le paiement —
+        # toujours après le message ci-dessus, jamais avant : le paiement
+        # est déjà définitivement acquis en base à ce stade, et rien dans
+        # ``_print_receipt_after_payment`` ne peut revenir sur ce fait (voir
+        # sa docstring). Son résultat n'est jamais pris en compte dans la
+        # valeur de retour de cette méthode : le succès du paiement et le
+        # succès de l'impression restent deux informations distinctes.
+        self._print_receipt_after_payment(updated.id)
+        return True
+
+    def _print_receipt_after_payment(self, sale_id: int) -> bool:
+        """Déclenche l'impression du reçu unifié immédiatement après un
+        paiement déjà enregistré avec succès (Lot 21) — jamais appelée
+        avant, et aucun échec ici ne remet jamais en cause ce paiement :
+        aucun appel à ``record_payment`` n'a lieu dans cette méthode, et
+        aucune des conditions ci-dessous ne touche à ``self._caisse_validated_sale``.
+
+        Reprend exactement la même séquence que
+        ``SaleDetailDialog._print_receipt`` (aucune logique d'impression
+        dupliquée) : construction des données du reçu, vérification qu'une
+        imprimante existe, construction du document, dialogue d'impression
+        Qt natif — toujours le format ticket 80 mm (décision du Lot 21 :
+        pas de sélecteur de format dans la caisse, les formats A4/ticket
+        restent disponibles depuis le détail de vente, inchangé).
+
+        Une génération impossible ou l'absence d'imprimante affiche un
+        message qui précise explicitement que le paiement, lui, est bien
+        enregistré — jamais le terme « refusé », réservé à un véritable
+        échec du paiement. Une simple annulation du dialogue d'impression
+        (l'utilisateur ferme ou clique « Annuler ») n'affiche aucun message
+        d'erreur : ce n'est pas un échec, l'utilisateur pourra réimprimer
+        ce même reçu depuis le détail de la vente."""
+        try:
+            data = self._receipt_service.build_sale_receipt(sale_id)
+        except AppError as exc:
+            QMessageBox.warning(
+                self, "Paiement enregistré, reçu indisponible",
+                f"Le paiement a bien été enregistré. Le reçu n'a pas pu être généré : {exc}\n\n"
+                "Vous pouvez le réimprimer depuis le détail de la vente.",
+            )
+            return False
+
+        if not QPrinterInfo.availablePrinters():
+            QMessageBox.warning(
+                self, "Paiement enregistré, aucune imprimante disponible",
+                "Le paiement a bien été enregistré. Aucune imprimante n'est installée ou "
+                "disponible sur ce poste. Vous pouvez imprimer le reçu plus tard depuis le "
+                "détail de la vente.",
+            )
+            return False
+
+        rendered = build_receipt_document(data, ReceiptFormat.TICKET_80MM)
+        printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+        printer.setPageLayout(build_page_layout(rendered.page_size, rendered.margin_mm))
+
+        print_dialog = QPrintDialog(printer, self)
+        if print_dialog.exec() != QDialog.DialogCode.Accepted:
+            return False
+
+        rendered.document.print_(printer)
         return True
 
     def _caisse_has_unsaved_changes(self) -> bool:
