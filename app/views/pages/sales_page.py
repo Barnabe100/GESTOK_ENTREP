@@ -199,6 +199,16 @@ class SalesPage(QWidget):
         self.cancel_button = QPushButton("Annuler", self)
         toolbar.addWidget(self.cancel_button)
 
+        # Lot 22 (§7 — paiement différé) : point d'entrée pour encaisser le
+        # solde d'une vente déjà validée, y compris issue d'une session de
+        # caisse désormais close — le paiement direct de la caisse (Lot 20)
+        # ne couvre que la vente qui vient d'y être validée. Choisi dans la
+        # liste plutôt qu'ajouté au détail (justement ce qu'il remplace) :
+        # c'est déjà ici que l'on filtre/recherche une vente ancienne par
+        # statut, numéro ou client.
+        self.pay_button = QPushButton("Payer", self)
+        toolbar.addWidget(self.pay_button)
+
         layout.addLayout(toolbar)
 
         self.table = QTableWidget(0, len(_COLUMNS), self)
@@ -218,6 +228,7 @@ class SalesPage(QWidget):
         self.detail_button.clicked.connect(self._on_detail_clicked)
         self.validate_button.clicked.connect(self._on_validate_clicked)
         self.cancel_button.clicked.connect(self._on_cancel_clicked)
+        self.pay_button.clicked.connect(self._on_list_pay_clicked)
         self.table.itemSelectionChanged.connect(self._update_action_buttons)
 
         return container
@@ -238,6 +249,19 @@ class SalesPage(QWidget):
             self.client_filter_combo.addItem(label, client.id)
 
     def refresh(self) -> None:
+        # Lot 22 (anomalie A) : si la caisse est ouverte, son cache
+        # d'articles vendables (chargé une seule fois par ``_open_caisse``)
+        # doit être actualisé à chaque retour sur ce module — sinon un
+        # article créé entre-temps ailleurs dans l'application ne devient
+        # visible qu'après une reconstruction complète de la page (nouvelle
+        # connexion). Ne rien faire quand la liste est affichée (index 0) :
+        # un rechargement n'y aurait aucun effet visible et interrogerait
+        # la base pour rien. Réutilise exactement les méthodes du Lot 19,
+        # aucun nouveau mécanisme de cache.
+        if self._view_stack.currentIndex() == 1:
+            self._caisse_articles_cache = self._load_articles_for_form()
+            self._refresh_caisse_search_results()
+
         statut = self.status_filter_combo.currentData()
         client_id = self.client_filter_combo.currentData()
         try:
@@ -254,6 +278,11 @@ class SalesPage(QWidget):
             numero_item = QTableWidgetItem(sale.numero)
             numero_item.setData(Qt.ItemDataRole.UserRole, sale.id)
             numero_item.setData(Qt.ItemDataRole.UserRole + 1, sale.statut)
+            # Lot 22 (§7 — paiement différé) : reste à payer déjà connu via
+            # ``VenteSummary`` — stocké ici pour piloter l'activation du
+            # bouton « Payer » sans appel service supplémentaire à chaque
+            # changement de sélection.
+            numero_item.setData(Qt.ItemDataRole.UserRole + 2, sale.reste_a_payer)
             self.table.setItem(row, 0, numero_item)
             self.table.setItem(row, 1, QTableWidgetItem(str(sale.date)))
             self.table.setItem(row, 2, QTableWidgetItem(sale.client_nom or "—"))
@@ -279,11 +308,18 @@ class SalesPage(QWidget):
             return None
         return self.table.item(row, 0).data(Qt.ItemDataRole.UserRole + 1)
 
+    def _selected_reste_a_payer(self) -> Optional[Decimal]:
+        row = self._selected_row()
+        if row is None:
+            return None
+        return self.table.item(row, 0).data(Qt.ItemDataRole.UserRole + 2)
+
     def _update_action_buttons(self) -> None:
         statut = self._selected_statut()
         sale_id = self._selected_sale_id()
         is_brouillon = statut == StatutOperation.BROUILLON
         is_validee = statut == StatutOperation.VALIDEE
+        reste_a_payer = self._selected_reste_a_payer()
 
         self.edit_button.setEnabled(
             statut is not None and is_brouillon and self._can_manage_selected(sale_id, "SALE_UPDATE")
@@ -296,6 +332,15 @@ class SalesPage(QWidget):
         )
         self.cancel_button.setEnabled(
             statut is not None and is_validee and self._can_manage_selected(sale_id, "SALE_CANCEL")
+        )
+        # Lot 22 (§7 — paiement différé) : même condition exacte que le
+        # paiement direct de la caisse (``_update_caisse_payment_controls``)
+        # et que ``SaleDetailDialog._refresh_payment_section.can_pay`` —
+        # jamais une règle réécrite ici, seulement reflétée côté affichage.
+        self.pay_button.setEnabled(
+            statut is not None and is_validee
+            and reste_a_payer is not None and reste_a_payer > 0
+            and self._can_manage_selected(sale_id, "SALE_PAYMENT_CREATE")
         )
 
     def _can_manage_selected(self, sale_id: Optional[int], permission_code: str) -> bool:
@@ -600,6 +645,55 @@ class SalesPage(QWidget):
         except AppError as exc:
             QMessageBox.warning(self, "Opération refusée", str(exc))
             return False
+        return True
+
+    # -- paiement différé depuis la liste (Lot 22, §7) -----------------------
+
+    def _on_list_pay_clicked(self) -> None:
+        """Point d'entrée de paiement différé : encaisse le solde d'une
+        vente déjà validée, y compris issue d'une session de caisse
+        désormais close — le paiement direct de la caisse (Lot 20) ne
+        couvre que la vente qui vient d'y être validée dans la même
+        session. Réutilise ``PaymentFormDialog``/``SaleService.record_payment``
+        exactement comme la caisse et l'ancien bouton du détail de vente :
+        aucune validation de montant, de solde ou de permission dupliquée
+        ici, tout reste dans le service."""
+        sale_id = self._selected_sale_id()
+        if sale_id is None:
+            return
+        try:
+            sale = self._sale_service.get_sale(sale_id)
+        except AppError as exc:
+            QMessageBox.warning(self, "Opération refusée", str(exc))
+            return
+        dialog = PaymentFormDialog(sale.total, sale.montant_paye, sale.reste_a_payer, self._currency_code, parent=self)
+        while dialog.exec() == QDialog.DialogCode.Accepted:
+            if self._submit_list_payment(sale_id, dialog.values()):
+                self.refresh()
+                return
+
+    def _submit_list_payment(self, sale_id: int, values: dict) -> bool:
+        """Isolé de ``_on_list_pay_clicked`` pour rester testable sans
+        dialogue modal. Désactive « Payer » pendant l'appel (protection
+        contre une double soumission par double-clic ou répétition, même
+        principe que ``SalesPage._submit_caisse_payment``), puis recalcule
+        dans un bloc ``finally`` l'état réel des boutons via
+        ``_update_action_buttons``."""
+        self.pay_button.setEnabled(False)
+        try:
+            montant = parse_decimal(values["montant"], "montant du paiement")
+            self._sale_service.record_payment(
+                sale_id, montant,
+                mode_paiement=values.get("mode_paiement"),
+                reference=values.get("reference"),
+                commentaire=values.get("commentaire"),
+            )
+        except AppError as exc:
+            QMessageBox.warning(self, "Paiement refusé", str(exc))
+            return False
+        finally:
+            self._update_action_buttons()
+        QMessageBox.information(self, "Paiement enregistré", "Le paiement a été enregistré avec succès.")
         return True
 
     # ======================================================================
@@ -1115,20 +1209,20 @@ class SalesPage(QWidget):
             return
         sale = self._caisse_validated_sale
         dialog = PaymentFormDialog(sale.total, sale.montant_paye, sale.reste_a_payer, self._currency_code, parent=self)
-        # Même principe que ``SaleDetailDialog._on_record_payment_clicked`` :
-        # un échec rouvre le même dialogue (saisie conservée), jamais un
-        # nouveau dialogue vide ; une annulation ou un succès referme la
-        # boucle.
+        # Même principe que ``_on_list_pay_clicked`` (paiement différé,
+        # §7.2) : un échec rouvre le même dialogue (saisie conservée),
+        # jamais un nouveau dialogue vide ; une annulation ou un succès
+        # referme la boucle.
         while dialog.exec() == QDialog.DialogCode.Accepted:
             if self._submit_caisse_payment(dialog.values()):
                 return
 
     def _submit_caisse_payment(self, values: dict) -> bool:
         """Isolé de ``_on_caisse_pay_clicked`` pour rester testable sans
-        dialogue modal — même orchestration que
-        ``SaleDetailDialog._submit_payment`` (aucune validation de montant,
-        de solde ou de permission dupliquée ici : tout reste dans
-        ``SaleService.record_payment``).
+        dialogue modal — même orchestration que ``_submit_list_payment``
+        (paiement différé, §7.2) : aucune validation de montant, de solde
+        ou de permission dupliquée ici : tout reste dans
+        ``SaleService.record_payment``.
 
         Désactive « Payer » avant l'appel pour empêcher qu'un double-clic
         ou une répétition d'action n'enregistre deux paiements, puis

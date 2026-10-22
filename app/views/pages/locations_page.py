@@ -35,6 +35,7 @@ from app.models.enums import ModeGestionArticle, StatutLocation
 from app.services.articles.article_service import ArticleService
 from app.services.auth.permission_service import PermissionService
 from app.services.clients.client_service import ClientService
+from app.services.documents.receipt_service import ReceiptService
 from app.services.rentals.location_service import LocationLigneInput, LocationService
 from app.services.settings.company_settings_service import get_effective_currency
 from app.utils.exceptions import AppError
@@ -73,6 +74,7 @@ class LocationsPage(QWidget):
         article_service: ArticleService,
         client_service: ClientService,
         permission_service: PermissionService,
+        receipt_service: Optional[ReceiptService] = None,
         parent: QWidget | None = None,
         read_only: bool = False,
     ) -> None:
@@ -81,6 +83,11 @@ class LocationsPage(QWidget):
         self._article_service = article_service
         self._client_service = client_service
         self._permissions = permission_service
+        # Lot 22 (§F) : facultatif pour ne jamais casser un appelant déjà
+        # existant qui ne fournirait pas ce service — ``LocationDetailDialog``
+        # se comporte alors sans les documents de location (mêmes boutons
+        # désactivés que sans permission, jamais une erreur).
+        self._receipt_service = receipt_service
         self._currency_code = get_effective_currency()
         # Lot 16 : chemin de consultation explicite conservé quand le module
         # Location est désactivé (voir MainWindow) — création/modification/
@@ -440,7 +447,7 @@ class LocationsPage(QWidget):
             return
         dialog = LocationDetailDialog(
             location, self._currency_code, self._location_service, self._permissions,
-            parent=self, read_only=self._read_only,
+            receipt_service=self._receipt_service, parent=self, read_only=self._read_only,
         )
         dialog.exec()
         self.refresh()

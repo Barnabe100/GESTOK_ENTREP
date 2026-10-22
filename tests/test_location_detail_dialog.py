@@ -2,6 +2,7 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
+from PySide6.QtWidgets import QDialog
 
 from app.models.enums import ModeGestionArticle, StatutLocation
 from app.services.rentals.location_service import LocationLigneInput
@@ -343,21 +344,54 @@ def test_caution_button_enabled_with_remaining_deposit(qtbot, login_as) -> None:
     assert dialog.caution_button.isEnabled() is True
 
 
-def test_caution_button_disabled_when_fully_restituted(qtbot, login_as) -> None:
+def test_caution_button_disabled_when_fully_restituted_after_depart(qtbot, login_as) -> None:
+    """Après départ, le montant de la caution est figé (``set_caution_montant``
+    refuse) : seule la restitution reste possible, donc désactivé une fois
+    celle-ci intégralement effectuée."""
     stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
     client = _make_client(stack)
-    location = stack.rentals.create_location(date(2026, 1, 1), client.id, [])
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("1"))]
+    )
     stack.rentals.set_caution_montant(location.id, Decimal("10000"))
+    stack.rentals.confirm_location(location.id)
+    stack.rentals.depart_location(location.id, date(2026, 1, 1))
     stack.rentals.record_caution_return(location.id, Decimal("10000"))
 
     dialog = _build_dialog(stack, stack.rentals.get_location(location.id))
     qtbot.addWidget(dialog)
 
+    assert dialog._location.statut == StatutLocation.EN_COURS
     assert dialog._location.caution_montant - dialog._location.caution_rendue == Decimal("0")
     assert dialog.caution_button.isEnabled() is False
 
 
-def test_caution_button_disabled_when_no_caution_defined(qtbot, login_as) -> None:
+def test_caution_button_disabled_when_no_caution_and_already_departed(qtbot, login_as) -> None:
+    """Après départ, sans caution jamais définie : ni modification de
+    montant (statut non modifiable) ni restitution (rien à restituer)."""
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    client = _make_client(stack)
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("1"))]
+    )
+    stack.rentals.confirm_location(location.id)
+    stack.rentals.depart_location(location.id, date(2026, 1, 1))
+
+    dialog = _build_dialog(stack, stack.rentals.get_location(location.id))
+    qtbot.addWidget(dialog)
+
+    assert dialog._location.statut == StatutLocation.EN_COURS
+    assert dialog._location.caution_montant == Decimal("0")
+    assert dialog.caution_button.isEnabled() is False
+
+
+def test_caution_button_enabled_in_brouillon_to_define_initial_amount(qtbot, login_as) -> None:
+    """Lot 22 (§G) : correctif de l'anomalie — une location tout juste créée
+    (BROUILLON, aucune caution encore définie) doit permettre de définir le
+    montant de la caution via ce même bouton, et non attendre qu'un montant
+    existe déjà."""
     stack, _ = login_as("Administrateur")
     client = _make_client(stack)
     location = stack.rentals.create_location(date(2026, 1, 1), client.id, [])
@@ -365,7 +399,42 @@ def test_caution_button_disabled_when_no_caution_defined(qtbot, login_as) -> Non
     dialog = _build_dialog(stack, location)
     qtbot.addWidget(dialog)
 
+    assert dialog._location.statut == StatutLocation.BROUILLON
     assert dialog._location.caution_montant == Decimal("0")
+    assert dialog.caution_button.isEnabled() is True
+
+
+def test_caution_button_enabled_in_confirmee_to_define_initial_amount(qtbot, login_as) -> None:
+    """Même correctif, pour le statut CONFIRMEE — également éligible à
+    ``set_caution_montant`` avant le départ."""
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    client = _make_client(stack)
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("1"))]
+    )
+    stack.rentals.confirm_location(location.id)
+
+    dialog = _build_dialog(stack, stack.rentals.get_location(location.id))
+    qtbot.addWidget(dialog)
+
+    assert dialog._location.statut == StatutLocation.CONFIRMEE
+    assert dialog._location.caution_montant == Decimal("0")
+    assert dialog.caution_button.isEnabled() is True
+
+
+def test_caution_button_disabled_in_brouillon_without_permission(qtbot, login_as) -> None:
+    """Le correctif de l'anomalie G ne doit pas contourner la permission
+    ``LOCATION_CAUTION_MANAGE`` : même en BROUILLON, sans la permission le
+    bouton reste désactivé."""
+    stack, _ = login_as("Consultation")
+    client_stack, _ = login_as("Administrateur")
+    client = _make_client(client_stack)
+    location = client_stack.rentals.create_location(date(2026, 1, 1), client.id, [])
+
+    dialog = LocationDetailDialog(location, "XOF", stack.rentals, stack.permissions)
+    qtbot.addWidget(dialog)
+
     assert dialog.caution_button.isEnabled() is False
 
 
@@ -522,3 +591,294 @@ def test_not_read_only_by_default_preserves_existing_behaviour(qtbot, login_as) 
 
     assert dialog.confirm_button.isEnabled() is False  # déjà confirmée
     assert dialog.cancel_location_button.isEnabled() is True  # toujours annulable
+
+
+# -- Lot 22 (§F) : documents de location ------------------------------------------------
+
+
+def _build_dialog_with_documents(stack, location, read_only=False) -> LocationDetailDialog:
+    return LocationDetailDialog(
+        location, "XOF", stack.rentals, stack.permissions,
+        receipt_service=stack.documents, read_only=read_only,
+    )
+
+
+def test_document_buttons_disabled_without_receipt_service(qtbot, login_as) -> None:
+    """Non-régression : un appelant qui ne fournit pas ``receipt_service``
+    (ancienne signature) obtient des boutons de documents désactivés,
+    jamais une erreur."""
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    client = _make_client(stack)
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("1"))]
+    )
+
+    dialog = _build_dialog(stack, location)
+    qtbot.addWidget(dialog)
+
+    assert dialog.print_voucher_button.isEnabled() is False
+    assert dialog.export_voucher_button.isEnabled() is False
+    assert dialog.print_location_receipt_button.isEnabled() is False
+    assert dialog.export_location_receipt_button.isEnabled() is False
+
+
+def test_voucher_buttons_enabled_in_brouillon_and_confirmee(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    client = _make_client(stack)
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("1"))]
+    )
+
+    dialog = _build_dialog_with_documents(stack, location)
+    qtbot.addWidget(dialog)
+    assert dialog.print_voucher_button.isEnabled() is True
+    assert dialog.export_voucher_button.isEnabled() is True
+    assert dialog.print_location_receipt_button.isEnabled() is False
+    assert dialog.export_location_receipt_button.isEnabled() is False
+
+    stack.rentals.confirm_location(location.id)
+    dialog._refresh()
+    assert dialog.print_voucher_button.isEnabled() is True
+    assert dialog.export_voucher_button.isEnabled() is True
+
+
+def test_location_receipt_buttons_enabled_after_depart(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    client = _make_client(stack)
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("1"))]
+    )
+    stack.rentals.confirm_location(location.id)
+    stack.rentals.depart_location(location.id, date(2026, 1, 1))
+
+    dialog = _build_dialog_with_documents(stack, stack.rentals.get_location(location.id))
+    qtbot.addWidget(dialog)
+
+    assert dialog.print_voucher_button.isEnabled() is False
+    assert dialog.export_voucher_button.isEnabled() is False
+    assert dialog.print_location_receipt_button.isEnabled() is True
+    assert dialog.export_location_receipt_button.isEnabled() is True
+
+
+def test_document_buttons_available_in_read_only_mode(qtbot, login_as) -> None:
+    """Lot 16 : contrairement aux boutons d'action mutants, les documents
+    restent disponibles en consultation lecture seule — ils ne modifient
+    jamais la location."""
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    client = _make_client(stack)
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("1"))]
+    )
+
+    dialog = _build_dialog_with_documents(stack, location, read_only=True)
+    qtbot.addWidget(dialog)
+
+    assert dialog.confirm_button.isEnabled() is False
+    assert dialog.print_voucher_button.isEnabled() is True
+    assert dialog.export_voucher_button.isEnabled() is True
+
+
+def test_export_voucher_to_writes_pdf_file(qtbot, login_as, monkeypatch, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    client = _make_client(stack)
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("1"))]
+    )
+    dialog = _build_dialog_with_documents(stack, location)
+    qtbot.addWidget(dialog)
+
+    out = tmp_path / "justificatif.pdf"
+    result = dialog._export_voucher_to(str(out))
+
+    assert result is True
+    assert out.exists()
+
+
+def test_export_voucher_refused_after_depart_shows_warning_not_crash(qtbot, login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    client = _make_client(stack)
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("1"))]
+    )
+    stack.rentals.confirm_location(location.id)
+    stack.rentals.depart_location(location.id, date(2026, 1, 1))
+    dialog = _build_dialog_with_documents(stack, stack.rentals.get_location(location.id))
+    qtbot.addWidget(dialog)
+
+    out = tmp_path / "justificatif.pdf"
+    result = dialog._export_voucher_to(str(out))
+
+    assert result is False
+    assert not out.exists()
+
+
+def test_export_location_receipt_to_writes_pdf_file(qtbot, login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    client = _make_client(stack)
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("1"))]
+    )
+    stack.rentals.confirm_location(location.id)
+    stack.rentals.depart_location(location.id, date(2026, 1, 1))
+    dialog = _build_dialog_with_documents(stack, stack.rentals.get_location(location.id))
+    qtbot.addWidget(dialog)
+
+    out = tmp_path / "recu_location.pdf"
+    result = dialog._export_location_receipt_to(str(out))
+
+    assert result is True
+    assert out.exists()
+
+
+def test_on_export_voucher_clicked_uses_file_dialog_and_suggests_filename(qtbot, login_as, monkeypatch, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    client = _make_client(stack)
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("1"))]
+    )
+    dialog = _build_dialog_with_documents(stack, location)
+    qtbot.addWidget(dialog)
+
+    out = tmp_path / "justificatif.pdf"
+    monkeypatch.setattr(
+        "app.views.location_detail_dialog.QFileDialog.getSaveFileName", lambda *a, **k: (str(out), "")
+    )
+
+    dialog._on_export_voucher_clicked()
+
+    assert out.exists()
+
+
+def test_on_export_voucher_clicked_cancelled_does_nothing(qtbot, login_as, monkeypatch, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    client = _make_client(stack)
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("1"))]
+    )
+    dialog = _build_dialog_with_documents(stack, location)
+    qtbot.addWidget(dialog)
+
+    monkeypatch.setattr(
+        "app.views.location_detail_dialog.QFileDialog.getSaveFileName", lambda *a, **k: ("", "")
+    )
+
+    dialog._on_export_voucher_clicked()  # ne doit lever aucune exception
+
+
+def test_print_voucher_without_printer_shows_warning(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    client = _make_client(stack)
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("1"))]
+    )
+    dialog = _build_dialog_with_documents(stack, location)
+    qtbot.addWidget(dialog)
+
+    monkeypatch.setattr(
+        "app.views.location_detail_dialog.QPrinterInfo.availablePrinters", staticmethod(lambda: [])
+    )
+
+    result = dialog._print_voucher()
+
+    assert result is False
+
+
+def test_print_voucher_succeeds_with_available_printer(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    client = _make_client(stack)
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("1"))]
+    )
+    dialog = _build_dialog_with_documents(stack, location)
+    qtbot.addWidget(dialog)
+
+    monkeypatch.setattr(
+        "app.views.location_detail_dialog.QPrinterInfo.availablePrinters",
+        staticmethod(lambda: ["Imprimante factice"]),
+    )
+    monkeypatch.setattr(
+        "app.views.location_detail_dialog.QPrintDialog.exec", lambda self: QDialog.DialogCode.Accepted
+    )
+
+    result = dialog._print_voucher()
+
+    assert result is True
+
+
+def test_print_voucher_cancelled_dialog_returns_false(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    client = _make_client(stack)
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("1"))]
+    )
+    dialog = _build_dialog_with_documents(stack, location)
+    qtbot.addWidget(dialog)
+
+    monkeypatch.setattr(
+        "app.views.location_detail_dialog.QPrinterInfo.availablePrinters",
+        staticmethod(lambda: ["Imprimante factice"]),
+    )
+    monkeypatch.setattr(
+        "app.views.location_detail_dialog.QPrintDialog.exec", lambda self: QDialog.DialogCode.Rejected
+    )
+
+    result = dialog._print_voucher()
+
+    assert result is False
+
+
+def test_print_location_receipt_succeeds_with_available_printer(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    client = _make_client(stack)
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("1"))]
+    )
+    stack.rentals.confirm_location(location.id)
+    stack.rentals.depart_location(location.id, date(2026, 1, 1))
+    dialog = _build_dialog_with_documents(stack, stack.rentals.get_location(location.id))
+    qtbot.addWidget(dialog)
+
+    monkeypatch.setattr(
+        "app.views.location_detail_dialog.QPrinterInfo.availablePrinters",
+        staticmethod(lambda: ["Imprimante factice"]),
+    )
+    monkeypatch.setattr(
+        "app.views.location_detail_dialog.QPrintDialog.exec", lambda self: QDialog.DialogCode.Accepted
+    )
+
+    result = dialog._print_location_receipt()
+
+    assert result is True
+
+
+def test_print_location_receipt_refused_before_depart(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    client = _make_client(stack)
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("1"))]
+    )
+    dialog = _build_dialog_with_documents(stack, location)
+    qtbot.addWidget(dialog)
+
+    monkeypatch.setattr(
+        "app.views.location_detail_dialog.QPrinterInfo.availablePrinters",
+        staticmethod(lambda: ["Imprimante factice"]),
+    )
+
+    result = dialog._print_location_receipt()
+
+    assert result is False

@@ -596,9 +596,11 @@ def test_on_cancel_clicked_does_not_open_reason_dialog_for_another_vendeur_sale(
     assert vendeur_x_stack.sales.get_sale(sale_y.id).statut == StatutOperation.VALIDEE
 
 
-def test_record_payment_button_disabled_for_another_vendeur_sale(qtbot, login_as) -> None:
-    from app.views.sale_detail_dialog import SaleDetailDialog
-
+def test_pay_button_disabled_for_another_vendeur_sale(qtbot, login_as) -> None:
+    """Remplace l'ancien test (désormais sans objet depuis la suppression du
+    bouton « Enregistrer un paiement » du détail de vente, §7.2) :
+    ``_can_manage_selected`` continue d'interdire le paiement différé d'une
+    vente validée par un autre Vendeur, désormais depuis la liste."""
     admin_stack, _ = login_as("Administrateur")
     article = _make_article(admin_stack)
 
@@ -606,17 +608,14 @@ def test_record_payment_button_disabled_for_another_vendeur_sale(qtbot, login_as
     sale_y = vendeur_y_stack.sales.create_sale(
         date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("5"), Decimal("150"))]
     )
-    validated_y = vendeur_y_stack.sales.validate_sale(sale_y.id)
+    vendeur_y_stack.sales.validate_sale(sale_y.id)
 
     vendeur_x_stack, _ = login_as("Vendeur")
-    sale_for_dialog = vendeur_x_stack.sales.get_sale(validated_y.id)
-    dialog = SaleDetailDialog(
-        sale_for_dialog, [], "EUR", vendeur_x_stack.documents, vendeur_x_stack.permissions,
-        sale_service=vendeur_x_stack.sales, parent=None,
-    )
-    qtbot.addWidget(dialog)
+    page = _build_page(vendeur_x_stack)
+    qtbot.addWidget(page)
+    _select_sale_row(page, sale_y.numero)
 
-    assert dialog.record_payment_button.isEnabled() is False
+    assert page.pay_button.isEnabled() is False
 
 
 # -- Lot 11 : validation directe (bouton « Valider » du formulaire) ----------
@@ -1979,3 +1978,334 @@ def test_caisse_pay_print_cancelled_keeps_caisse_open_with_updated_sale(qtbot, l
 
     assert page._view_stack.currentIndex() == 1
     assert page._caisse_validated_sale.montant_paye == Decimal("100")
+
+
+# -- Lot 22 (anomalie A) : actualisation immédiate des articles dans la caisse --------
+
+
+def test_refresh_reloads_caisse_articles_when_caisse_open(qtbot, login_as) -> None:
+    """Reproduit exactement le scénario de recette : un article créé après
+    l'ouverture de la caisse doit apparaître au retour sur Ventes, sans
+    reconnexion ni fermeture explicite de la caisse."""
+    stack, _ = login_as("Administrateur")
+    existing = _make_article(stack, reference="ART-EXIST")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+
+    assert {a[0] for a in page._caisse_articles_cache} == {existing.id}
+
+    new_article = _make_article(stack, reference="TLA-001")
+    page.refresh()
+
+    assert {a[0] for a in page._caisse_articles_cache} == {existing.id, new_article.id}
+
+
+def test_refresh_does_not_reload_caisse_articles_when_list_view_showing(qtbot, login_as, monkeypatch) -> None:
+    """Pas de requête supplémentaire inutile quand la caisse n'est pas
+    affichée — ``refresh()`` est déjà appelée à chaque retour sur le module,
+    y compris quand seule la liste des ventes est visible."""
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    assert page._view_stack.currentIndex() == 0
+
+    calls = {"n": 0}
+    original = page._load_articles_for_form
+
+    def _counting(*args, **kwargs):
+        calls["n"] += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(page, "_load_articles_for_form", _counting)
+    page.refresh()
+
+    assert calls["n"] == 0
+
+
+def test_refresh_reload_search_works_immediately_by_reference(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+    _make_article(stack, reference="TLA-001")
+
+    page.refresh()
+    page.caisse_search_edit.setText("tla-001")
+
+    labels = [
+        page.caisse_search_results.item(row).data(Qt.ItemDataRole.UserRole)[1]
+        for row in range(page.caisse_search_results.count())
+    ]
+    assert any("TLA-001" in label for label in labels)
+
+
+def test_refresh_reload_search_works_immediately_by_designation(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+    category = stack.categories.create_category("Cat-boissons")
+    stack.articles.create_article(
+        "TLA-001", "Tequila grosse bouteille", category.id, "unité",
+        Decimal("6000"), Decimal("9500"), Decimal("0"), stock_initial=Decimal("70"),
+    )
+
+    page.refresh()
+    page.caisse_search_edit.setText("tequila")
+
+    labels = [
+        page.caisse_search_results.item(row).data(Qt.ItemDataRole.UserRole)[1]
+        for row in range(page.caisse_search_results.count())
+    ]
+    assert any("Tequila grosse bouteille" in label for label in labels)
+
+
+def test_refresh_multiple_times_creates_no_duplicates(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, reference="ART-1")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+
+    page.refresh()
+    page.refresh()
+    page.refresh()
+
+    ids = [a[0] for a in page._caisse_articles_cache]
+    assert ids.count(article.id) == 1
+    assert page.caisse_search_results.count() == 1
+
+
+def test_refresh_reload_still_excludes_inactive_and_location_articles(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    sellable = _make_article(stack, reference="ART-SELL")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+
+    inactive = _make_article(stack, reference="ART-INACTIVE")
+    stack.articles.deactivate_article(inactive.id)
+    location_article = _make_article(stack, reference="ART-LOC")
+    stack.articles.switch_mode_gestion(location_article.id, ModeGestionArticle.LOCATION)
+
+    page.refresh()
+
+    ids = {a[0] for a in page._caisse_articles_cache}
+    assert ids == {sellable.id}
+
+
+# -- Lot 22 (§7 — paiement différé) : point d'entrée « Payer » depuis la liste -------
+
+
+def _select_sale_row(page, sale_numero: str) -> None:
+    row = next(r for r in range(page.table.rowCount()) if page.table.item(r, 0).text() == sale_numero)
+    page.table.selectRow(row)
+
+
+def test_pay_button_disabled_without_selection(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.pay_button.isEnabled() is False
+
+
+def test_pay_button_disabled_for_draft_sale(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    stack.sales.create_sale(date(2026, 1, 1), [])
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    _select_sale_row(page, "VNT-000001")
+
+    assert page.pay_button.isEnabled() is False
+
+
+def test_pay_button_enabled_for_validated_sale_with_balance_due(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    sale = stack.sales.create_sale(date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("2"), Decimal("150"))])
+    stack.sales.validate_sale(sale.id)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    _select_sale_row(page, sale.numero)
+
+    assert page.pay_button.isEnabled() is True
+
+
+def test_pay_button_disabled_once_fully_paid(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    sale = stack.sales.create_sale(date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("2"), Decimal("150"))])
+    stack.sales.validate_sale(sale.id, paiement_initial=Decimal("300"))
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    _select_sale_row(page, sale.numero)
+
+    assert page.pay_button.isEnabled() is False
+
+
+def test_pay_button_disabled_without_payment_permission(qtbot, login_as) -> None:
+    admin_stack, _ = login_as("Administrateur")
+    article = _make_article(admin_stack)
+    sale = admin_stack.sales.create_sale(
+        date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("2"), Decimal("150"))]
+    )
+    admin_stack.sales.validate_sale(sale.id)
+
+    role_id = next(r.id for r in admin_stack.roles.list_roles() if r.nom == "Vendeur")
+    codes = admin_stack.roles.get_role_permissions(role_id)
+    admin_stack.roles.update_role_permissions(role_id, [c for c in codes if c != "SALE_PAYMENT_CREATE"])
+
+    vendeur_stack, _ = login_as("Vendeur")
+    page = _build_page(vendeur_stack)
+    qtbot.addWidget(page)
+    _select_sale_row(page, sale.numero)
+
+    assert page.pay_button.isEnabled() is False
+
+
+def test_deferred_payment_settles_sale_validated_in_a_previous_closed_session(qtbot, login_as) -> None:
+    """Scénario explicitement demandé par le mandat : une vente à crédit
+    validée lors d'une session de caisse désormais fermée (ici simulée par
+    une toute nouvelle instance de ``SalesPage``, sans aucun état de caisse
+    en mémoire) doit pouvoir être réglée depuis la liste."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    old_session_page = _build_page(stack)
+    qtbot.addWidget(old_session_page)
+    old_session_page._on_add_clicked()
+    old_session_page._add_caisse_line(article.id, "ART-1 — x", Decimal("2"), Decimal("150"))
+    old_session_page._on_caisse_validate_clicked()
+    sale_numero = old_session_page._caisse_validated_sale.numero
+    sale_id = old_session_page._caisse_validated_sale.id
+    # La « session » précédente est bien close : nouvelle page, aucun état
+    # de caisse résiduel pour cette vente.
+    new_session_page = _build_page(stack)
+    qtbot.addWidget(new_session_page)
+    assert new_session_page._caisse_validated_sale is None
+
+    _select_sale_row(new_session_page, sale_numero)
+    assert new_session_page.pay_button.isEnabled() is True
+
+    result = new_session_page._submit_list_payment(
+        sale_id, {"montant": "300", "mode_paiement": "Espèces", "reference": None, "commentaire": None}
+    )
+
+    assert result is True
+    reloaded = stack.sales.get_sale(sale_id)
+    assert reloaded.montant_paye == Decimal("300")
+    assert reloaded.reste_a_payer == Decimal("0")
+    assert len(stack.sales.list_payments(sale_id)) == 1
+
+
+def test_deferred_payment_partial_amount_updates_balance(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    sale = stack.sales.create_sale(date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("2"), Decimal("150"))])
+    stack.sales.validate_sale(sale.id)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    result = page._submit_list_payment(
+        sale.id, {"montant": "100", "mode_paiement": None, "reference": None, "commentaire": None}
+    )
+
+    assert result is True
+    reloaded = stack.sales.get_sale(sale.id)
+    assert reloaded.montant_paye == Decimal("100")
+    assert reloaded.reste_a_payer == Decimal("200")
+
+
+def test_deferred_payment_rejects_amount_exceeding_balance(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    sale = stack.sales.create_sale(date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("2"), Decimal("150"))])
+    stack.sales.validate_sale(sale.id)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    result = page._submit_list_payment(
+        sale.id, {"montant": "301", "mode_paiement": None, "reference": None, "commentaire": None}
+    )
+
+    assert result is False
+    reloaded = stack.sales.get_sale(sale.id)
+    assert reloaded.montant_paye == Decimal("0")
+
+
+def test_deferred_payment_button_disabled_during_call_and_reenabled_after_partial_payment(
+    qtbot, login_as, monkeypatch
+) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    sale = stack.sales.create_sale(date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("2"), Decimal("150"))])
+    stack.sales.validate_sale(sale.id)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    _select_sale_row(page, sale.numero)
+
+    observed = {}
+    original_record_payment = stack.sales.record_payment
+
+    def _spy_record_payment(*args, **kwargs):
+        observed["enabled_during_call"] = page.pay_button.isEnabled()
+        return original_record_payment(*args, **kwargs)
+
+    monkeypatch.setattr(stack.sales, "record_payment", _spy_record_payment)
+
+    result = page._submit_list_payment(
+        sale.id, {"montant": "100", "mode_paiement": None, "reference": None, "commentaire": None}
+    )
+
+    assert result is True
+    assert observed["enabled_during_call"] is False
+    assert page.pay_button.isEnabled() is True  # reste positif après paiement partiel
+
+
+def test_deferred_payment_does_not_record_twice_on_repeated_dialog_accept(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    sale = stack.sales.create_sale(date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("2"), Decimal("150"))])
+    stack.sales.validate_sale(sale.id)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    _select_sale_row(page, sale.numero)
+
+    exec_calls = {"n": 0}
+
+    class _FakePaymentDialog:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def exec(self) -> QDialog.DialogCode:
+            exec_calls["n"] += 1
+            return QDialog.DialogCode.Accepted
+
+        def values(self) -> dict:
+            return {"montant": "300", "mode_paiement": None, "reference": None, "commentaire": None}
+
+    monkeypatch.setattr("app.views.pages.sales_page.PaymentFormDialog", _FakePaymentDialog)
+
+    page._on_list_pay_clicked()
+
+    assert exec_calls["n"] == 1
+    assert len(stack.sales.list_payments(sale.id)) == 1
+
+
+def test_deferred_payment_preserves_history_from_earlier_payments(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    sale = stack.sales.create_sale(date(2026, 1, 1), [VenteLigneInput(article.id, Decimal("2"), Decimal("150"))])
+    stack.sales.validate_sale(sale.id)
+    stack.sales.record_payment(sale.id, Decimal("50"))
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    page._submit_list_payment(
+        sale.id, {"montant": "100", "mode_paiement": None, "reference": None, "commentaire": None}
+    )
+
+    payments = stack.sales.list_payments(sale.id)
+    assert len(payments) == 2
+    assert [p.montant for p in payments] == [Decimal("50"), Decimal("100")]

@@ -464,3 +464,58 @@ def test_no_warning_when_activating_module(qtbot, login_as, monkeypatch, test_se
     assert confirm_calls == []
     assert result is True
     assert is_rental_module_enabled(test_settings) is True
+
+
+# -- Lot 22 (anomalie C) : défilement de la page Paramètres --------------------------
+
+
+def test_settings_page_content_is_wrapped_in_scroll_area(qtbot, login_as) -> None:
+    from PySide6.QtWidgets import QScrollArea
+
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    scroll_areas = page.findChildren(QScrollArea)
+    assert len(scroll_areas) == 1
+    assert scroll_areas[0].widgetResizable() is True
+
+
+def test_settings_page_all_five_groups_reachable_through_scroll_area(qtbot, login_as) -> None:
+    from PySide6.QtWidgets import QGroupBox, QScrollArea
+
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    scroll_area = page.findChild(QScrollArea)
+    assert scroll_area is not None
+    content = scroll_area.widget()
+    assert content is not None
+    group_titles = {group.title() for group in content.findChildren(QGroupBox)}
+    assert group_titles == {
+        "Informations de l'entreprise",
+        "Logo de l'entreprise cliente",
+        "Pied de reçu",
+        "Modules optionnels",
+        "Sécurité — récupération administrateur",
+    }
+
+
+def test_settings_page_widgets_still_directly_accessible_after_scroll_wrap(qtbot, login_as) -> None:
+    """Non-régression : tous les widgets déjà référencés par attribut
+    restent accessibles tels quels malgré le nouveau conteneur défilant
+    (Qt réaffecte le parent lors de l'ajout au layout, l'attribut Python
+    continue de désigner le même widget)."""
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    for widget in (
+        page.nom_edit, page.adresse_edit, page.telephone_edit, page.email_edit, page.devise_combo,
+        page.save_profile_button, page.logo_preview_label, page.choose_logo_button, page.clear_logo_button,
+        page.receipt_footer_edit, page.save_receipt_footer_button,
+        page.locations_module_checkbox, page.save_modules_button, page.generate_recovery_code_button,
+    ):
+        assert widget is not None
+        assert widget.window() is page.window()

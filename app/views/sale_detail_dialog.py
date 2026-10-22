@@ -33,11 +33,7 @@ from PySide6.QtWidgets import (
 
 from app.models.enums import StatutOperation, StatutPaiement
 from app.services.auth.permission_service import PermissionService
-from app.services.documents.receipt_document import (
-    ReceiptFormat,
-    build_payment_receipt_document,
-    build_receipt_document,
-)
+from app.services.documents.receipt_document import ReceiptFormat, build_receipt_document
 from app.services.documents.receipt_service import ReceiptService
 from app.services.sales.sale_service import SaleService, VenteSummary
 from app.services.stock.movement_summary import MouvementSummary
@@ -46,8 +42,6 @@ from app.utils.money import format_money
 from app.utils.pdf_export import build_page_layout, export_document_to_pdf
 from app.utils.quantity import format_quantity
 from app.views.cancellation_reason_dialog import CancellationReasonDialog
-from app.views.common import parse_decimal
-from app.views.payment_form_dialog import PaymentFormDialog
 
 _LINE_COLUMNS = ["Article", "Quantité", "Prix unitaire", "Montant"]
 _MOVEMENT_COLUMNS = ["Date/heure", "Type", "Quantité", "Stock avant", "Stock après", "Utilisateur"]
@@ -187,18 +181,17 @@ class SaleDetailDialog(QDialog):
         self.payments_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         payment_group_layout.addWidget(self.payments_table)
 
-        payment_button_row = QHBoxLayout()
-        self.record_payment_button = QPushButton("Enregistrer un paiement", payment_group)
-        payment_button_row.addWidget(self.record_payment_button)
-        self.export_payment_receipt_button = QPushButton("Reçu du paiement sélectionné (PDF)", payment_group)
-        payment_button_row.addWidget(self.export_payment_receipt_button)
-        payment_button_row.addStretch(1)
-        payment_group_layout.addLayout(payment_button_row)
-
+        # Lot 22 (§7.1) : le bouton « Reçu du paiement sélectionné (PDF) »
+        # est supprimé — le reçu de vente unifié (Lot 21) contient déjà
+        # l'historique complet des paiements ci-dessus. Le tableau et son
+        # contenu restent inchangés, seul ce bouton disparaît.
+        #
+        # Lot 22 (§7.2) : le bouton « Enregistrer un paiement » est lui
+        # aussi supprimé de ce détail — le paiement différé d'une vente
+        # validée se fait désormais depuis le bouton « Payer » de la liste
+        # des ventes (``SalesPage``), qui reste accessible même après la
+        # fermeture de la session de caisse où la vente a été validée.
         content_layout.addWidget(payment_group)
-
-        self.record_payment_button.clicked.connect(self._on_record_payment_clicked)
-        self.export_payment_receipt_button.clicked.connect(self._on_export_payment_receipt_clicked)
 
         # -- reçu : uniquement pour une vente validée (§4 du lot « reçus ») -------
         # Activation réelle différée à ``_update_receipt_controls`` (appelée une
@@ -215,18 +208,18 @@ class SaleDetailDialog(QDialog):
         self.print_receipt_button = QPushButton("Imprimer le reçu", receipt_group)
         receipt_row.addWidget(self.print_receipt_button)
 
-        self.export_a4_button = QPushButton("Exporter en PDF (A4)", receipt_group)
-        receipt_row.addWidget(self.export_a4_button)
-
-        self.export_ticket_button = QPushButton("Exporter en PDF (Ticket 80 mm)", receipt_group)
-        receipt_row.addWidget(self.export_ticket_button)
+        # Lot 22 (§7.3) : un seul bouton d'export, qui demande le format au
+        # clic (jamais via ``receipt_format_combo`` ci-dessus, réservé à
+        # l'impression — voir ``_prompt_export_format``), plutôt que les
+        # deux boutons distincts « Exporter en PDF (A4) »/« (Ticket 80 mm) ».
+        self.export_pdf_button = QPushButton("Exporter en PDF", receipt_group)
+        receipt_row.addWidget(self.export_pdf_button)
 
         receipt_row.addStretch(1)
         content_layout.addWidget(receipt_group)
 
         self.print_receipt_button.clicked.connect(self._on_print_clicked)
-        self.export_a4_button.clicked.connect(self._on_export_a4_clicked)
-        self.export_ticket_button.clicked.connect(self._on_export_ticket_clicked)
+        self.export_pdf_button.clicked.connect(self._on_export_pdf_clicked)
 
         # -- mouvements de stock : affichés seulement s'il en existe --------------
         # (une vente en brouillon n'en a structurellement jamais, cf.
@@ -256,11 +249,41 @@ class SaleDetailDialog(QDialog):
 
     # -- export PDF ----------------------------------------------------------------
 
-    def _on_export_a4_clicked(self) -> None:
-        self._prompt_and_export(ReceiptFormat.A4, "recu_A4")
+    def _on_export_pdf_clicked(self) -> None:
+        """Lot 22 (§7.3) : un seul bouton, qui demande d'abord le format
+        (A4 ou Ticket 80 mm) avant d'ouvrir le dialogue existant de choix
+        du fichier — jamais l'inverse, et jamais via ``receipt_format_combo``
+        (réservé à l'impression). Une annulation à n'importe laquelle des
+        deux étapes referme simplement le dialogue, sans erreur ni
+        modification des données (voir ``_prompt_export_format``/
+        ``_prompt_and_export``, chacune renvoyant déjà silencieusement si
+        l'utilisateur n'a rien choisi)."""
+        receipt_format = self._prompt_export_format()
+        if receipt_format is None:
+            return
+        filename_prefix = "recu_A4" if receipt_format is ReceiptFormat.A4 else "recu_ticket_80mm"
+        self._prompt_and_export(receipt_format, filename_prefix)
 
-    def _on_export_ticket_clicked(self) -> None:
-        self._prompt_and_export(ReceiptFormat.TICKET_80MM, "recu_ticket_80mm")
+    def _prompt_export_format(self) -> Optional[ReceiptFormat]:
+        """Isolé de ``_on_export_pdf_clicked`` pour rester testable sans
+        boîte modale (les tests substituent directement cette méthode).
+        Boîte à deux choix explicites, jamais une réutilisation de
+        ``receipt_format_combo`` : le format d'impression et le format
+        d'export restent deux choix entièrement indépendants, sans aucune
+        ambiguïté possible entre les deux."""
+        box = QMessageBox(self)
+        box.setWindowTitle("Exporter en PDF")
+        box.setText("Choisissez le format du PDF à exporter :")
+        a4_button = box.addButton("A4", QMessageBox.ButtonRole.AcceptRole)
+        ticket_button = box.addButton("Ticket 80 mm", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Annuler", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is a4_button:
+            return ReceiptFormat.A4
+        if clicked is ticket_button:
+            return ReceiptFormat.TICKET_80MM
+        return None
 
     def _prompt_and_export(self, receipt_format: ReceiptFormat, filename_prefix: str) -> None:
         suggested = f"{filename_prefix}_{self._sale_numero}.pdf"
@@ -356,15 +379,6 @@ class SaleDetailDialog(QDialog):
             self.payments_table.setItem(row, 3, QTableWidgetItem(paiement.reference or "—"))
             self.payments_table.setItem(row, 4, QTableWidgetItem(paiement.username))
 
-        can_pay = (
-            self._sale_service is not None
-            and sale.statut == StatutOperation.VALIDEE
-            and sale.reste_a_payer > 0
-            and self._sale_service.can_manage_sale(self._sale_id, "SALE_PAYMENT_CREATE")
-        )
-        self.record_payment_button.setEnabled(can_pay)
-        self.export_payment_receipt_button.setEnabled(len(self._payments) > 0)
-
         # Le statut peut avoir changé (annulation) : les contrôles de reçu et
         # d'annulation dépendent tous deux de ``sale.statut``, donc toujours
         # recalculés ici, à la même source de vérité que le reste de cette
@@ -381,8 +395,7 @@ class SaleDetailDialog(QDialog):
         )
         self.receipt_format_combo.setEnabled(can_view_receipt)
         self.print_receipt_button.setEnabled(can_view_receipt)
-        self.export_a4_button.setEnabled(can_view_receipt)
-        self.export_ticket_button.setEnabled(can_view_receipt)
+        self.export_pdf_button.setEnabled(can_view_receipt)
 
     def _update_cancel_button(self) -> None:
         """Confort d'interface uniquement : la règle réelle (permission +
@@ -484,61 +497,3 @@ class SaleDetailDialog(QDialog):
             self._populate_movements_table(self.movements_table, movements)
         else:
             self._build_movements_group(movements)
-
-    def _on_record_payment_clicked(self) -> None:
-        if self._sale_service is None:
-            return
-        dialog = PaymentFormDialog(
-            self._sale.total, self._sale.montant_paye, self._sale.reste_a_payer, self._currency_code, parent=self
-        )
-        while True:
-            if dialog.exec() != QDialog.DialogCode.Accepted:
-                return
-            if self._submit_payment(dialog.values()):
-                return
-            dialog.exec()
-
-    def _submit_payment(self, values: dict) -> bool:
-        """Isolé de ``_on_record_payment_clicked`` pour rester testable sans
-        dialogue modal."""
-        try:
-            montant = parse_decimal(values["montant"], "montant du paiement")
-            self._sale_service.record_payment(
-                self._sale_id, montant,
-                mode_paiement=values.get("mode_paiement"),
-                reference=values.get("reference"),
-                commentaire=values.get("commentaire"),
-            )
-        except AppError as exc:
-            QMessageBox.warning(self, "Paiement refusé", str(exc))
-            return False
-        QMessageBox.information(self, "Paiement enregistré", "Le paiement a été enregistré avec succès.")
-        self._refresh_payment_section()
-        return True
-
-    def _on_export_payment_receipt_clicked(self) -> None:
-        selected = self.payments_table.selectionModel().selectedRows()
-        if not selected:
-            QMessageBox.warning(self, "Aucune sélection", "Sélectionnez d'abord un paiement dans l'historique.")
-            return
-        paiement_id = self.payments_table.item(selected[0].row(), 0).data(Qt.ItemDataRole.UserRole)
-        suggested = f"recu_paiement_{self._sale_numero}_{paiement_id}.pdf"
-        file_path, _filter = QFileDialog.getSaveFileName(
-            self, "Exporter le reçu de paiement en PDF", suggested, "PDF (*.pdf)"
-        )
-        if not file_path:
-            return
-        self._export_payment_receipt_to(file_path, paiement_id)
-
-    def _export_payment_receipt_to(self, file_path: str, paiement_id: int) -> bool:
-        """Isolé de ``_on_export_payment_receipt_clicked`` pour rester
-        testable sans dialogue modal de sélection de fichier."""
-        try:
-            data = self._receipt_service.build_payment_receipt(self._sale_id, paiement_id)
-            rendered = build_payment_receipt_document(data)
-            export_document_to_pdf(rendered.document, file_path, rendered.page_size, rendered.margin_mm)
-        except AppError as exc:
-            QMessageBox.warning(self, "Export refusé", str(exc))
-            return False
-        QMessageBox.information(self, "Reçu exporté", "Le reçu de paiement a été exporté en PDF avec succès.")
-        return True

@@ -116,8 +116,7 @@ def test_receipt_buttons_disabled_for_brouillon(qtbot) -> None:
     dialog = _build_dialog(_make_sale(statut=StatutOperation.BROUILLON))
     qtbot.addWidget(dialog)
 
-    assert dialog.export_a4_button.isEnabled() is False
-    assert dialog.export_ticket_button.isEnabled() is False
+    assert dialog.export_pdf_button.isEnabled() is False
     assert dialog.print_receipt_button.isEnabled() is False
 
 
@@ -125,15 +124,14 @@ def test_receipt_buttons_disabled_for_annulee(qtbot) -> None:
     dialog = _build_dialog(_make_sale(statut=StatutOperation.ANNULEE))
     qtbot.addWidget(dialog)
 
-    assert dialog.export_a4_button.isEnabled() is False
+    assert dialog.export_pdf_button.isEnabled() is False
 
 
 def test_receipt_buttons_enabled_for_validee(qtbot) -> None:
     dialog = _build_dialog(_make_sale(statut=StatutOperation.VALIDEE))
     qtbot.addWidget(dialog)
 
-    assert dialog.export_a4_button.isEnabled() is True
-    assert dialog.export_ticket_button.isEnabled() is True
+    assert dialog.export_pdf_button.isEnabled() is True
     assert dialog.print_receipt_button.isEnabled() is True
 
 
@@ -147,7 +145,28 @@ def test_receipt_buttons_disabled_without_sale_view_permission(qtbot) -> None:
     )
     qtbot.addWidget(dialog)
 
-    assert dialog.export_a4_button.isEnabled() is False
+    assert dialog.export_pdf_button.isEnabled() is False
+
+
+def test_payment_receipt_button_no_longer_exists(qtbot) -> None:
+    """Lot 22 (§7.1) : le bouton « Reçu du paiement sélectionné (PDF) » est
+    entièrement supprimé de l'interface — le reçu de vente unifié (Lot 21)
+    contient déjà l'historique complet des paiements."""
+    dialog = _build_dialog(_make_sale(statut=StatutOperation.VALIDEE))
+    qtbot.addWidget(dialog)
+
+    assert not hasattr(dialog, "export_payment_receipt_button")
+
+
+def test_single_export_pdf_button_replaces_the_two_format_specific_buttons(qtbot) -> None:
+    """Lot 22 (§7.3) : un seul bouton d'export, les deux boutons distincts
+    A4/Ticket n'existent plus."""
+    dialog = _build_dialog(_make_sale(statut=StatutOperation.VALIDEE))
+    qtbot.addWidget(dialog)
+
+    assert not hasattr(dialog, "export_a4_button")
+    assert not hasattr(dialog, "export_ticket_button")
+    assert dialog.export_pdf_button.text() == "Exporter en PDF"
 
 
 def test_detail_dialog_shows_motif_when_annulee(qtbot) -> None:

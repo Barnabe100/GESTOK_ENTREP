@@ -3,7 +3,8 @@ from decimal import Decimal
 
 import pytest
 
-from app.models.enums import TypeMouvement
+from app.models.enums import ModeGestionArticle, TypeMouvement
+from app.services.rentals.location_service import LocationLigneInput
 from app.utils.exceptions import NotFoundError, PermissionDeniedError, ValidationError
 
 
@@ -723,3 +724,287 @@ def test_sale_receipt_footer_phrase_empty_when_explicitly_cleared(login_as) -> N
     receipt = stack.documents.build_sale_receipt(sale.id)
 
     assert receipt.pied_de_page == ""
+
+
+# -- Lot 22 (§F) : documents de location --------------------------------------------
+
+
+def _make_rental_article(stack, reference="ART-LOC", stock_initial=Decimal("10"), tarif_jour=Decimal("500")):
+    category = stack.categories.create_category(f"Cat-{reference}")
+    article = stack.articles.create_article(
+        reference, "Article de location", category.id, "unité",
+        Decimal("1000"), Decimal("0"), Decimal("0"),
+        stock_initial=stock_initial, tarif_location_jour=tarif_jour,
+    )
+    stack.articles.switch_mode_gestion(article.id, ModeGestionArticle.LOCATION)
+    return stack.articles.get_article(article.id)
+
+
+def _make_rental_client(stack, nom="Client Location"):
+    return stack.clients.create_client(nom)
+
+
+def test_reservation_voucher_refused_for_unknown_location(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+
+    with pytest.raises(NotFoundError):
+        stack.documents.build_location_reservation_voucher(999999)
+
+
+def test_reservation_voucher_available_for_brouillon(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack, tarif_jour=Decimal("500"))
+    client = _make_rental_client(stack)
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("3"))]
+    )
+
+    voucher = stack.documents.build_location_reservation_voucher(location.id)
+
+    assert voucher.numero == location.numero
+    assert voucher.client_nom == client.nom
+    assert len(voucher.lignes) == 1
+    assert voucher.lignes[0].article_reference == article.reference
+    assert voucher.lignes[0].quantite_reservee == Decimal("3")
+    assert voucher.lignes[0].tarif_jour == Decimal("500")
+
+
+def test_reservation_voucher_available_for_confirmee(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    client = _make_rental_client(stack)
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("1"))]
+    )
+    stack.rentals.confirm_location(location.id)
+
+    voucher = stack.documents.build_location_reservation_voucher(location.id)
+
+    assert voucher.numero == location.numero
+
+
+def test_reservation_voucher_refused_after_depart(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    client = _make_rental_client(stack)
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("1"))]
+    )
+    stack.rentals.confirm_location(location.id)
+    stack.rentals.depart_location(location.id, date(2026, 1, 1))
+
+    with pytest.raises(ValidationError):
+        stack.documents.build_location_reservation_voucher(location.id)
+
+
+def test_reservation_voucher_includes_planned_caution(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    client = _make_rental_client(stack)
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("1"))]
+    )
+    stack.rentals.set_caution_montant(location.id, Decimal("10000"))
+
+    voucher = stack.documents.build_location_reservation_voucher(location.id)
+
+    assert voucher.caution_montant == Decimal("10000")
+
+
+def test_reservation_voucher_without_client(login_as) -> None:
+    """Client facultatif (lot dédié) : le justificatif reste disponible,
+    sans inventer de nom de client."""
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), None, [LocationLigneInput(article.id, Decimal("1"))]
+    )
+
+    voucher = stack.documents.build_location_reservation_voucher(location.id)
+
+    assert voucher.client_nom is None
+
+
+def test_location_receipt_refused_before_depart(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    client = _make_rental_client(stack)
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("1"))]
+    )
+
+    with pytest.raises(ValidationError):
+        stack.documents.build_location_receipt(location.id)
+
+    stack.rentals.confirm_location(location.id)
+    with pytest.raises(ValidationError):
+        stack.documents.build_location_receipt(location.id)
+
+
+def test_location_receipt_available_while_en_cours_without_any_return(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack, tarif_jour=Decimal("500"))
+    client = _make_rental_client(stack)
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("2"))]
+    )
+    stack.rentals.confirm_location(location.id)
+    stack.rentals.depart_location(location.id, date(2026, 1, 1))
+
+    receipt = stack.documents.build_location_receipt(location.id)
+
+    assert receipt.numero == location.numero
+    assert receipt.date_depart == date(2026, 1, 1)
+    assert len(receipt.lignes) == 1
+    assert receipt.lignes[0].retours == ()
+    assert receipt.total_facture == Decimal("0")
+    assert receipt.reste_a_payer == Decimal("0")
+
+
+def test_location_receipt_reflects_real_billed_amount_after_return(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack, tarif_jour=Decimal("500"))
+    client = _make_rental_client(stack)
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("2"))]
+    )
+    stack.rentals.confirm_location(location.id)
+    stack.rentals.depart_location(location.id, date(2026, 1, 1))
+    reloaded = stack.rentals.get_location(location.id)
+    ligne_id = reloaded.lignes[0].id
+
+    stack.rentals.return_location_line(
+        location.id, ligne_id, date(2026, 1, 4), quantite_bon_etat=Decimal("2")
+    )
+
+    receipt = stack.documents.build_location_receipt(location.id)
+
+    # tarif_jour (500) x 3 jours x 2 unités = 3000, montant déjà historisé
+    # par LocationService.return_location_line, jamais recalculé ici.
+    assert receipt.total_facture == Decimal("3000")
+    assert len(receipt.lignes[0].retours) == 1
+    retour = receipt.lignes[0].retours[0]
+    assert retour.quantite == Decimal("2")
+    assert retour.jours == 3
+    assert retour.montant_facture == Decimal("3000")
+
+
+def test_location_receipt_includes_payments_and_balance(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack, tarif_jour=Decimal("500"))
+    client = _make_rental_client(stack)
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("1"))]
+    )
+    stack.rentals.confirm_location(location.id)
+    stack.rentals.depart_location(location.id, date(2026, 1, 1))
+    reloaded = stack.rentals.get_location(location.id)
+    stack.rentals.return_location_line(
+        location.id, reloaded.lignes[0].id, date(2026, 1, 2), quantite_bon_etat=Decimal("1")
+    )
+    stack.rentals.record_payment(location.id, Decimal("300"), mode_paiement="Espèces")
+
+    receipt = stack.documents.build_location_receipt(location.id)
+
+    assert receipt.total_facture == Decimal("500")
+    assert receipt.montant_paye == Decimal("300")
+    assert receipt.reste_a_payer == Decimal("200")
+    assert len(receipt.paiements) == 1
+    assert receipt.paiements[0].mode_paiement == "Espèces"
+
+
+def test_location_receipt_shows_caution_separately_from_billed_total(login_as) -> None:
+    """§G/§F : la caution ne doit jamais s'ajouter au total facturé —
+    affichée séparément, même si elle est très supérieure au montant
+    réellement loué."""
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack, tarif_jour=Decimal("500"))
+    client = _make_rental_client(stack)
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("1"))]
+    )
+    stack.rentals.set_caution_montant(location.id, Decimal("20000"))
+    stack.rentals.confirm_location(location.id)
+    stack.rentals.depart_location(location.id, date(2026, 1, 1))
+    reloaded = stack.rentals.get_location(location.id)
+    stack.rentals.return_location_line(
+        location.id, reloaded.lignes[0].id, date(2026, 1, 2), quantite_bon_etat=Decimal("1")
+    )
+
+    receipt = stack.documents.build_location_receipt(location.id)
+
+    assert receipt.total_facture == Decimal("500")
+    assert receipt.caution_montant == Decimal("20000")
+    assert receipt.caution_rendue == Decimal("0")
+
+
+def test_location_receipt_available_for_retournee(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack, tarif_jour=Decimal("500"))
+    client = _make_rental_client(stack)
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("1"))]
+    )
+    stack.rentals.confirm_location(location.id)
+    stack.rentals.depart_location(location.id, date(2026, 1, 1))
+    reloaded = stack.rentals.get_location(location.id)
+    stack.rentals.return_location_line(
+        location.id, reloaded.lignes[0].id, date(2026, 1, 2), quantite_bon_etat=Decimal("1")
+    )
+
+    from app.models.enums import StatutLocation
+
+    final = stack.rentals.get_location(location.id)
+    assert final.statut == StatutLocation.RETOURNEE
+
+    receipt = stack.documents.build_location_receipt(location.id)
+    assert receipt.statut == StatutLocation.RETOURNEE
+
+
+def test_location_receipt_refused_for_unknown_location(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+
+    with pytest.raises(NotFoundError):
+        stack.documents.build_location_receipt(999999)
+
+
+def test_location_documents_use_company_profile_and_currency(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    stack.parameters.update_config(
+        nom="Boutique Location", adresse=None, telephone=None, email=None, devise="EUR"
+    )
+    article = _make_rental_article(stack)
+    client = _make_rental_client(stack)
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("1"))]
+    )
+
+    voucher = stack.documents.build_location_reservation_voucher(location.id)
+    assert voucher.entreprise_nom == "Boutique Location"
+    assert voucher.devise == "EUR"
+
+    stack.rentals.confirm_location(location.id)
+    stack.rentals.depart_location(location.id, date(2026, 1, 1))
+    receipt = stack.documents.build_location_receipt(location.id)
+    assert receipt.entreprise_nom == "Boutique Location"
+    assert receipt.devise == "EUR"
+
+
+def test_role_without_location_view_is_denied_for_documents(login_as) -> None:
+    admin_stack, _ = login_as("Administrateur")
+    article = _make_rental_article(admin_stack)
+    client = _make_rental_client(admin_stack)
+    location = admin_stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("1"))]
+    )
+
+    role_id = next(r.id for r in admin_stack.roles.list_roles() if r.nom == "Vendeur")
+    codes = admin_stack.roles.get_role_permissions(role_id)
+    admin_stack.roles.update_role_permissions(role_id, [c for c in codes if c != "LOCATION_VIEW"])
+
+    stack, _ = login_as("Vendeur")
+    assert not stack.permissions.has_permission("LOCATION_VIEW")
+    with pytest.raises(PermissionDeniedError):
+        stack.documents.build_location_reservation_voucher(location.id)
+    with pytest.raises(PermissionDeniedError):
+        stack.documents.build_location_receipt(location.id)

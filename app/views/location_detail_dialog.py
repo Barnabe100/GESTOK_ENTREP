@@ -8,11 +8,14 @@ confort d'interface, jamais ce qui empêche un contournement.
 from __future__ import annotations
 
 from datetime import date
+from typing import Optional
 
 from PySide6.QtCore import QDate
+from PySide6.QtPrintSupport import QPrintDialog, QPrinter, QPrinterInfo
 from PySide6.QtWidgets import (
     QDateEdit,
     QDialog,
+    QFileDialog,
     QFormLayout,
     QHBoxLayout,
     QLabel,
@@ -26,9 +29,15 @@ from PySide6.QtWidgets import (
 
 from app.models.enums import StatutLocation
 from app.services.auth.permission_service import PermissionService
+from app.services.documents.receipt_document import (
+    build_location_receipt_document,
+    build_location_reservation_voucher_document,
+)
+from app.services.documents.receipt_service import ReceiptService
 from app.services.rentals.location_service import LocationService, LocationSummary
 from app.utils.exceptions import AppError
 from app.utils.money import format_money
+from app.utils.pdf_export import build_page_layout, export_document_to_pdf
 from app.utils.quantity import format_quantity
 from app.views.cancellation_reason_dialog import CancellationReasonDialog
 from app.views.common import build_required_field_legend, parse_decimal, required_label
@@ -91,6 +100,7 @@ class LocationDetailDialog(QDialog):
         currency_code: str,
         location_service: LocationService,
         permission_service: PermissionService,
+        receipt_service: Optional[ReceiptService] = None,
         parent: QWidget | None = None,
         read_only: bool = False,
     ) -> None:
@@ -99,6 +109,10 @@ class LocationDetailDialog(QDialog):
         self._currency_code = currency_code
         self._location_service = location_service
         self._permissions = permission_service
+        # Lot 22 (§F) : facultatif pour ne jamais casser un appelant existant
+        # qui ne le fournirait pas (voir ``LocationsPage``) — les boutons de
+        # documents restent alors désactivés, jamais une erreur.
+        self._receipt_service = receipt_service
         self._location = location
         # Lot 16 : accès de consultation explicite conservé quand le module
         # Location est désactivé — jamais de permission contournée, juste
@@ -140,6 +154,29 @@ class LocationDetailDialog(QDialog):
 
         self._caution_form = QFormLayout()
         layout.addLayout(self._caution_form)
+
+        # Lot 22 (§F) : deux documents distincts (voir
+        # ``receipt_service.py``) — jamais un seul bouton ambigu entre les
+        # deux. Activation réelle différée à ``_update_action_buttons``
+        # (même principe que les boutons de cycle de vie ci-dessous) :
+        # justificatif avant départ, reçu de location après départ.
+        documents_row = QHBoxLayout()
+        self.print_voucher_button = QPushButton("Imprimer le justificatif de réservation", self)
+        self.export_voucher_button = QPushButton("Exporter le justificatif en PDF", self)
+        self.print_location_receipt_button = QPushButton("Imprimer le reçu de location", self)
+        self.export_location_receipt_button = QPushButton("Exporter le reçu de location en PDF", self)
+        for button in (
+            self.print_voucher_button, self.export_voucher_button,
+            self.print_location_receipt_button, self.export_location_receipt_button,
+        ):
+            documents_row.addWidget(button)
+        documents_row.addStretch(1)
+        layout.addLayout(documents_row)
+
+        self.print_voucher_button.clicked.connect(self._on_print_voucher_clicked)
+        self.export_voucher_button.clicked.connect(self._on_export_voucher_clicked)
+        self.print_location_receipt_button.clicked.connect(self._on_print_location_receipt_clicked)
+        self.export_location_receipt_button.clicked.connect(self._on_export_location_receipt_clicked)
 
         action_row = QHBoxLayout()
         self.confirm_button = QPushButton("Confirmer", self)
@@ -255,6 +292,28 @@ class LocationDetailDialog(QDialog):
             form.removeRow(0)
 
     def _update_action_buttons(self) -> None:
+        # Lot 22 (§F) : les documents (impression/export) ne mutent jamais
+        # rien — contrairement aux boutons de cycle de vie ci-dessous, ils
+        # restent disponibles même en consultation lecture seule (Lot 16).
+        # Seules conditions : le service de documents a été fourni (voir
+        # ``LocationsPage``/``__init__``) et le statut correspond au
+        # document (voir ``ReceiptService.build_location_reservation_voucher``/
+        # ``build_location_receipt``, jamais dupliquées ici).
+        statut = self._location.statut
+        can_use_documents = self._receipt_service is not None
+        self.print_voucher_button.setEnabled(
+            can_use_documents and statut in (StatutLocation.BROUILLON, StatutLocation.CONFIRMEE)
+        )
+        self.export_voucher_button.setEnabled(
+            can_use_documents and statut in (StatutLocation.BROUILLON, StatutLocation.CONFIRMEE)
+        )
+        self.print_location_receipt_button.setEnabled(
+            can_use_documents and statut in (StatutLocation.EN_COURS, StatutLocation.RETOURNEE)
+        )
+        self.export_location_receipt_button.setEnabled(
+            can_use_documents and statut in (StatutLocation.EN_COURS, StatutLocation.RETOURNEE)
+        )
+
         if self._read_only:
             # Lot 16 : aucune action mutante depuis le chemin de consultation
             # en lecture seule, quelle que soit la permission de l'utilisateur
@@ -265,7 +324,6 @@ class LocationDetailDialog(QDialog):
             ):
                 button.setEnabled(False)
             return
-        statut = self._location.statut
         self.confirm_button.setEnabled(
             statut == StatutLocation.BROUILLON and self._permissions.has_permission("LOCATION_CONFIRM")
         )
@@ -288,9 +346,22 @@ class LocationDetailDialog(QDialog):
         # ces deux limites à chaque appel, voir record_payment/
         # record_caution_return — ces conditions ne sont qu'un confort
         # d'affichage anticipant un refus déjà certain).
+        #
+        # Lot 22 (§G) : ``_submit_caution`` déclenche en réalité deux actions
+        # distinctes selon ``peut_modifier_montant`` (statut BROUILLON/
+        # CONFIRMEE) — définir/modifier le montant de la caution avant le
+        # départ, ou restituer/retenir une caution déjà perçue. L'ancienne
+        # condition ne couvrait que la seconde ; le bouton restait donc
+        # désactivé en BROUILLON/CONFIRMEE tant qu'aucun montant n'avait
+        # encore été saisi (``caution_restante`` nul), empêchant toute
+        # première saisie. Les deux cas sont donc désormais couverts, sans
+        # dupliquer ni assouplir la validation réelle de
+        # ``LocationService``/``LocationCautionDialog``.
         caution_restante = self._location.caution_montant - self._location.caution_rendue
+        peut_modifier_montant = statut in (StatutLocation.BROUILLON, StatutLocation.CONFIRMEE)
         self.caution_button.setEnabled(
-            caution_restante > 0 and self._permissions.has_permission("LOCATION_CAUTION_MANAGE")
+            (peut_modifier_montant or caution_restante > 0)
+            and self._permissions.has_permission("LOCATION_CAUTION_MANAGE")
         )
         self.payment_button.setEnabled(
             statut in (StatutLocation.EN_COURS, StatutLocation.RETOURNEE)
@@ -452,4 +523,127 @@ class LocationDetailDialog(QDialog):
         except AppError as exc:
             QMessageBox.warning(self, "Paiement refusé", str(exc))
             return False
+        return True
+
+    # -- documents (Lot 22, §F) --------------------------------------------------------
+    #
+    # Deux documents indépendants (voir ``receipt_service.py``) — jamais de
+    # format à choisir contrairement à ``SaleDetailDialog`` (ces deux
+    # documents ne sont produits qu'en A4, décision documentée dans
+    # ``receipt_document.py``) : chaque bouton correspond directement à un
+    # seul document, sans étape de choix intermédiaire.
+
+    def _on_print_voucher_clicked(self) -> None:
+        self._print_voucher()
+
+    def _print_voucher(self) -> bool:
+        """Isolé de ``_on_print_voucher_clicked`` pour rester testable sans
+        dialogue modal d'impression — même principe que
+        ``SaleDetailDialog._print_receipt``."""
+        if self._receipt_service is None:
+            return False
+        try:
+            data = self._receipt_service.build_location_reservation_voucher(self._location_id)
+        except AppError as exc:
+            QMessageBox.warning(self, "Justificatif indisponible", str(exc))
+            return False
+
+        if not QPrinterInfo.availablePrinters():
+            QMessageBox.warning(
+                self, "Aucune imprimante disponible",
+                "Aucune imprimante n'est installée ou disponible sur ce poste. "
+                "Vous pouvez exporter le justificatif en PDF à la place.",
+            )
+            return False
+
+        rendered = build_location_reservation_voucher_document(data)
+        printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+        printer.setPageLayout(build_page_layout(rendered.page_size, rendered.margin_mm))
+
+        print_dialog = QPrintDialog(printer, self)
+        if print_dialog.exec() != QDialog.DialogCode.Accepted:
+            return False
+
+        rendered.document.print_(printer)
+        return True
+
+    def _on_export_voucher_clicked(self) -> None:
+        suggested = f"justificatif_reservation_{self._location.numero}.pdf"
+        file_path, _filter = QFileDialog.getSaveFileName(
+            self, "Exporter le justificatif en PDF", suggested, "PDF (*.pdf)"
+        )
+        if not file_path:
+            return
+        self._export_voucher_to(file_path)
+
+    def _export_voucher_to(self, file_path: str) -> bool:
+        """Isolé de ``_on_export_voucher_clicked`` pour rester testable sans
+        dialogue modal de sélection de fichier."""
+        if self._receipt_service is None:
+            return False
+        try:
+            data = self._receipt_service.build_location_reservation_voucher(self._location_id)
+            rendered = build_location_reservation_voucher_document(data)
+            export_document_to_pdf(rendered.document, file_path, rendered.page_size, rendered.margin_mm)
+        except AppError as exc:
+            QMessageBox.warning(self, "Export refusé", str(exc))
+            return False
+        QMessageBox.information(self, "Justificatif exporté", "Le justificatif a été exporté en PDF avec succès.")
+        return True
+
+    def _on_print_location_receipt_clicked(self) -> None:
+        self._print_location_receipt()
+
+    def _print_location_receipt(self) -> bool:
+        """Isolé de ``_on_print_location_receipt_clicked`` pour rester
+        testable sans dialogue modal d'impression."""
+        if self._receipt_service is None:
+            return False
+        try:
+            data = self._receipt_service.build_location_receipt(self._location_id)
+        except AppError as exc:
+            QMessageBox.warning(self, "Reçu indisponible", str(exc))
+            return False
+
+        if not QPrinterInfo.availablePrinters():
+            QMessageBox.warning(
+                self, "Aucune imprimante disponible",
+                "Aucune imprimante n'est installée ou disponible sur ce poste. "
+                "Vous pouvez exporter le reçu en PDF à la place.",
+            )
+            return False
+
+        rendered = build_location_receipt_document(data)
+        printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+        printer.setPageLayout(build_page_layout(rendered.page_size, rendered.margin_mm))
+
+        print_dialog = QPrintDialog(printer, self)
+        if print_dialog.exec() != QDialog.DialogCode.Accepted:
+            return False
+
+        rendered.document.print_(printer)
+        return True
+
+    def _on_export_location_receipt_clicked(self) -> None:
+        suggested = f"recu_location_{self._location.numero}.pdf"
+        file_path, _filter = QFileDialog.getSaveFileName(
+            self, "Exporter le reçu de location en PDF", suggested, "PDF (*.pdf)"
+        )
+        if not file_path:
+            return
+        self._export_location_receipt_to(file_path)
+
+    def _export_location_receipt_to(self, file_path: str) -> bool:
+        """Isolé de ``_on_export_location_receipt_clicked`` pour rester
+        testable sans dialogue modal de sélection de fichier."""
+        if self._receipt_service is None:
+            return False
+        try:
+            data = self._receipt_service.build_location_receipt(self._location_id)
+            rendered = build_location_receipt_document(data)
+            export_document_to_pdf(rendered.document, file_path, rendered.page_size, rendered.margin_mm)
+        except AppError as exc:
+            QMessageBox.warning(self, "Export refusé", str(exc))
+            return False
+        QMessageBox.information(self, "Reçu exporté", "Le reçu de location a été exporté en PDF avec succès.")
         return True

@@ -29,6 +29,35 @@ d'un paiement reprend désormais aussi son mode de paiement et sa référence
 tels qu'enregistrés sur ``Paiement`` (voir ``build_payment_receipt``) —
 déjà affichés dans l'historique à l'écran, il n'y a aucune raison qu'ils
 manquent sur le document imprimé/exporté de ce même paiement.
+
+Lot 22 (§F — harmonisation des reçus de location) : deux documents
+volontairement distincts, jamais fusionnés, pour la même raison déjà
+établie ci-dessus entre reçu de vente et reçu de paiement — un seul
+document ne peut pas représenter à la fois « ce qui est réservé » et « ce
+qui a réellement été facturé » :
+
+- ``build_location_reservation_voucher`` — justificatif de réservation,
+  disponible uniquement avant le départ (BROUILLON/CONFIRMEE) : aucun
+  montant total n'y figure jamais, la facturation d'une location se fait à
+  la journée et le nombre de jours n'est connu qu'au retour — l'inventer
+  ici serait un engagement chiffré fictif, jamais acceptable sur un
+  document remis à un client.
+- ``build_location_receipt`` — reçu de location, disponible uniquement
+  après le départ (EN_COURS/RETOURNEE) : reprend les montants réellement
+  facturés (``LocationRetour.montant_facture``, jamais recalculés), les
+  paiements enregistrés et le solde restant. La caution y est toujours
+  affichée séparément (jamais incluse dans le total facturé, qui ne
+  concerne que la location des articles eux-mêmes — voir
+  ``LocationService.set_caution_montant``/``record_caution_return``).
+
+Comme ``build_sale_receipt`` ci-dessus, ces deux méthodes accèdent
+directement à ``LocationRepository`` (jamais via ``LocationService``) pour
+ne dépendre que de la permission ``LOCATION_VIEW`` — en particulier pour
+les coordonnées complètes du client (téléphone/adresse/email), que
+``LocationSummary.client_nom`` seul n'expose pas et qu'une lecture via
+``ClientService`` exigerait en plus ``CLIENT_VIEW``, une permission
+distincte qu'un rôle autorisé à consulter ses propres locations ne
+possède pas nécessairement.
 """
 from __future__ import annotations
 
@@ -43,8 +72,9 @@ from datetime import datetime
 
 from app.config.settings import Settings
 from app.db.session import session_scope
-from app.models.enums import StatutOperation, StatutPaiement, TypeMouvement
+from app.models.enums import StatutLocation, StatutOperation, StatutPaiement, TypeMouvement
 from app.models.movement import MouvementStock
+from app.repositories.location_repository import LocationRepository
 from app.repositories.mouvement_repository import MouvementRepository
 from app.repositories.vente_repository import VenteRepository
 from app.services.auth.permission_service import PermissionService
@@ -158,6 +188,116 @@ class PaymentReceiptData:
     @property
     def reste_a_payer(self) -> Decimal:
         return max(self.total_vente - self.total_paye_apres, Decimal("0"))
+
+
+@dataclass(frozen=True)
+class LocationReservationLigne:
+    """Ligne d'un justificatif de réservation — quantité et tarif journalier
+    réservés, jamais de montant (voir docstring de module : aucun total
+    n'est calculable avant le retour)."""
+
+    article_reference: str
+    article_designation: str
+    quantite_reservee: Decimal
+    tarif_jour: Decimal
+
+
+@dataclass(frozen=True)
+class LocationReservationVoucherData:
+    """Données complètes du justificatif de réservation (avant départ) —
+    jamais un reçu financier (voir docstring de module)."""
+
+    numero: str
+    date: date_type
+    username: str
+    lignes: list[LocationReservationLigne]
+    caution_montant: Decimal
+    devise: str
+    entreprise_nom: Optional[str]
+    entreprise_adresse: Optional[str]
+    entreprise_telephone: Optional[str]
+    entreprise_email: Optional[str]
+    entreprise_logo_path: Optional[Path]
+    client_nom: Optional[str] = None
+    client_telephone: Optional[str] = None
+    client_adresse: Optional[str] = None
+    client_email: Optional[str] = None
+    pied_de_page: str = ""
+
+
+@dataclass(frozen=True)
+class LocationReceiptRetour:
+    """Un événement de retour facturé — reprend tel quel le montant déjà
+    historisé par ``LocationService.return_location_line`` (jamais
+    recalculé) ; ``jours`` n'est, lui, recalculé qu'à l'affichage à partir
+    des deux dates déjà connues (départ, retour), pour rester transparent
+    sur l'origine du montant sans dupliquer la règle de facturation."""
+
+    date_retour: date_type
+    quantite: Decimal
+    jours: int
+    montant_facture: Decimal
+
+
+@dataclass(frozen=True)
+class LocationReceiptLigne:
+    """Ligne facturée du reçu de location — un ou plusieurs retours
+    (restitution totale ou partielle, voir ``LocationLigneSummary``)."""
+
+    article_reference: str
+    article_designation: str
+    tarif_jour: Decimal
+    retours: tuple[LocationReceiptRetour, ...]
+
+    @property
+    def montant_facture_total(self) -> Decimal:
+        return round_money(sum((r.montant_facture for r in self.retours), Decimal("0")))
+
+
+@dataclass(frozen=True)
+class LocationReceiptPaymentLine:
+    """Même structure que :class:`SaleReceiptPaymentLine`, pour la même
+    raison (historique affiché tel qu'enregistré, jamais complété)."""
+
+    date_heure: datetime
+    montant: Decimal
+    mode_paiement: Optional[str]
+    reference: Optional[str]
+    commentaire: Optional[str]
+    username: str
+
+
+@dataclass(frozen=True)
+class LocationReceiptData:
+    """Données complètes du reçu de location (après départ) — montants
+    réellement facturés, jamais ceux réservés à la création."""
+
+    numero: str
+    date: date_type
+    date_depart: Optional[date_type]
+    username: str
+    statut: StatutLocation
+    lignes: list[LocationReceiptLigne]
+    total_facture: Decimal
+    montant_paye: Decimal
+    paiements: tuple[LocationReceiptPaymentLine, ...]
+    caution_montant: Decimal
+    caution_rendue: Decimal
+    devise: str
+    entreprise_nom: Optional[str]
+    entreprise_adresse: Optional[str]
+    entreprise_telephone: Optional[str]
+    entreprise_email: Optional[str]
+    entreprise_logo_path: Optional[Path]
+    client_nom: Optional[str] = None
+    client_telephone: Optional[str] = None
+    client_adresse: Optional[str] = None
+    client_email: Optional[str] = None
+    pied_de_page: str = ""
+
+    @property
+    def reste_a_payer(self) -> Decimal:
+        return max(self.total_facture - self.montant_paye, Decimal("0"))
 
 
 class ReceiptService:
@@ -315,4 +455,154 @@ class ReceiptService:
             entreprise_email=profile.email,
             mode_paiement=mode_paiement,
             reference=reference,
+        )
+
+    def build_location_reservation_voucher(self, location_id: int) -> LocationReservationVoucherData:
+        """Justificatif de réservation (§F), disponible uniquement avant le
+        départ — voir docstring de module pour la raison de cette
+        restriction et de l'absence de tout montant total."""
+        self._permissions.require_permission("LOCATION_VIEW")
+
+        with session_scope(self._settings) as session:
+            location = LocationRepository(session).get_by_id(location_id)
+            if location is None:
+                raise NotFoundError(f"Location {location_id} introuvable.")
+            if location.statut not in (StatutLocation.BROUILLON, StatutLocation.CONFIRMEE):
+                raise ValidationError(
+                    "Le justificatif de réservation n'est disponible qu'avant le départ de la location."
+                )
+
+            numero = location.numero
+            location_date = location.date
+            username = location.user.username
+            caution_montant = location.caution_montant
+
+            lignes = [
+                LocationReservationLigne(
+                    article_reference=ligne.article.reference,
+                    article_designation=ligne.article.designation,
+                    quantite_reservee=ligne.qte_reservee,
+                    tarif_jour=ligne.tarif_jour,
+                )
+                for ligne in location.lignes
+            ]
+
+            client = location.client
+            client_nom = client.nom if client is not None else None
+            client_telephone = client.telephone if client is not None else None
+            client_adresse = client.adresse if client is not None else None
+            client_email = client.email if client is not None else None
+
+        profile = get_company_profile(self._settings)
+        devise = get_effective_currency(self._settings)
+
+        return LocationReservationVoucherData(
+            numero=numero,
+            date=location_date,
+            username=username,
+            lignes=lignes,
+            caution_montant=caution_montant,
+            devise=devise,
+            entreprise_nom=profile.nom,
+            entreprise_adresse=profile.adresse,
+            entreprise_telephone=profile.telephone,
+            entreprise_email=profile.email,
+            entreprise_logo_path=profile.logo_path,
+            client_nom=client_nom,
+            client_telephone=client_telephone,
+            client_adresse=client_adresse,
+            client_email=client_email,
+            pied_de_page=profile.recu_pied_de_page,
+        )
+
+    def build_location_receipt(self, location_id: int) -> LocationReceiptData:
+        """Reçu de location (§F), disponible uniquement après le départ —
+        voir docstring de module. Les montants proviennent exclusivement de
+        ``LocationRetour.montant_facture``, déjà historisés par
+        ``LocationService.return_location_line``, jamais recalculés ici."""
+        self._permissions.require_permission("LOCATION_VIEW")
+
+        with session_scope(self._settings) as session:
+            location = LocationRepository(session).get_by_id(location_id)
+            if location is None:
+                raise NotFoundError(f"Location {location_id} introuvable.")
+            if location.statut not in (StatutLocation.EN_COURS, StatutLocation.RETOURNEE):
+                raise ValidationError(
+                    "Le reçu de location n'est disponible qu'après le départ de la location."
+                )
+
+            numero = location.numero
+            location_date = location.date
+            date_depart = location.date_depart
+            username = location.user.username
+            statut = location.statut
+            caution_montant = location.caution_montant
+            caution_rendue = location.caution_rendue
+
+            lignes = []
+            for ligne in location.lignes:
+                retours = tuple(
+                    LocationReceiptRetour(
+                        date_retour=retour.date_retour,
+                        quantite=retour.quantite_bon_etat + retour.quantite_immobilisee,
+                        jours=max((retour.date_retour - date_depart).days, 1) if date_depart else 1,
+                        montant_facture=retour.montant_facture,
+                    )
+                    for retour in ligne.retours
+                )
+                lignes.append(
+                    LocationReceiptLigne(
+                        article_reference=ligne.article.reference,
+                        article_designation=ligne.article.designation,
+                        tarif_jour=ligne.tarif_jour,
+                        retours=retours,
+                    )
+                )
+            total_facture = round_money(sum((l.montant_facture_total for l in lignes), Decimal("0")))
+
+            paiements = tuple(
+                LocationReceiptPaymentLine(
+                    date_heure=p.date_heure,
+                    montant=p.montant,
+                    mode_paiement=p.mode_paiement,
+                    reference=p.reference,
+                    commentaire=p.commentaire,
+                    username=p.user.username,
+                )
+                for p in location.paiements
+            )
+            montant_paye = round_money(sum((p.montant for p in paiements), Decimal("0")))
+
+            client = location.client
+            client_nom = client.nom if client is not None else None
+            client_telephone = client.telephone if client is not None else None
+            client_adresse = client.adresse if client is not None else None
+            client_email = client.email if client is not None else None
+
+        profile = get_company_profile(self._settings)
+        devise = get_effective_currency(self._settings)
+
+        return LocationReceiptData(
+            numero=numero,
+            date=location_date,
+            date_depart=date_depart,
+            username=username,
+            statut=statut,
+            lignes=lignes,
+            total_facture=total_facture,
+            montant_paye=montant_paye,
+            paiements=paiements,
+            caution_montant=caution_montant,
+            caution_rendue=caution_rendue,
+            devise=devise,
+            entreprise_nom=profile.nom,
+            entreprise_adresse=profile.adresse,
+            entreprise_telephone=profile.telephone,
+            entreprise_email=profile.email,
+            entreprise_logo_path=profile.logo_path,
+            client_nom=client_nom,
+            client_telephone=client_telephone,
+            client_adresse=client_adresse,
+            client_email=client_email,
+            pied_de_page=profile.recu_pied_de_page,
         )

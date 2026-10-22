@@ -5,13 +5,21 @@ from pathlib import Path
 from PySide6.QtGui import QImage
 from PySide6.QtGui import QPageSize
 
-from app.models.enums import StatutPaiement
+from app.models.enums import StatutLocation, StatutPaiement
 from app.services.documents.receipt_document import (
     ReceiptFormat,
+    build_location_receipt_document,
+    build_location_reservation_voucher_document,
     build_payment_receipt_document,
     build_receipt_document,
 )
 from app.services.documents.receipt_service import (
+    LocationReceiptData,
+    LocationReceiptLigne,
+    LocationReceiptPaymentLine,
+    LocationReceiptRetour,
+    LocationReservationLigne,
+    LocationReservationVoucherData,
     PaymentReceiptData,
     SaleReceiptData,
     SaleReceiptLine,
@@ -672,3 +680,319 @@ def test_ticket_shows_no_footer_phrase_when_empty(qapp) -> None:
     html = rendered.document.toHtml()
 
     assert "margin-top:20px" not in html
+
+
+# -- Lot 22 (anomalie D) : tailles de police explicites sur le ticket 80 mm -----------
+
+
+def test_ticket_html_contains_every_explicit_font_size_in_the_scale(qapp) -> None:
+    """Vérifie que les tailles réellement appliquées (et non seulement
+    présentes dans un conteneur englobant) couvrent chaque type de
+    contenu : en-tête, corps, lignes d'articles, total et pied de reçu.
+    ``QTextDocument.toHtml()`` ne réémet jamais le ``font-size`` posé sur
+    un ``<table>``/<div> tel quel, mais le propage toujours vers les
+    ``<span>`` qui portent le texte réellement affiché — c'est cette
+    propagation, vérifiée empiriquement, qui est testée ici, pas la seule
+    présence d'une règle dans un conteneur (voir le constat de l'anomalie
+    D : un ``font-size`` sur le seul conteneur ne suffit pas)."""
+    data = _make_data(
+        paiements=(
+            SaleReceiptPaymentLine(
+                date_heure=datetime(2026, 1, 20, 10, 30), montant=Decimal("50"),
+                mode_paiement="Espèces", reference=None, commentaire=None, username="vendeur1",
+            ),
+        ),
+    )
+    rendered = build_receipt_document(data, ReceiptFormat.TICKET_80MM)
+    html = rendered.document.toHtml()
+
+    assert "9pt" in html  # en-tête (nom de l'entreprise)
+    assert "8pt" in html  # corps / pied de reçu
+    assert "7.5pt" in html  # ligne d'article (désignation + table qté/prix/montant)
+    assert "10pt" in html  # total, volontairement plus grand
+    assert "7pt" in html  # historique des paiements
+
+
+def test_ticket_article_line_uses_article_font_size_not_only_container(qapp) -> None:
+    """Isole la désignation d'un article réellement distinctif pour
+    vérifier qu'elle est bien enveloppée dans un ``<span>`` à la taille
+    ``_TICKET_FONT_ARTICLE_PT`` — pas seulement que cette taille existe
+    quelque part dans le document."""
+    data = _make_data(lignes=[_make_line(designation="Tequila grosse bouteille")])
+    rendered = build_receipt_document(data, ReceiptFormat.TICKET_80MM)
+    html = rendered.document.toHtml()
+
+    designation_index = html.index("Tequila grosse bouteille")
+    preceding = html[:designation_index]
+    last_span_open = preceding.rfind("<span")
+    assert last_span_open != -1
+    assert "7.5pt" in preceding[last_span_open:designation_index]
+
+
+def test_ticket_total_amount_uses_larger_font_than_article_lines(qapp) -> None:
+    rendered = build_receipt_document(_make_data(total=Decimal("12345")), ReceiptFormat.TICKET_80MM)
+    html = rendered.document.toHtml()
+
+    total_index = html.index("TOTAL")
+    preceding = html[:total_index]
+    last_span_open = preceding.rfind("<span")
+    assert last_span_open != -1
+    assert "10pt" in preceding[last_span_open:total_index]
+
+
+def test_ticket_many_articles_and_payments_keeps_explicit_sizes_and_no_overflow(qapp) -> None:
+    """Scénario avec de nombreux articles et paiements (§11 du mandat) :
+    la hauteur reste dynamique, la largeur reste 80 mm, et les tailles
+    explicites restent appliquées sur chaque ligne."""
+    lignes = [_make_line(reference=f"ART-{i}", designation=f"Article {i}") for i in range(20)]
+    paiements = tuple(
+        SaleReceiptPaymentLine(
+            date_heure=datetime(2026, 1, 1, 10, i % 60), montant=Decimal("10"),
+            mode_paiement=None, reference=None, commentaire=None, username="v1",
+        )
+        for i in range(15)
+    )
+    rendered = build_receipt_document(_make_data(lignes=lignes, paiements=paiements), ReceiptFormat.TICKET_80MM)
+
+    size_mm = rendered.page_size.size(QPageSize.Unit.Millimeter)
+    assert round(size_mm.width()) == 80
+    assert size_mm.height() > 40.0  # hauteur minimale par défaut (ticket vide)
+    html = rendered.document.toHtml()
+    assert "7.5pt" in html
+    assert "7pt" in html
+
+
+def test_ticket_footer_phrase_is_single_and_not_duplicated_with_fixed_message(qapp) -> None:
+    """Non-régression explicite (§3 de l'autorisation) : un seul message
+    de remerciement, jamais un second message fixe « Merci de votre
+    visite »."""
+    rendered = build_receipt_document(_make_data(pied_de_page="Merci pour votre confiance et à bientôt !"), ReceiptFormat.TICKET_80MM)
+    text = rendered.document.toPlainText()
+
+    assert text.count("Merci pour votre confiance et à bientôt !") == 1
+    assert "Merci de votre visite" not in text
+
+
+# -- Lot 22 (§F) : documents de location ------------------------------------------------
+
+
+def _make_reservation_ligne(reference="ART-LOC", designation="Article de location", qty="2", tarif="500"):
+    return LocationReservationLigne(
+        article_reference=reference, article_designation=designation,
+        quantite_reservee=Decimal(qty), tarif_jour=Decimal(tarif),
+    )
+
+
+def _make_voucher_data(**overrides) -> LocationReservationVoucherData:
+    defaults = dict(
+        numero="LOC-000007", date=date(2026, 1, 10), username="vendeur1",
+        lignes=[_make_reservation_ligne()], caution_montant=Decimal("0"), devise="XOF",
+        entreprise_nom="Boutique Étoile SARL", entreprise_adresse="12 rue du Commerce, Abidjan",
+        entreprise_telephone="+225 01 02 03 04", entreprise_email="contact@etoile.ci",
+        entreprise_logo_path=None,
+    )
+    defaults.update(overrides)
+    return LocationReservationVoucherData(**defaults)
+
+
+def _make_location_retour(date_retour=date(2026, 1, 13), qty="2", jours=3, montant="3000"):
+    return LocationReceiptRetour(
+        date_retour=date_retour, quantite=Decimal(qty), jours=jours, montant_facture=Decimal(montant),
+    )
+
+
+def _make_location_ligne(reference="ART-LOC", designation="Article de location", tarif="500", retours=None):
+    return LocationReceiptLigne(
+        article_reference=reference, article_designation=designation,
+        tarif_jour=Decimal(tarif), retours=tuple(retours) if retours is not None else (),
+    )
+
+
+def _make_location_receipt_data(**overrides) -> LocationReceiptData:
+    defaults = dict(
+        numero="LOC-000007", date=date(2026, 1, 10), date_depart=date(2026, 1, 10), username="vendeur1",
+        statut=StatutLocation.RETOURNEE,
+        lignes=[_make_location_ligne(retours=[_make_location_retour()])],
+        total_facture=Decimal("3000"), montant_paye=Decimal("0"), paiements=(),
+        caution_montant=Decimal("0"), caution_rendue=Decimal("0"), devise="XOF",
+        entreprise_nom="Boutique Étoile SARL", entreprise_adresse="12 rue du Commerce, Abidjan",
+        entreprise_telephone="+225 01 02 03 04", entreprise_email="contact@etoile.ci",
+        entreprise_logo_path=None,
+    )
+    defaults.update(overrides)
+    return LocationReceiptData(**defaults)
+
+
+def test_reservation_voucher_is_a4(qapp) -> None:
+    rendered = build_location_reservation_voucher_document(_make_voucher_data())
+
+    size_mm = rendered.page_size.size(QPageSize.Unit.Millimeter)
+    assert round(size_mm.width()) == 210
+    assert round(size_mm.height()) == 297
+
+
+def test_reservation_voucher_never_shows_a_total_amount(qapp) -> None:
+    """§F : jamais de montant total engagé affiché comme un chiffre — la
+    phrase explicative peut mentionner le mot « total » (c'est précisément
+    ce qu'elle explique ne pas être calculable), mais aucune ligne de type
+    « Total : X » comme sur le reçu de vente (``_build_a4_html``)."""
+    rendered = build_location_reservation_voucher_document(_make_voucher_data())
+    text = rendered.document.toPlainText()
+
+    assert "Total :" not in text
+    assert "TOTAL" not in text
+
+
+def test_reservation_voucher_explicitly_states_not_a_payment_receipt(qapp) -> None:
+    rendered = build_location_reservation_voucher_document(_make_voucher_data())
+    text = rendered.document.toPlainText()
+
+    assert "réservation" in text.lower()
+    assert "ne constitue pas un reçu de paiement" in text.lower()
+
+
+def test_reservation_voucher_shows_article_lines_with_rate(qapp) -> None:
+    rendered = build_location_reservation_voucher_document(
+        _make_voucher_data(lignes=[_make_reservation_ligne(reference="ART-42", qty="3", tarif="700")])
+    )
+    html = rendered.document.toHtml()
+
+    assert "ART-42" in html
+    assert "3" in html
+    assert "700" in html
+
+
+def test_reservation_voucher_shows_planned_caution_when_defined(qapp) -> None:
+    rendered = build_location_reservation_voucher_document(
+        _make_voucher_data(caution_montant=Decimal("10000"))
+    )
+    text = rendered.document.toPlainText()
+
+    assert "Caution prévue" in text
+    assert "10 000 FCFA" in text
+
+
+def test_reservation_voucher_omits_caution_block_when_not_defined(qapp) -> None:
+    rendered = build_location_reservation_voucher_document(
+        _make_voucher_data(caution_montant=Decimal("0"))
+    )
+    text = rendered.document.toPlainText()
+
+    assert "Caution prévue" not in text
+
+
+def test_reservation_voucher_logo_respects_max_box(qapp, tmp_path) -> None:
+    logo_path = tmp_path / "logo.png"
+    _make_image_file(logo_path, width=400, height=100)
+    rendered = build_location_reservation_voucher_document(
+        _make_voucher_data(entreprise_logo_path=logo_path)
+    )
+    html = rendered.document.toHtml()
+
+    assert "stockmanager-receipt://logo-entreprise" in html
+
+
+def test_location_receipt_is_a4(qapp) -> None:
+    rendered = build_location_receipt_document(_make_location_receipt_data())
+
+    size_mm = rendered.page_size.size(QPageSize.Unit.Millimeter)
+    assert round(size_mm.width()) == 210
+    assert round(size_mm.height()) == 297
+
+
+def test_location_receipt_shows_real_billed_total(qapp) -> None:
+    rendered = build_location_receipt_document(
+        _make_location_receipt_data(total_facture=Decimal("3000"))
+    )
+    text = rendered.document.toPlainText()
+
+    assert "3 000 FCFA" in text
+    assert "Total facturé" in text
+
+
+def test_location_receipt_shows_balance_due(qapp) -> None:
+    rendered = build_location_receipt_document(
+        _make_location_receipt_data(
+            total_facture=Decimal("3000"), montant_paye=Decimal("1000"),
+        )
+    )
+    text = rendered.document.toPlainText()
+
+    assert "Payé" in text
+    assert "Reste à payer" in text
+
+
+def test_location_receipt_shows_payment_history(qapp) -> None:
+    paiements = (
+        LocationReceiptPaymentLine(
+            date_heure=datetime(2026, 1, 11, 9, 0), montant=Decimal("1000"),
+            mode_paiement="Espèces", reference=None, commentaire=None, username="vendeur1",
+        ),
+    )
+    rendered = build_location_receipt_document(
+        _make_location_receipt_data(montant_paye=Decimal("1000"), paiements=paiements)
+    )
+    text = rendered.document.toPlainText()
+
+    assert "HISTORIQUE DES PAIEMENTS" in text
+    assert "Espèces" in text
+
+
+def test_location_receipt_shows_caution_separately_never_added_to_total(qapp) -> None:
+    rendered = build_location_receipt_document(
+        _make_location_receipt_data(
+            total_facture=Decimal("3000"), caution_montant=Decimal("20000"), caution_rendue=Decimal("0"),
+        )
+    )
+    text = rendered.document.toPlainText()
+
+    assert "Caution versée" in text
+    assert "Caution restituée" in text
+
+
+def test_location_receipt_omits_caution_block_when_not_defined(qapp) -> None:
+    rendered = build_location_receipt_document(
+        _make_location_receipt_data(caution_montant=Decimal("0"))
+    )
+    text = rendered.document.toPlainText()
+
+    assert "Caution versée" not in text
+
+
+def test_location_receipt_shows_not_yet_returned_line(qapp) -> None:
+    rendered = build_location_receipt_document(
+        _make_location_receipt_data(
+            lignes=[_make_location_ligne(reference="ART-99", retours=[])],
+            total_facture=Decimal("0"),
+        )
+    )
+    text = rendered.document.toPlainText()
+
+    assert "Non encore retourné" in text
+
+
+def test_location_receipt_single_footer_phrase(qapp) -> None:
+    rendered = build_location_receipt_document(
+        _make_location_receipt_data(pied_de_page="Merci pour votre confiance et à bientôt !")
+    )
+    text = rendered.document.toPlainText()
+
+    assert text.count("Merci pour votre confiance et à bientôt !") == 1
+    assert "Document généré par StockManager" not in text
+
+
+def test_location_receipt_shows_client_section_when_present(qapp) -> None:
+    rendered = build_location_receipt_document(
+        _make_location_receipt_data(client_nom="Jean Dupont")
+    )
+    text = rendered.document.toPlainText()
+
+    assert "CLIENT" in text
+    assert "Jean Dupont" in text
+
+
+def test_location_receipt_omits_client_section_when_absent(qapp) -> None:
+    rendered = build_location_receipt_document(_make_location_receipt_data(client_nom=None))
+    text = rendered.document.toPlainText()
+
+    assert "CLIENT" not in text

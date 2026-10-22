@@ -18,12 +18,14 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -72,12 +74,28 @@ class SettingsPage(QWidget):
         self._rental_service = rental_service
 
         layout = QVBoxLayout(self)
-        layout.addWidget(self._build_profile_group())
-        layout.addWidget(self._build_logo_group())
-        layout.addWidget(self._build_receipt_footer_group())
-        layout.addWidget(self._build_modules_group())
-        layout.addWidget(self._build_security_group())
-        layout.addStretch(1)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        # Zone défilante (Lot 22, anomalie C) : regroupe les cinq sections —
+        # même principe déjà établi dans ``SaleDetailDialog`` (Lot 15) —
+        # pour qu'un empilement de groupes plus haut que l'espace disponible
+        # (notamment sous Windows, où les métriques de police par défaut
+        # diffèrent) défile au lieu de comprimer les champs des
+        # ``QFormLayout`` ou de couper l'aperçu du logo.
+        scroll_area = QScrollArea(self)
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        content = QWidget(scroll_area)
+        content_layout = QVBoxLayout(content)
+        content_layout.addWidget(self._build_profile_group())
+        content_layout.addWidget(self._build_logo_group())
+        content_layout.addWidget(self._build_receipt_footer_group())
+        content_layout.addWidget(self._build_modules_group())
+        content_layout.addWidget(self._build_security_group())
+        content_layout.addStretch(1)
+
+        scroll_area.setWidget(content)
+        layout.addWidget(scroll_area)
 
         self._load_config_into_form()
         self._load_modules_into_form()

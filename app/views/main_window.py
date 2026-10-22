@@ -142,6 +142,20 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle("StockManager Desktop")
         self.resize(1200, 750)
+        # Lot 22 (anomalie B) : taille minimale explicite égale à la taille
+        # de départ. ``QStackedWidget`` réserve, pour sa taille minimale,
+        # l'espace nécessaire au plus exigeant de tous les modules qu'il
+        # contient (pas seulement celui actuellement affiché) ; cette
+        # contribution peut ne se stabiliser qu'au premier affichage réel
+        # d'une page jusqu'alors jamais montrée, provoquant un recalcul de
+        # géométrie visible (plus particulièrement sous Windows, où les
+        # métriques de police par défaut diffèrent). Fixer ce plancher
+        # garantit que la fenêtre ne peut plus jamais redescendre sous sa
+        # taille d'ouverture lors d'un changement de module, quelle que
+        # soit la page concernée — sans aucun appel supplémentaire à
+        # resize()/showNormal()/showMaximized()/adjustSize() dans la
+        # navigation elle-même.
+        self.setMinimumSize(1200, 750)
 
         if APP_ICON_PATH.exists():
             self.setWindowIcon(QIcon(str(APP_ICON_PATH)))
@@ -238,7 +252,8 @@ class MainWindow(QMainWindow):
             return ReceivablesPage(self._services.sales, self._services.clients, self._permissions)
         if module_name == "Locations":
             return LocationsPage(
-                self._services.rentals, self._services.articles, self._services.clients, self._permissions
+                self._services.rentals, self._services.articles, self._services.clients, self._permissions,
+                receipt_service=self._services.documents,
             )
         if module_name == "Mouvements":
             return MouvementsPage(self._services.movements, self._permissions)
@@ -398,7 +413,7 @@ class MainWindow(QMainWindow):
 
         page = LocationsPage(
             self._services.rentals, self._services.articles, self._services.clients, self._permissions,
-            parent=dialog, read_only=True,
+            receipt_service=self._services.documents, parent=dialog, read_only=True,
         )
         layout.addWidget(page)
 

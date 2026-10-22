@@ -31,13 +31,15 @@ import html
 from dataclasses import dataclass
 from decimal import Decimal
 
-from typing import Optional
+from typing import Optional, Union
 
 from PySide6.QtCore import QSizeF, QUrl
 from PySide6.QtGui import QImage, QPageSize, QTextDocument
 
-from app.models.enums import StatutPaiement
+from app.models.enums import StatutLocation, StatutPaiement
 from app.services.documents.receipt_service import (
+    LocationReceiptData,
+    LocationReservationVoucherData,
     PaymentReceiptData,
     SaleReceiptData,
     SaleReceiptPaymentLine,
@@ -50,6 +52,26 @@ _STATUT_PAIEMENT_LABELS = {
     StatutPaiement.PARTIELLEMENT_PAYEE: "Partiellement payée",
     StatutPaiement.PAYEE: "Payée",
 }
+
+# Même duplication déjà acceptée que ``_STATUT_PAIEMENT_LABELS`` ci-dessus
+# par rapport à ``sale_detail_dialog.py`` : ce module ne doit jamais
+# dépendre d'un module de vue (architecture View -> Service), donc jamais
+# d'import de ``locations_page.py``/``location_detail_dialog.py`` ici,
+# quitte à reprendre le même libellé.
+_STATUT_LOCATION_LABELS = {
+    StatutLocation.BROUILLON: "Brouillon",
+    StatutLocation.CONFIRMEE: "Confirmée",
+    StatutLocation.EN_COURS: "En cours",
+    StatutLocation.RETOURNEE: "Retournée",
+    StatutLocation.ANNULEE: "Annulée",
+}
+
+# Lot 22 (§F) : ``_add_logo_resource``/``_footer_phrase_html``/``_header_lines``/
+# ``_client_fields``/``_client_section_html_a4`` ci-dessous ne lisent que des
+# champs volontairement nommés à l'identique sur les trois DTO (voir
+# ``receipt_service.py``) : réutilisés tels quels pour les deux documents de
+# location, jamais dupliqués.
+_ReceiptLike = Union[SaleReceiptData, LocationReservationVoucherData, LocationReceiptData]
 
 # 1 mm en points (unité interne de QTextDocument) : 72 pt/pouce, 25.4 mm/pouce.
 _MM_TO_POINTS = 72.0 / 25.4
@@ -73,6 +95,35 @@ _LOGO_RESOURCE_URL = QUrl("stockmanager-receipt://logo-entreprise")
 # horizontal possible sur ce format.
 _LOGO_MAX_WIDTH_MM = 40.0
 _LOGO_MAX_HEIGHT_MM = 18.0
+
+# Lot 22 (anomalie D) : échelle typographique explicite du ticket 80 mm,
+# posée directement sur chaque élément — y compris les tables — plutôt que
+# sur le seul <div> englobant. Un <table>/<td>/<th> HTML n'hérite pas
+# fiablement du ``font-size`` d'un ancêtre dans le sous-ensemble de rendu
+# riche de ``QTextDocument` : c'est précisément ce qui expliquait que la
+# réduction de 9 pt à 8 pt du Lot 21 restait invisible sur les lignes
+# d'articles et les montants, qui vivent tous dans des tables. Une seule
+# échelle, documentée ici et réutilisée pour chaque type de contenu
+# (y compris, Lot 22 §8.3, le futur reçu de location) plutôt que des
+# corrections ponctuelles :
+#   - HEADER  : nom de l'entreprise (identité, légèrement mis en avant) ;
+#   - BODY    : texte courant (coordonnées, numéro, date, vendeur, client) ;
+#   - ARTICLE : lignes d'articles (désignation/quantité/prix/montant) —
+#               la majorité du contenu, doit rester la plus compacte ;
+#   - TOTAL   : montant total du document — seul élément volontairement
+#               plus grand que le texte courant, pour rester immédiatement
+#               visible malgré la réduction générale ;
+#   - SUMMARY : bloc Payé/Reste à payer/Statut ;
+#   - HISTORY : historique des paiements (information secondaire, la plus
+#               petite taille du ticket) ;
+#   - FOOTER  : pied de reçu configurable.
+_TICKET_FONT_HEADER_PT = 9
+_TICKET_FONT_BODY_PT = 8
+_TICKET_FONT_ARTICLE_PT = 7.5
+_TICKET_FONT_TOTAL_PT = 10
+_TICKET_FONT_SUMMARY_PT = 7.5
+_TICKET_FONT_HISTORY_PT = 7
+_TICKET_FONT_FOOTER_PT = 8
 
 
 class ReceiptFormat(enum.Enum):
@@ -117,7 +168,7 @@ def _fit_logo_box(image_width_px: int, image_height_px: int) -> tuple[float, flo
     return (width_mm, height_mm)
 
 
-def _add_logo_resource(document: QTextDocument, data: SaleReceiptData) -> Optional[tuple[float, float]]:
+def _add_logo_resource(document: QTextDocument, data: _ReceiptLike) -> Optional[tuple[float, float]]:
     """Charge le logo client (s'il existe) comme ressource du document
     **avant** toute construction du HTML (voir ``build_receipt_document`` :
     l'ordre d'appel garantit que l'image est entièrement chargée — ``QImage``
@@ -142,7 +193,7 @@ def _add_logo_resource(document: QTextDocument, data: SaleReceiptData) -> Option
     return (width_mm * _MM_TO_POINTS, height_mm * _MM_TO_POINTS)
 
 
-def _header_lines(data: SaleReceiptData) -> list[str]:
+def _header_lines(data: _ReceiptLike) -> list[str]:
     lines = []
     if data.entreprise_adresse:
         lines.append(_esc(data.entreprise_adresse))
@@ -153,7 +204,7 @@ def _header_lines(data: SaleReceiptData) -> list[str]:
     return lines
 
 
-def _client_fields(data: SaleReceiptData) -> list[tuple[str, str]]:
+def _client_fields(data: _ReceiptLike) -> list[tuple[str, str]]:
     """Paires (étiquette, valeur) des champs client optionnels réellement
     renseignés — un client peut exister sans qu'aucun de ces champs ne soit
     rempli. Même principe que ``_header_lines`` pour le profil entreprise."""
@@ -187,9 +238,13 @@ def _payment_rows_a4(data: SaleReceiptData) -> str:
 
 
 def _payment_rows_ticket(data: SaleReceiptData) -> str:
+    """Bloc Payé/Reste/Statut puis, séparément, le total — toujours mis en
+    évidence à une taille supérieure (``_TICKET_FONT_TOTAL_PT``) juste
+    avant ce bloc (voir ``_build_ticket_html``), jamais confondu avec un
+    paiement individuel ci-dessous."""
     statut_label = _STATUT_PAIEMENT_LABELS.get(data.statut_paiement, str(data.statut_paiement))
     return f"""
-    <table width="100%" cellspacing="0" cellpadding="0">
+    <table width="100%" cellspacing="0" cellpadding="0" style="font-size:{_TICKET_FONT_SUMMARY_PT}pt;">
       <tr><td>Payé</td><td align="right">{_fmt_money(data.montant_paye, data.devise)}</td></tr>
       <tr><td>Reste à payer</td><td align="right">{_fmt_money(data.reste_a_payer, data.devise)}</td></tr>
       <tr><td><b>Statut</b></td><td align="right"><b>{_esc(statut_label)}</b></td></tr>
@@ -197,7 +252,7 @@ def _payment_rows_ticket(data: SaleReceiptData) -> str:
     """
 
 
-def _footer_phrase_html(data: SaleReceiptData, font_size_pt: int) -> str:
+def _footer_phrase_html(data: _ReceiptLike, font_size_pt: int) -> str:
     """Phrase de pied de reçu configurable (Lot 21) — jamais de texte publi-
     citaire pour le logiciel (la mention « Document généré par StockManager »
     est supprimée, pas remplacée) : seule une phrase destinée au client,
@@ -254,17 +309,20 @@ def _payment_history_section_a4(data: SaleReceiptData) -> str:
 
 def _payment_history_row_ticket(p: SaleReceiptPaymentLine, devise: str) -> str:
     parts = [
-        "<table width='100%' cellspacing='0' cellpadding='0'><tr>"
+        f"<table width='100%' cellspacing='0' cellpadding='0' style='font-size:{_TICKET_FONT_HISTORY_PT}pt;'><tr>"
         f"<td>{_esc(p.date_heure.strftime('%Y-%m-%d %H:%M'))}</td>"
         f"<td align='right'>{_fmt_money(p.montant, devise)}</td>"
         "</tr></table>"
     ]
     extra = [value for value in (_esc(p.mode_paiement), _esc(p.reference)) if value]
     if extra:
-        parts.append(f"<p style='margin:0 0 2px 0; font-size:7pt;'>{' · '.join(extra)}</p>")
+        parts.append(
+            f"<p style='margin:0 0 2px 0; font-size:{_TICKET_FONT_HISTORY_PT}pt;'>{' · '.join(extra)}</p>"
+        )
     if p.commentaire:
         parts.append(
-            f"<p style='margin:0 0 4px 0; font-size:7pt; font-style:italic;'>{_esc(p.commentaire)}</p>"
+            f"<p style='margin:0 0 4px 0; font-size:{_TICKET_FONT_HISTORY_PT}pt; font-style:italic;'>"
+            f"{_esc(p.commentaire)}</p>"
         )
     return "".join(parts)
 
@@ -275,12 +333,12 @@ def _payment_history_section_ticket(data: SaleReceiptData) -> str:
     rows = "".join(_payment_history_row_ticket(p, data.devise) for p in data.paiements)
     return f"""
     <p align="center">------------------------------</p>
-    <p style="margin:2px 0; font-weight:600;">Historique des paiements</p>
+    <p style="margin:2px 0; font-weight:600; font-size:{_TICKET_FONT_BODY_PT}pt;">Historique des paiements</p>
     {rows}
     """
 
 
-def _client_section_html_a4(data: SaleReceiptData) -> str:
+def _client_section_html_a4(data: _ReceiptLike) -> str:
     """Bloc CLIENT distinct (§4 de ce lot) — chaîne vide si aucun client
     n'est associé à la vente : aucun titre, aucun espace réservé."""
     if not data.client_nom:
@@ -363,7 +421,9 @@ def _client_block_ticket(data: SaleReceiptData) -> str:
     parts = [f"Client : {_esc(data.client_nom)}"]
     for label, value in _client_fields(data):
         parts.append(f"{label} : {value}")
-    return f"<p style='margin:2px 0;'>{'<br/>'.join(parts)}</p>"
+    return (
+        f"<p style='margin:2px 0; font-size:{_TICKET_FONT_BODY_PT}pt;'>{'<br/>'.join(parts)}</p>"
+    )
 
 
 def _build_ticket_html(data: SaleReceiptData, logo_size: Optional[tuple[float, float]]) -> str:
@@ -379,9 +439,14 @@ def _build_ticket_html(data: SaleReceiptData, logo_size: Optional[tuple[float, f
     header_lines = "<br/>".join(_header_lines(data))
     client_block = _client_block_ticket(data)
 
+    # Lignes d'articles (Lot 22, anomalie D) : taille explicite sur le
+    # paragraphe de désignation ET sur la table quantité/prix/montant —
+    # c'est précisément cette table qui ne réduisait pas visuellement
+    # malgré le <div> englobant à 8 pt.
     lines_html = "".join(
-        f"<p style='margin:2px 0;'>{_esc(l.article_reference)} — {_esc(l.article_designation)}</p>"
-        f"<table width='100%' cellspacing='0' cellpadding='0'><tr>"
+        f"<p style='margin:2px 0; font-size:{_TICKET_FONT_ARTICLE_PT}pt;'>"
+        f"{_esc(l.article_reference)} — {_esc(l.article_designation)}</p>"
+        f"<table width='100%' cellspacing='0' cellpadding='0' style='font-size:{_TICKET_FONT_ARTICLE_PT}pt;'><tr>"
         f"<td>{_esc(format_quantity(l.quantite))} x {_fmt_money(l.prix_unitaire, data.devise)}</td>"
         f"<td align='right'>{_fmt_money(l.sous_total, data.devise)}</td>"
         f"</tr></table>"
@@ -389,12 +454,12 @@ def _build_ticket_html(data: SaleReceiptData, logo_size: Optional[tuple[float, f
     )
 
     return f"""
-    <div style="font-family:monospace; font-size:8pt;">
-      <p align="center" style="margin:2px 0;"><b>{entreprise_nom}</b></p>
-      <p align="center" style="margin:2px 0;">{header_lines}</p>
+    <div style="font-family:monospace; font-size:{_TICKET_FONT_BODY_PT}pt;">
+      <p align="center" style="margin:2px 0; font-size:{_TICKET_FONT_HEADER_PT}pt;"><b>{entreprise_nom}</b></p>
+      <p align="center" style="margin:2px 0; font-size:{_TICKET_FONT_BODY_PT}pt;">{header_lines}</p>
       {logo_html}
       <p align="center">------------------------------</p>
-      <p style="margin:2px 0;">
+      <p style="margin:2px 0; font-size:{_TICKET_FONT_BODY_PT}pt;">
         Reçu N° {_esc(data.numero)}<br/>
         {_esc(_date_heure_text(data))}<br/>
         Vendeur : {_esc(data.username)}
@@ -403,13 +468,13 @@ def _build_ticket_html(data: SaleReceiptData, logo_size: Optional[tuple[float, f
       <p align="center">------------------------------</p>
       {lines_html}
       <p align="center">------------------------------</p>
-      <table width="100%" cellspacing="0" cellpadding="0"><tr>
+      <table width="100%" cellspacing="0" cellpadding="0" style="font-size:{_TICKET_FONT_TOTAL_PT}pt;"><tr>
         <td><b>TOTAL</b></td>
         <td align="right"><b>{_fmt_money(data.total, data.devise)}</b></td>
       </tr></table>
       {_payment_rows_ticket(data)}
       {_payment_history_section_ticket(data)}
-      {_footer_phrase_html(data, font_size_pt=8)}
+      {_footer_phrase_html(data, font_size_pt=_TICKET_FONT_FOOTER_PT)}
     </div>
     """
 
@@ -503,3 +568,248 @@ def build_receipt_document(data: SaleReceiptData, receipt_format: ReceiptFormat)
         return RenderedReceipt(document=document, page_size=page_size, margin_mm=_TICKET_MARGIN_MM)
 
     raise ValueError(f"Format de reçu non pris en charge : {receipt_format!r}")
+
+
+# -- documents de location (Lot 22, §F) ------------------------------------------------
+#
+# Choix délibéré, à documenter dans le compte rendu (jamais demandé
+# explicitement par le mandat, qui ne fixe un format que pour les reçus de
+# vente) : format A4 uniquement pour les deux documents de location,
+# jamais de variante ticket 80 mm — une location ne se traite pas à la
+# caisse et aucun des deux visuels fournis en exemple n'était un ticket.
+# Même principe déjà retenu pour ``build_payment_receipt_document``
+# ci-dessus (A4 uniquement) : réutilisé ici pour la même raison.
+
+
+def _build_reservation_voucher_html(
+    data: LocationReservationVoucherData, logo_size: Optional[tuple[float, float]]
+) -> str:
+    logo_html = ""
+    if logo_size is not None:
+        width_pt, height_pt = logo_size
+        logo_html = (
+            f'<img src="{_LOGO_RESOURCE_URL.toString()}" '
+            f'width="{width_pt:.1f}" height="{height_pt:.1f}">'
+        )
+    entreprise_nom = _esc(data.entreprise_nom) or "(Entreprise non configurée — voir Paramètres)"
+    header_lines = "<br/>".join(_header_lines(data)) or "&nbsp;"
+    client_section = _client_section_html_a4(data)
+
+    rows = "".join(
+        f"<tr>"
+        f"<td>{_esc(l.article_reference)} — {_esc(l.article_designation)}</td>"
+        f"<td align='center'>{_esc(format_quantity(l.quantite_reservee))}</td>"
+        f"<td align='right'>{_fmt_money(l.tarif_jour, data.devise)}</td>"
+        f"</tr>"
+        for l in data.lignes
+    )
+
+    # Caution éventuelle (§G) : jamais affirmée comme déjà perçue — montant
+    # prévu tel que défini sur la location, sans invention d'un statut de
+    # paiement qu'aucune donnée ne permet de déterminer ici.
+    caution_block = ""
+    if data.caution_montant > 0:
+        caution_block = (
+            f'<p style="margin:12px 0 0 0;">Caution prévue : '
+            f"{_fmt_money(data.caution_montant, data.devise)}</p>"
+        )
+
+    return f"""
+    <div style="font-size:10pt;">
+    <table width="100%" cellspacing="0" cellpadding="0">
+      <tr>
+        <td width="55%" valign="top">
+          {logo_html}
+          <h2 style="margin:4px 0;">{entreprise_nom}</h2>
+          <p style="margin:0;">{header_lines}</p>
+        </td>
+        <td width="45%" valign="top" align="right">
+          <h1 style="margin:0;">JUSTIFICATIF DE RÉSERVATION</h1>
+          <p style="margin:4px 0;">
+            N° {_esc(data.numero)}<br/>
+            Date : {_esc(data.date)}<br/>
+            Enregistré par : {_esc(data.username)}
+          </p>
+        </td>
+      </tr>
+    </table>
+    <hr/>
+    {client_section}
+    <p style="margin:12px 0; font-style:italic; color:#444444;">
+      Ce document atteste la réservation des articles ci-dessous. Il ne
+      constitue pas un reçu de paiement : la location est facturée à la
+      journée, le montant total ne peut donc être déterminé qu'au retour
+      des articles.
+    </p>
+    <table width="100%" border="1" cellspacing="0" cellpadding="6" style="border-collapse:collapse;">
+      <tr style="background-color:#eeeeee;">
+        <th align="left">Article</th>
+        <th align="center">Qté réservée</th>
+        <th align="right">Tarif / jour</th>
+      </tr>
+      {rows}
+    </table>
+    {caution_block}
+    {_footer_phrase_html(data, font_size_pt=9)}
+    </div>
+    """
+
+
+def build_location_reservation_voucher_document(data: LocationReservationVoucherData) -> RenderedReceipt:
+    """Construit le justificatif de réservation (format A4 uniquement, voir
+    note ci-dessus). Pure fonction de rendu, comme ``build_receipt_document``."""
+    document = QTextDocument()
+    logo_size = _add_logo_resource(document, data)
+    document.setHtml(_build_reservation_voucher_html(data, logo_size))
+    page_size = QPageSize(QPageSize.PageSizeId.A4)
+    return RenderedReceipt(document=document, page_size=page_size, margin_mm=_A4_MARGIN_MM)
+
+
+def _location_receipt_lines_rows(data: LocationReceiptData) -> str:
+    rows = []
+    for ligne in data.lignes:
+        if not ligne.retours:
+            rows.append(
+                f"<tr>"
+                f"<td>{_esc(ligne.article_reference)} — {_esc(ligne.article_designation)}</td>"
+                f"<td align='right'>{_fmt_money(ligne.tarif_jour, data.devise)}</td>"
+                f"<td colspan='3' style='font-style:italic; color:#777777;'>Non encore retourné</td>"
+                f"</tr>"
+            )
+            continue
+        for retour in ligne.retours:
+            rows.append(
+                f"<tr>"
+                f"<td>{_esc(ligne.article_reference)} — {_esc(ligne.article_designation)}</td>"
+                f"<td align='right'>{_fmt_money(ligne.tarif_jour, data.devise)}</td>"
+                f"<td>{_esc(retour.date_retour)}</td>"
+                f"<td align='center'>{_esc(format_quantity(retour.quantite))} x {retour.jours} j</td>"
+                f"<td align='right'>{_fmt_money(retour.montant_facture, data.devise)}</td>"
+                f"</tr>"
+            )
+    return "".join(rows)
+
+
+def _location_payment_rows_a4(data: LocationReceiptData) -> str:
+    return f"""
+    <p align="right" style="margin:2px 0;">Payé : {_fmt_money(data.montant_paye, data.devise)}</p>
+    <p align="right" style="margin:2px 0; font-weight:600;">Reste à payer : {_fmt_money(data.reste_a_payer, data.devise)}</p>
+    """
+
+
+def _location_payment_history_row_a4(p, devise: str) -> str:
+    row = (
+        f"<tr>"
+        f"<td>{_esc(p.date_heure.strftime('%Y-%m-%d %H:%M'))}</td>"
+        f"<td align='right'>{_fmt_money(p.montant, devise)}</td>"
+        f"<td>{_esc(p.mode_paiement) or '—'}</td>"
+        f"<td>{_esc(p.reference) or '—'}</td>"
+        f"<td>{_esc(p.username)}</td>"
+        f"</tr>"
+    )
+    if p.commentaire:
+        row += (
+            f"<tr><td colspan='5' style='font-style:italic; color:#555555;'>"
+            f"{_esc(p.commentaire)}</td></tr>"
+        )
+    return row
+
+
+def _location_payment_history_section_a4(data: LocationReceiptData) -> str:
+    if not data.paiements:
+        return ""
+    rows = "".join(_location_payment_history_row_a4(p, data.devise) for p in data.paiements)
+    return f"""
+    <p style="margin:16px 0 4px 0; font-weight:600;">HISTORIQUE DES PAIEMENTS</p>
+    <table width="100%" border="1" cellspacing="0" cellpadding="4" style="border-collapse:collapse; font-size:8pt;">
+      <tr style="background-color:#eeeeee;">
+        <th align="left">Date</th>
+        <th align="right">Montant</th>
+        <th align="left">Mode</th>
+        <th align="left">Référence</th>
+        <th align="left">Enregistré par</th>
+      </tr>
+      {rows}
+    </table>
+    """
+
+
+def _build_location_receipt_html(
+    data: LocationReceiptData, logo_size: Optional[tuple[float, float]]
+) -> str:
+    logo_html = ""
+    if logo_size is not None:
+        width_pt, height_pt = logo_size
+        logo_html = (
+            f'<img src="{_LOGO_RESOURCE_URL.toString()}" '
+            f'width="{width_pt:.1f}" height="{height_pt:.1f}">'
+        )
+    entreprise_nom = _esc(data.entreprise_nom) or "(Entreprise non configurée — voir Paramètres)"
+    header_lines = "<br/>".join(_header_lines(data)) or "&nbsp;"
+    client_section = _client_section_html_a4(data)
+    statut_label = _STATUT_LOCATION_LABELS.get(data.statut, str(data.statut))
+    date_depart_text = _esc(data.date_depart) if data.date_depart else "—"
+
+    rows = _location_receipt_lines_rows(data)
+
+    # Caution (§G) : toujours affichée séparément, jamais ajoutée au total
+    # facturé ci-dessous — elle ne concerne pas la location des articles
+    # eux-mêmes (voir docstring de module).
+    caution_block = ""
+    if data.caution_montant > 0:
+        caution_block = f"""
+        <hr/>
+        <p style="margin:4px 0;">Caution versée : {_fmt_money(data.caution_montant, data.devise)}</p>
+        <p style="margin:4px 0;">Caution restituée/retenue : {_fmt_money(data.caution_rendue, data.devise)}</p>
+        """
+
+    return f"""
+    <div style="font-size:10pt;">
+    <table width="100%" cellspacing="0" cellpadding="0">
+      <tr>
+        <td width="55%" valign="top">
+          {logo_html}
+          <h2 style="margin:4px 0;">{entreprise_nom}</h2>
+          <p style="margin:0;">{header_lines}</p>
+        </td>
+        <td width="45%" valign="top" align="right">
+          <h1 style="margin:0;">REÇU DE LOCATION</h1>
+          <p style="margin:4px 0;">
+            N° {_esc(data.numero)}<br/>
+            Date de réservation : {_esc(data.date)}<br/>
+            Date de départ : {date_depart_text}<br/>
+            Enregistré par : {_esc(data.username)}<br/>
+            Statut : {_esc(statut_label)}
+          </p>
+        </td>
+      </tr>
+    </table>
+    <hr/>
+    {client_section}
+    <table width="100%" border="1" cellspacing="0" cellpadding="6" style="border-collapse:collapse;">
+      <tr style="background-color:#eeeeee;">
+        <th align="left">Article</th>
+        <th align="right">Tarif / jour</th>
+        <th align="left">Retour</th>
+        <th align="center">Qté x jours</th>
+        <th align="right">Montant facturé</th>
+      </tr>
+      {rows}
+    </table>
+    <h2 align="right" style="margin-top:16px;">Total facturé : {_fmt_money(data.total_facture, data.devise)}</h2>
+    {_location_payment_rows_a4(data)}
+    {_location_payment_history_section_a4(data)}
+    {caution_block}
+    {_footer_phrase_html(data, font_size_pt=9)}
+    </div>
+    """
+
+
+def build_location_receipt_document(data: LocationReceiptData) -> RenderedReceipt:
+    """Construit le reçu de location (format A4 uniquement, voir note
+    ci-dessus). Pure fonction de rendu, comme ``build_receipt_document``."""
+    document = QTextDocument()
+    logo_size = _add_logo_resource(document, data)
+    document.setHtml(_build_location_receipt_html(data, logo_size))
+    page_size = QPageSize(QPageSize.PageSizeId.A4)
+    return RenderedReceipt(document=document, page_size=page_size, margin_mm=_A4_MARGIN_MM)

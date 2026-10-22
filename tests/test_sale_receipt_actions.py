@@ -101,6 +101,104 @@ def test_export_does_not_affect_stock(qtbot, login_as, tmp_path) -> None:
     assert stock_before == stock_after
 
 
+# -- export PDF unifié (Lot 22, §7.3) ---------------------------------------------------
+
+
+def test_export_pdf_button_prompts_format_then_file_and_writes_a4(
+    qtbot, login_as, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    stack, _ = login_as("Administrateur")
+    dialog, _sale = _build_dialog_for_validated_sale(qtbot, stack)
+    out = tmp_path / "recu.pdf"
+
+    monkeypatch.setattr(dialog, "_prompt_export_format", lambda: ReceiptFormat.A4)
+    monkeypatch.setattr(
+        "app.views.sale_detail_dialog.QFileDialog.getSaveFileName", lambda *a, **k: (str(out), "")
+    )
+
+    dialog._on_export_pdf_clicked()
+
+    assert out.exists()
+    assert out.read_bytes()[:5] == b"%PDF-"
+
+
+def test_export_pdf_button_prompts_format_then_file_and_writes_ticket(
+    qtbot, login_as, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    stack, _ = login_as("Administrateur")
+    dialog, _sale = _build_dialog_for_validated_sale(qtbot, stack)
+    out = tmp_path / "recu_ticket.pdf"
+
+    monkeypatch.setattr(dialog, "_prompt_export_format", lambda: ReceiptFormat.TICKET_80MM)
+    monkeypatch.setattr(
+        "app.views.sale_detail_dialog.QFileDialog.getSaveFileName", lambda *a, **k: (str(out), "")
+    )
+
+    dialog._on_export_pdf_clicked()
+
+    assert out.exists()
+
+
+def test_export_pdf_cancelling_format_choice_does_not_open_file_dialog_or_error(
+    qtbot, login_as, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stack, _ = login_as("Administrateur")
+    dialog, _sale = _build_dialog_for_validated_sale(qtbot, stack)
+
+    monkeypatch.setattr(dialog, "_prompt_export_format", lambda: None)
+    called = {"n": 0}
+    monkeypatch.setattr(
+        "app.views.sale_detail_dialog.QFileDialog.getSaveFileName",
+        lambda *a, **k: called.__setitem__("n", called["n"] + 1) or ("", ""),
+    )
+
+    dialog._on_export_pdf_clicked()  # ne doit jamais lever d'exception
+
+    assert called["n"] == 0
+
+
+def test_export_pdf_cancelling_file_choice_does_not_error_or_write_file(
+    qtbot, login_as, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stack, _ = login_as("Administrateur")
+    dialog, _sale = _build_dialog_for_validated_sale(qtbot, stack)
+
+    monkeypatch.setattr(dialog, "_prompt_export_format", lambda: ReceiptFormat.A4)
+    monkeypatch.setattr(
+        "app.views.sale_detail_dialog.QFileDialog.getSaveFileName", lambda *a, **k: ("", "")
+    )
+
+    dialog._on_export_pdf_clicked()  # ne doit jamais lever d'exception ni modifier les données
+
+
+def test_export_pdf_does_not_use_print_format_combo(qtbot, login_as, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """§7.3 : le format d'export ne doit jamais dépendre de
+    ``receipt_format_combo``, réservé à l'impression — changer sa valeur
+    ne doit avoir aucun effet sur le format réellement exporté."""
+    stack, _ = login_as("Administrateur")
+    dialog, _sale = _build_dialog_for_validated_sale(qtbot, stack)
+    index = dialog.receipt_format_combo.findData(ReceiptFormat.TICKET_80MM)
+    dialog.receipt_format_combo.setCurrentIndex(index)
+    out = tmp_path / "recu.pdf"
+
+    used_formats: list = []
+    original_export = dialog._export_receipt_to
+
+    def _spy_export(file_path, receipt_format):
+        used_formats.append(receipt_format)
+        return original_export(file_path, receipt_format)
+
+    monkeypatch.setattr(dialog, "_export_receipt_to", _spy_export)
+    monkeypatch.setattr(dialog, "_prompt_export_format", lambda: ReceiptFormat.A4)
+    monkeypatch.setattr(
+        "app.views.sale_detail_dialog.QFileDialog.getSaveFileName", lambda *a, **k: (str(out), "")
+    )
+
+    dialog._on_export_pdf_clicked()
+
+    assert used_formats == [ReceiptFormat.A4]
+
+
 # -- impression ------------------------------------------------------------------------
 
 
@@ -220,100 +318,57 @@ def test_payment_section_shows_initial_state_after_validation(qtbot, login_as) -
 
     assert dialog.montant_paye_label.text() != ""
     assert dialog.reste_a_payer_label.text() != ""
-    assert dialog.record_payment_button.isEnabled() is True  # reste > 0, non payée
 
 
-def test_record_payment_button_disabled_once_fully_paid(qtbot, login_as) -> None:
+def test_record_payment_button_and_method_removed(qtbot, login_as) -> None:
+    """Lot 22 (§7.2) : le bouton « Enregistrer un paiement » et ses méthodes
+    dédiées (``_on_record_payment_clicked``/``_submit_payment``) sont
+    entièrement supprimés du détail de vente — le paiement différé d'une
+    vente validée se fait désormais depuis le bouton « Payer » de la liste
+    des ventes (``SalesPage``, cf. ``tests/test_sales_page.py``), qui reste
+    accessible même après la fermeture de la session de caisse où la vente
+    a été validée. Remplace les anciens tests
+    ``test_record_payment_button_disabled_once_fully_paid``/
+    ``test_record_payment_button_disabled_for_draft_sale``, devenus sans
+    objet. Le tableau d'historique des paiements reste, lui, entièrement
+    inchangé."""
     stack, _ = login_as("Administrateur")
-    article = _make_article(stack)
-    from app.services.sales.sale_service import VenteLigneInput
+    dialog, _sale = _build_dialog_for_validated_sale(qtbot, stack)
 
-    draft = stack.sales.create_sale(date(2026, 1, 15), [VenteLigneInput(article.id, Decimal("2"), Decimal("150"))])
-    validated = stack.sales.validate_sale(draft.id, Decimal("300"))
-    sale = stack.sales.get_sale(validated.id)
-    movements = stack.sales.get_sale_movements(validated.id)
-    dialog = SaleDetailDialog(sale, movements, "XOF", stack.documents, stack.permissions, sale_service=stack.sales)
-    qtbot.addWidget(dialog)
-
-    assert dialog.record_payment_button.isEnabled() is False
+    assert not hasattr(dialog, "record_payment_button")
+    assert not hasattr(dialog, "_on_record_payment_clicked")
+    assert not hasattr(dialog, "_submit_payment")
 
 
-def test_record_payment_button_disabled_for_draft_sale(qtbot, login_as) -> None:
-    stack, _ = login_as("Administrateur")
-    article = _make_article(stack)
-    from app.services.sales.sale_service import VenteLigneInput
-
-    draft = stack.sales.create_sale(date(2026, 1, 15), [VenteLigneInput(article.id, Decimal("2"), Decimal("150"))])
-    sale = stack.sales.get_sale(draft.id)
-    dialog = SaleDetailDialog(sale, [], "XOF", stack.documents, stack.permissions, sale_service=stack.sales)
-    qtbot.addWidget(dialog)
-
-    assert dialog.record_payment_button.isEnabled() is False
-
-
-def test_submit_payment_updates_labels_and_history(qtbot, login_as) -> None:
+def test_refresh_payment_section_updates_labels_and_history(qtbot, login_as) -> None:
     stack, _ = login_as("Administrateur")
     dialog, sale = _build_dialog_for_validated_sale(qtbot, stack)  # total 300
 
-    result = dialog._submit_payment({"montant": "100", "mode_paiement": "Espèces", "reference": None, "commentaire": None})
+    stack.sales.record_payment(sale.id, Decimal("100"), mode_paiement="Espèces")
+    dialog._refresh_payment_section()
 
-    assert result is True
     assert dialog.payments_table.rowCount() == 1
     assert dialog.payments_table.item(0, 1).text() != ""
     reloaded = stack.sales.get_sale(sale.id)
     assert reloaded.montant_paye == Decimal("100")
 
 
-def test_submit_payment_exceeding_remaining_is_refused_and_nothing_recorded(qtbot, login_as) -> None:
-    stack, _ = login_as("Administrateur")
-    dialog, sale = _build_dialog_for_validated_sale(qtbot, stack)  # total 300
-
-    result = dialog._submit_payment({"montant": "10000", "mode_paiement": None, "reference": None, "commentaire": None})
-
-    assert result is False
-    assert dialog.payments_table.rowCount() == 0
-    reloaded = stack.sales.get_sale(sale.id)
-    assert reloaded.montant_paye == Decimal("0")
-
-
-def test_export_payment_receipt_writes_pdf_file(qtbot, login_as, tmp_path) -> None:
+def test_payment_receipt_button_and_method_removed(qtbot, login_as) -> None:
+    """Lot 22 (§7.1) : le bouton « Reçu du paiement sélectionné (PDF) » et
+    sa méthode d'export dédiée sont entièrement supprimés — remplacés par
+    l'historique complet des paiements déjà présent dans le reçu de vente
+    unifié (Lot 21). Remplace les anciens tests
+    ``test_export_payment_receipt_*``/``test_export_payment_receipt_button_disabled_without_history``,
+    devenus sans objet."""
     stack, _ = login_as("Administrateur")
     dialog, sale = _build_dialog_for_validated_sale(qtbot, stack)
-    dialog._submit_payment({"montant": "100", "mode_paiement": None, "reference": None, "commentaire": None})
-    paiement_id = stack.sales.list_payments(sale.id)[0].id
+    stack.sales.record_payment(sale.id, Decimal("100"))
+    dialog._refresh_payment_section()
 
-    out = tmp_path / "recu_paiement.pdf"
-    result = dialog._export_payment_receipt_to(str(out), paiement_id)
-
-    assert result is True
-    assert out.exists()
-    assert out.read_bytes()[:5] == b"%PDF-"
-
-
-def test_export_payment_receipt_with_mode_and_reference_writes_pdf_file(qtbot, login_as, tmp_path) -> None:
-    """Régression du chemin complet (clic -> service -> gabarit -> PDF)
-    avec un mode de paiement et une référence renseignés — lot
-    Harmonisation des reçus."""
-    stack, _ = login_as("Administrateur")
-    dialog, sale = _build_dialog_for_validated_sale(qtbot, stack)
-    dialog._submit_payment(
-        {"montant": "100", "mode_paiement": "Mobile Money", "reference": "MM-REF-42", "commentaire": None}
-    )
-    paiement_id = stack.sales.list_payments(sale.id)[0].id
-
-    out = tmp_path / "recu_paiement_mode_reference.pdf"
-    result = dialog._export_payment_receipt_to(str(out), paiement_id)
-
-    assert result is True
-    assert out.exists()
-    assert out.read_bytes()[:5] == b"%PDF-"
-
-
-def test_export_payment_receipt_button_disabled_without_history(qtbot, login_as) -> None:
-    stack, _ = login_as("Administrateur")
-    dialog, _sale = _build_dialog_for_validated_sale(qtbot, stack)
-
-    assert dialog.export_payment_receipt_button.isEnabled() is False
+    assert not hasattr(dialog, "export_payment_receipt_button")
+    assert not hasattr(dialog, "_export_payment_receipt_to")
+    # L'historique complet reste bien visible et consultable à l'écran.
+    assert dialog.payments_table.rowCount() == 1
 
 
 def test_payment_section_without_sale_service_does_not_crash(qtbot) -> None:
@@ -344,7 +399,7 @@ def test_payment_section_without_sale_service_does_not_crash(qtbot) -> None:
             return True
 
     dialog = SaleDetailDialog(sale, [], "XOF", _StubReceiptService(), _StubPermissions())
-    assert dialog.record_payment_button.isEnabled() is False
+    assert dialog.payments_table.rowCount() == 0
 
 
 # -- annulation depuis le détail (Lot 15 — étape 2) -------------------------------
@@ -520,12 +575,11 @@ def test_submit_cancel_sale_does_not_reveal_movements_without_permission(qtbot, 
 def test_submit_cancel_sale_disables_receipt_actions(qtbot, login_as) -> None:
     stack, _ = login_as("Administrateur")
     dialog, _sale = _build_dialog_for_validated_sale(qtbot, stack)
-    assert dialog.export_a4_button.isEnabled() is True
+    assert dialog.export_pdf_button.isEnabled() is True
 
     dialog._submit_cancel_sale("Motif de test valide")
 
-    assert dialog.export_a4_button.isEnabled() is False
-    assert dialog.export_ticket_button.isEnabled() is False
+    assert dialog.export_pdf_button.isEnabled() is False
     assert dialog.print_receipt_button.isEnabled() is False
     assert dialog.receipt_format_combo.isEnabled() is False
 
@@ -533,7 +587,8 @@ def test_submit_cancel_sale_disables_receipt_actions(qtbot, login_as) -> None:
 def test_submit_cancel_sale_preserves_payment_history(qtbot, login_as) -> None:
     stack, _ = login_as("Administrateur")
     dialog, sale = _build_dialog_for_validated_sale(qtbot, stack)
-    dialog._submit_payment({"montant": "100", "mode_paiement": "Espèces", "reference": None, "commentaire": None})
+    stack.sales.record_payment(sale.id, Decimal("100"), mode_paiement="Espèces")
+    dialog._refresh_payment_section()
     assert dialog.payments_table.rowCount() == 1
 
     dialog._submit_cancel_sale("Motif de test valide")

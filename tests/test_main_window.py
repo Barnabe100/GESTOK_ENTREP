@@ -564,3 +564,53 @@ def test_readonly_locations_page_does_not_expose_mutating_actions(qtbot, login_a
     assert page.delete_button.isEnabled() is False
     # La consultation elle-même (détail) reste accessible.
     assert page.detail_button is not None
+
+
+# -- Lot 22 (anomalie B) : stabilité de la taille de la fenêtre -----------------------
+
+
+def test_main_window_has_minimum_size_matching_initial_size(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+
+    assert window.minimumSize().width() == 1200
+    assert window.minimumSize().height() == 750
+
+
+def test_window_size_unchanged_across_every_module_navigation(qtbot, login_as) -> None:
+    """Reproduit le scénario de recette (anomalie B) : parcourir tous les
+    modules visibles l'un après l'autre ne doit jamais réduire ni modifier
+    la taille de la fenêtre, y compris pour un module affiché pour la
+    première fois."""
+    stack, _ = login_as("Administrateur")
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+    window.resize(1200, 750)
+    initial_size = window.size()
+
+    for index in range(len(window.visible_modules)):
+        window.navigation_list.setCurrentRow(index)
+        assert window.size() == initial_size, (
+            f"La fenêtre a changé de taille en affichant « {window.visible_modules[index]} »"
+        )
+
+    # Un second passage (pages déjà affichées une première fois) ne doit
+    # pas non plus modifier la taille.
+    for index in reversed(range(len(window.visible_modules))):
+        window.navigation_list.setCurrentRow(index)
+        assert window.size() == initial_size
+
+
+def test_window_cannot_be_resized_below_minimum_via_module_switch(qtbot, login_as) -> None:
+    """Même en partant d'une fenêtre explicitement agrandie, parcourir les
+    modules ne doit jamais la faire redescendre sous sa taille minimale."""
+    stack, _ = login_as("Administrateur")
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+    window.resize(1600, 900)
+
+    for index in range(len(window.visible_modules)):
+        window.navigation_list.setCurrentRow(index)
+        assert window.size().width() >= 1200
+        assert window.size().height() >= 750
