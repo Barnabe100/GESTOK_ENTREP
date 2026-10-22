@@ -78,7 +78,13 @@ from app.utils.pdf_export import build_page_layout
 from app.utils.quantity import format_quantity
 from app.views.cancellation_reason_dialog import CancellationReasonDialog
 from app.views.client_form_dialog import ClientFormDialog
-from app.views.common import confirm_action, date_to_qdate, parse_decimal, required_label
+from app.views.common import (
+    confirm_action,
+    date_to_qdate,
+    format_decimal_for_input,
+    parse_decimal,
+    required_label,
+)
 from app.views.payment_form_dialog import PaymentFormDialog
 from app.views.sale_detail_dialog import SaleDetailDialog
 
@@ -370,7 +376,7 @@ class SalesPage(QWidget):
         except AppError:
             articles = []
         return [
-            (a.id, f"{a.reference} — {a.designation}", str(a.prix_vente))
+            (a.id, f"{a.reference} — {a.designation}", format_decimal_for_input(a.prix_vente))
             for a in articles
             if a.mode_gestion == ModeGestionArticle.VENTE
         ]
@@ -388,7 +394,7 @@ class SalesPage(QWidget):
             return None
         if article is None or article.mode_gestion != ModeGestionArticle.VENTE:
             return None
-        return article.id, f"{article.reference} — {article.designation}", str(article.prix_vente)
+        return article.id, f"{article.reference} — {article.designation}", format_decimal_for_input(article.prix_vente)
 
     def _load_clients_for_form(self) -> list[tuple[int, str]]:
         """Seuls les clients actifs sont proposés pour une nouvelle

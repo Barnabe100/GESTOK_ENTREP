@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.utils.quantity import format_quantity
 from app.views.common import build_required_field_legend, required_label
 
 
@@ -51,7 +52,9 @@ class ExitLineFormDialog(QDialog):
         form.addRow(required_label("Article"), self.article_combo)
 
         self.quantite_edit = QLineEdit(self)
-        self.quantite_edit.setText(str(initial.get("quantite", "")) if initial.get("quantite") is not None else "")
+        self.quantite_edit.setText(
+            format_quantity(initial["quantite"]) if initial.get("quantite") is not None else ""
+        )
         form.addRow(required_label("Quantité"), self.quantite_edit)
 
         self.cmup_label = QLabel("", self)

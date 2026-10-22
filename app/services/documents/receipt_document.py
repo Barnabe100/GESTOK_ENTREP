@@ -83,18 +83,47 @@ _TICKET_WIDTH_MM = 80.0
 _TICKET_MARGIN_MM = 4.0
 _TICKET_MIN_HEIGHT_MM = 40.0
 # Marge de sécurité ajoutée à la hauteur mesurée (arrondi de mise en page,
-# évite qu'une dernière ligne ne soit coupée sur l'imprimante physique).
+# évite qu'une dernière ligne ne soit coupée sur l'imprimante physique) —
+# ajoutée APRÈS vérification par ``document.pageCount()`` (voir
+# ``_measure_ticket_height_mm``), jamais à sa place : elle ne couvre plus
+# qu'un résidu (métriques de police légèrement différentes entre la mesure
+# et l'impression réelle), plus la cause structurelle du double-page
+# (Lot 23, anomalie A).
 _TICKET_HEIGHT_BUFFER_MM = 8.0
+# Lot 23 (anomalie A) : nombre maximal de tentatives et incrément utilisés
+# pour faire converger la hauteur candidate vers une page unique selon
+# ``document.pageCount()`` — jamais une boucle non bornée. 20 tentatives à
+# 5 mm couvrent une marge de 100 mm au-delà de l'estimation initiale,
+# largement suffisant en pratique (l'estimation initiale, basée sur la
+# mesure réelle du contenu, n'est habituellement déjà qu'à quelques
+# millimètres de la valeur correcte) ; au-delà, le contenu est considéré
+# comme nécessitant légitimement plusieurs pages (jamais forcé sur une
+# seule à n'importe quel prix).
+_TICKET_PAGE_FIT_MAX_ATTEMPTS = 20
+_TICKET_PAGE_FIT_INCREMENT_MM = 5.0
 
 _LOGO_RESOURCE_URL = QUrl("stockmanager-receipt://logo-entreprise")
 
-# Taille d'impression maximale du logo (décision déjà actée, Lot 21) :
-# 40 x 18 mm, proportions toujours conservées — jamais déformé, jamais agrandi
-# au-delà de cette boîte. 40 mm reste largement inférieur à la largeur de
-# contenu d'un ticket 80 mm (80 - 2x4 mm de marge = 72 mm) : aucun débordement
-# horizontal possible sur ce format.
-_LOGO_MAX_WIDTH_MM = 40.0
-_LOGO_MAX_HEIGHT_MM = 18.0
+# Lot 23 (§C) : boîte maximale distincte par format — un ticket 80 mm ne
+# doit pas accepter un logo aussi grand qu'un document A4, même si 40 mm
+# de large tiendrait techniquement dans les 72 mm de contenu disponibles
+# (80 - 2x4 mm de marge). Proportions toujours conservées — jamais déformé,
+# jamais agrandi au-delà de la boîte (voir ``_fit_logo_box``).
+_LOGO_MAX_WIDTH_TICKET_MM = 30.0
+_LOGO_MAX_HEIGHT_TICKET_MM = 15.0
+_LOGO_MAX_WIDTH_A4_MM = 40.0
+_LOGO_MAX_HEIGHT_A4_MM = 20.0
+
+# Lot 23 (§C) : seuil de qualité d'impression retenu pour ne jamais agrandir
+# un logo de faible résolution au-delà de sa taille « naturelle » à cette
+# définition — un logo dont la taille naturelle à 150 DPI est déjà plus
+# petite que la boîte maximale n'est jamais étiré pour la remplir (ce qui
+# dégraderait sa netteté) ; seul un logo dont la taille naturelle dépasse la
+# boîte est réduit, comme avant. 150 DPI est un seuil de qualité d'impression
+# courant (documenté dans le rapport d'analyse de ce lot), jamais une limite
+# de résolution en pixels imposée à l'import (voir ``company_settings_service``).
+_LOGO_MIN_RENDER_DPI = 150.0
+_MM_PER_INCH = 25.4
 
 # Lot 22 (anomalie D) : échelle typographique explicite du ticket 80 mm,
 # posée directement sur chaque élément — y compris les tables — plutôt que
@@ -149,26 +178,44 @@ def _esc(value) -> str:
     return html.escape(str(value)) if value else ""
 
 
-def _fit_logo_box(image_width_px: int, image_height_px: int) -> tuple[float, float]:
+def _fit_logo_box(
+    image_width_px: int, image_height_px: int, max_width_mm: float, max_height_mm: float
+) -> tuple[float, float]:
     """Calcule la largeur/hauteur (mm) du logo pour qu'il s'inscrive dans la
-    boîte ``_LOGO_MAX_WIDTH_MM`` x ``_LOGO_MAX_HEIGHT_MM`` en conservant ses
-    proportions réelles — jamais de déformation, jamais de dépassement d'une
-    des deux dimensions. Fonction pure, indépendante de Qt, pour rester
-    testable sans document ni image réelle."""
+    boîte ``max_width_mm`` x ``max_height_mm`` (propre à chaque format, voir
+    ``_LOGO_MAX_*_MM``) en conservant ses proportions réelles — jamais de
+    déformation, jamais de dépassement d'une des deux dimensions.
+
+    Lot 23 (§C) : si la taille « naturelle » de l'image à
+    ``_LOGO_MIN_RENDER_DPI`` est déjà plus petite que la boîte dans les deux
+    dimensions, cette taille naturelle est conservée telle quelle plutôt que
+    d'agrandir l'image pour remplir la boîte — un logo de faible résolution
+    n'est jamais étiré au-delà de sa définition réelle, ce qui dégraderait
+    sa netteté. Seul un logo dont la taille naturelle dépasse la boîte est
+    réduit pour y tenir, comme avant. Fonction pure, indépendante de Qt,
+    pour rester testable sans document ni image réelle."""
     if image_width_px <= 0 or image_height_px <= 0:
         return (0.0, 0.0)
+
     aspect = image_width_px / image_height_px
-    box_aspect = _LOGO_MAX_WIDTH_MM / _LOGO_MAX_HEIGHT_MM
+    box_aspect = max_width_mm / max_height_mm
     if aspect >= box_aspect:
-        width_mm = _LOGO_MAX_WIDTH_MM
-        height_mm = _LOGO_MAX_WIDTH_MM / aspect
+        fitted_width_mm = max_width_mm
+        fitted_height_mm = max_width_mm / aspect
     else:
-        height_mm = _LOGO_MAX_HEIGHT_MM
-        width_mm = _LOGO_MAX_HEIGHT_MM * aspect
-    return (width_mm, height_mm)
+        fitted_height_mm = max_height_mm
+        fitted_width_mm = max_height_mm * aspect
+
+    natural_width_mm = (image_width_px / _LOGO_MIN_RENDER_DPI) * _MM_PER_INCH
+    natural_height_mm = (image_height_px / _LOGO_MIN_RENDER_DPI) * _MM_PER_INCH
+    if natural_width_mm <= max_width_mm and natural_height_mm <= max_height_mm:
+        return (natural_width_mm, natural_height_mm)
+    return (fitted_width_mm, fitted_height_mm)
 
 
-def _add_logo_resource(document: QTextDocument, data: _ReceiptLike) -> Optional[tuple[float, float]]:
+def _add_logo_resource(
+    document: QTextDocument, data: _ReceiptLike, max_width_mm: float, max_height_mm: float
+) -> Optional[tuple[float, float]]:
     """Charge le logo client (s'il existe) comme ressource du document
     **avant** toute construction du HTML (voir ``build_receipt_document`` :
     l'ordre d'appel garantit que l'image est entièrement chargée — ``QImage``
@@ -181,16 +228,32 @@ def _add_logo_resource(document: QTextDocument, data: _ReceiptLike) -> Optional[
     un logo manquant ou invalide ne doit jamais empêcher la génération du
     reçu (§6 du cahier des charges de ce lot) — sinon la taille (largeur,
     hauteur) en points à appliquer explicitement sur la balise ``<img>``
-    pour respecter la boîte 40 x 18 mm en conservant les proportions
-    (Lot 21, voir ``_fit_logo_box``)."""
+    pour respecter la boîte ``max_width_mm`` x ``max_height_mm`` (propre au
+    format appelant, voir ``_fit_logo_box``) en conservant les proportions."""
     if data.entreprise_logo_path is None or not data.entreprise_logo_path.exists():
         return None
     image = QImage(str(data.entreprise_logo_path))
     if image.isNull():
         return None
     document.addResource(QTextDocument.ResourceType.ImageResource, _LOGO_RESOURCE_URL, image)
-    width_mm, height_mm = _fit_logo_box(image.width(), image.height())
+    width_mm, height_mm = _fit_logo_box(image.width(), image.height(), max_width_mm, max_height_mm)
     return (width_mm * _MM_TO_POINTS, height_mm * _MM_TO_POINTS)
+
+
+def _logo_html(logo_size: Optional[tuple[float, float]]) -> str:
+    """Construit la balise ``<img>`` du logo, toujours centrée horizontalement
+    (Lot 23, §C) — point de construction unique réutilisé par les quatre
+    gabarits (reçu de vente A4/ticket, justificatif de réservation, reçu de
+    location), jamais dupliqué. Chaîne vide si aucun logo (voir
+    ``_add_logo_resource``) : jamais d'espace réservé vide."""
+    if logo_size is None:
+        return ""
+    width_pt, height_pt = logo_size
+    return (
+        '<p align="center" style="margin:2px 0;">'
+        f'<img src="{_LOGO_RESOURCE_URL.toString()}" width="{width_pt:.1f}" height="{height_pt:.1f}">'
+        "</p>"
+    )
 
 
 def _header_lines(data: _ReceiptLike) -> list[str]:
@@ -354,13 +417,7 @@ def _client_section_html_a4(data: _ReceiptLike) -> str:
 
 
 def _build_a4_html(data: SaleReceiptData, logo_size: Optional[tuple[float, float]]) -> str:
-    logo_html = ""
-    if logo_size is not None:
-        width_pt, height_pt = logo_size
-        logo_html = (
-            f'<img src="{_LOGO_RESOURCE_URL.toString()}" '
-            f'width="{width_pt:.1f}" height="{height_pt:.1f}">'
-        )
+    logo_html = _logo_html(logo_size)
     entreprise_nom = _esc(data.entreprise_nom) or "(Entreprise non configurée — voir Paramètres)"
     header_lines = "<br/>".join(_header_lines(data)) or "&nbsp;"
     client_section = _client_section_html_a4(data)
@@ -427,17 +484,17 @@ def _client_block_ticket(data: SaleReceiptData) -> str:
 
 
 def _build_ticket_html(data: SaleReceiptData, logo_size: Optional[tuple[float, float]]) -> str:
-    logo_html = ""
-    if logo_size is not None:
-        width_pt, height_pt = logo_size
-        logo_html = (
-            '<p align="center">'
-            f'<img src="{_LOGO_RESOURCE_URL.toString()}" width="{width_pt:.1f}" height="{height_pt:.1f}">'
-            "</p>"
-        )
+    logo_html = _logo_html(logo_size)
     entreprise_nom = _esc(data.entreprise_nom) or "(Entreprise non configurée)"
     header_lines = "<br/>".join(_header_lines(data))
     client_block = _client_block_ticket(data)
+    # Lot 23 (§F — reprise de l'ordre canonique) : un séparateur précède
+    # toujours le pied de page configurable, mais uniquement s'il y a
+    # réellement un pied de page à afficher — jamais un séparateur isolé
+    # sans contenu après (même convention que les autres sections
+    # optionnelles de ce document).
+    footer_html = _footer_phrase_html(data, font_size_pt=_TICKET_FONT_FOOTER_PT)
+    footer_separator = '<p align="center">------------------------------</p>' if footer_html else ""
 
     # Lignes d'articles (Lot 22, anomalie D) : taille explicite sur le
     # paragraphe de désignation ET sur la table quantité/prix/montant —
@@ -455,9 +512,9 @@ def _build_ticket_html(data: SaleReceiptData, logo_size: Optional[tuple[float, f
 
     return f"""
     <div style="font-family:monospace; font-size:{_TICKET_FONT_BODY_PT}pt;">
+      {logo_html}
       <p align="center" style="margin:2px 0; font-size:{_TICKET_FONT_HEADER_PT}pt;"><b>{entreprise_nom}</b></p>
       <p align="center" style="margin:2px 0; font-size:{_TICKET_FONT_BODY_PT}pt;">{header_lines}</p>
-      {logo_html}
       <p align="center">------------------------------</p>
       <p style="margin:2px 0; font-size:{_TICKET_FONT_BODY_PT}pt;">
         Reçu N° {_esc(data.numero)}<br/>
@@ -474,21 +531,61 @@ def _build_ticket_html(data: SaleReceiptData, logo_size: Optional[tuple[float, f
       </tr></table>
       {_payment_rows_ticket(data)}
       {_payment_history_section_ticket(data)}
-      {_footer_phrase_html(data, font_size_pt=_TICKET_FONT_FOOTER_PT)}
+      {footer_separator}
+      {footer_html}
     </div>
     """
 
 
 def _measure_ticket_height_mm(document: QTextDocument, content_width_mm: float) -> float:
-    """Mesure en deux passes la hauteur réellement nécessaire pour afficher
-    tout le contenu du ticket à largeur fixe (80 mm moins marges) : un
+    """Mesure la hauteur réellement nécessaire pour afficher tout le contenu
+    du ticket sur une seule page à largeur fixe (80 mm moins marges) : un
     ticket thermique n'a pas de hauteur de page prédéfinie (rouleau
     continu), contrairement à A4 — Qt exige pourtant toujours une taille de
     page définie pour imprimer/exporter. La hauteur suit donc automatiquement
-    le nombre de lignes de la vente."""
-    document.setTextWidth(content_width_mm * _MM_TO_POINTS)
-    height_points = document.size().height()
-    height_mm = height_points / _MM_TO_POINTS
+    le nombre de lignes de la vente.
+
+    Lot 23 (anomalie A) : une simple mesure en mode page infinie
+    (``setTextWidth`` seul, sans ``setPageSize``) ne garantit pas d'obtenir
+    la même hauteur que celle que Qt calculera réellement à l'impression —
+    ``document.print_(printer)`` utilise toujours le mode paginé, qui peut
+    repousser un bloc entier (typiquement le pied de page, isolé par une
+    marge avant lui) sur une seconde page même pour un écart minime, par
+    exemple entre les métriques de police de l'environnement de mesure et
+    celles réellement utilisées au moment d'imprimer. C'est précisément ce
+    qui provoquait un reçu court sur deux pages sous Windows alors que la
+    mesure semblait correcte.
+
+    La correction utilise donc le même mode paginé que l'impression réelle
+    comme référence : on configure ``document.setPageSize(...)`` à une
+    hauteur candidate puis on vérifie ``document.pageCount()`` — jamais une
+    estimation indirecte seule. Si plus d'une page est nécessaire, la
+    hauteur candidate est augmentée et revérifiée, dans la limite de
+    ``_TICKET_PAGE_FIT_MAX_ATTEMPTS`` tentatives (jamais de boucle non
+    bornée : au-delà, le contenu est légitimement trop long pour une seule
+    page et la dernière hauteur testée est conservée telle quelle, sans
+    jamais tronquer ni masquer d'information)."""
+    content_width_pt = content_width_mm * _MM_TO_POINTS
+
+    # Estimation initiale : mesure en mode page infinie, point de départ
+    # déjà proche de la valeur correcte dans l'immense majorité des cas.
+    document.setTextWidth(content_width_pt)
+    candidate_height_pt = max(document.size().height(), _TICKET_MIN_HEIGHT_MM * _MM_TO_POINTS)
+
+    increment_pt = _TICKET_PAGE_FIT_INCREMENT_MM * _MM_TO_POINTS
+    for _ in range(_TICKET_PAGE_FIT_MAX_ATTEMPTS):
+        document.setPageSize(QSizeF(content_width_pt, candidate_height_pt))
+        if document.pageCount() <= 1:
+            break
+        candidate_height_pt += increment_pt
+
+    # Remet le document en mode page infinie : seul ce calcul a besoin du
+    # mode paginé, ni l'impression/export réelle (qui gèrent leur propre
+    # pagination via QPrinter), ni les usages ultérieurs de ce même
+    # document (ex. inspection du HTML/texte dans les tests).
+    document.setPageSize(QSizeF(-1, -1))
+
+    height_mm = candidate_height_pt / _MM_TO_POINTS
     return max(height_mm + _TICKET_HEIGHT_BUFFER_MM, _TICKET_MIN_HEIGHT_MM)
 
 
@@ -553,14 +650,15 @@ def build_receipt_document(data: SaleReceiptData, receipt_format: ReceiptFormat)
     format demandé. Ne modifie jamais ``data`` ni quoi que ce soit en base :
     pure fonction de rendu."""
     document = QTextDocument()
-    logo_size = _add_logo_resource(document, data)
 
     if receipt_format is ReceiptFormat.A4:
+        logo_size = _add_logo_resource(document, data, _LOGO_MAX_WIDTH_A4_MM, _LOGO_MAX_HEIGHT_A4_MM)
         document.setHtml(_build_a4_html(data, logo_size))
         page_size = QPageSize(QPageSize.PageSizeId.A4)
         return RenderedReceipt(document=document, page_size=page_size, margin_mm=_A4_MARGIN_MM)
 
     if receipt_format is ReceiptFormat.TICKET_80MM:
+        logo_size = _add_logo_resource(document, data, _LOGO_MAX_WIDTH_TICKET_MM, _LOGO_MAX_HEIGHT_TICKET_MM)
         document.setHtml(_build_ticket_html(data, logo_size))
         content_width_mm = _TICKET_WIDTH_MM - 2 * _TICKET_MARGIN_MM
         height_mm = _measure_ticket_height_mm(document, content_width_mm)
@@ -584,13 +682,7 @@ def build_receipt_document(data: SaleReceiptData, receipt_format: ReceiptFormat)
 def _build_reservation_voucher_html(
     data: LocationReservationVoucherData, logo_size: Optional[tuple[float, float]]
 ) -> str:
-    logo_html = ""
-    if logo_size is not None:
-        width_pt, height_pt = logo_size
-        logo_html = (
-            f'<img src="{_LOGO_RESOURCE_URL.toString()}" '
-            f'width="{width_pt:.1f}" height="{height_pt:.1f}">'
-        )
+    logo_html = _logo_html(logo_size)
     entreprise_nom = _esc(data.entreprise_nom) or "(Entreprise non configurée — voir Paramètres)"
     header_lines = "<br/>".join(_header_lines(data)) or "&nbsp;"
     client_section = _client_section_html_a4(data)
@@ -659,7 +751,7 @@ def build_location_reservation_voucher_document(data: LocationReservationVoucher
     """Construit le justificatif de réservation (format A4 uniquement, voir
     note ci-dessus). Pure fonction de rendu, comme ``build_receipt_document``."""
     document = QTextDocument()
-    logo_size = _add_logo_resource(document, data)
+    logo_size = _add_logo_resource(document, data, _LOGO_MAX_WIDTH_A4_MM, _LOGO_MAX_HEIGHT_A4_MM)
     document.setHtml(_build_reservation_voucher_html(data, logo_size))
     page_size = QPageSize(QPageSize.PageSizeId.A4)
     return RenderedReceipt(document=document, page_size=page_size, margin_mm=_A4_MARGIN_MM)
@@ -737,13 +829,7 @@ def _location_payment_history_section_a4(data: LocationReceiptData) -> str:
 def _build_location_receipt_html(
     data: LocationReceiptData, logo_size: Optional[tuple[float, float]]
 ) -> str:
-    logo_html = ""
-    if logo_size is not None:
-        width_pt, height_pt = logo_size
-        logo_html = (
-            f'<img src="{_LOGO_RESOURCE_URL.toString()}" '
-            f'width="{width_pt:.1f}" height="{height_pt:.1f}">'
-        )
+    logo_html = _logo_html(logo_size)
     entreprise_nom = _esc(data.entreprise_nom) or "(Entreprise non configurée — voir Paramètres)"
     header_lines = "<br/>".join(_header_lines(data)) or "&nbsp;"
     client_section = _client_section_html_a4(data)
@@ -809,7 +895,7 @@ def build_location_receipt_document(data: LocationReceiptData) -> RenderedReceip
     """Construit le reçu de location (format A4 uniquement, voir note
     ci-dessus). Pure fonction de rendu, comme ``build_receipt_document``."""
     document = QTextDocument()
-    logo_size = _add_logo_resource(document, data)
+    logo_size = _add_logo_resource(document, data, _LOGO_MAX_WIDTH_A4_MM, _LOGO_MAX_HEIGHT_A4_MM)
     document.setHtml(_build_location_receipt_html(data, logo_size))
     page_size = QPageSize(QPageSize.PageSizeId.A4)
     return RenderedReceipt(document=document, page_size=page_size, margin_mm=_A4_MARGIN_MM)

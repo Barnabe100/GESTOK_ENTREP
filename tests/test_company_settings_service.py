@@ -183,6 +183,33 @@ def test_set_logo_rejects_oversized_file(login_as, tmp_path) -> None:
         stack.parameters.set_logo(huge_file)
 
 
+def test_set_logo_rejects_file_just_over_2mo(login_as, tmp_path) -> None:
+    """Lot 23 (§D) : la limite est désormais 2 Mo, pas 5 — un fichier de
+    2 Mo + 1 octet (image valide par ailleurs) doit être refusé."""
+    stack, _ = login_as("Administrateur")
+    over_limit = tmp_path / "over_2mo.png"
+    _make_test_image(over_limit, width=20, height=20)
+    with over_limit.open("ab") as f:
+        f.write(b"0" * (2 * 1024 * 1024 + 1 - over_limit.stat().st_size))
+
+    with pytest.raises(ValidationError):
+        stack.parameters.set_logo(over_limit)
+
+
+def test_set_logo_accepts_file_at_exactly_2mo(login_as, tmp_path) -> None:
+    """Un fichier de 2 Mo exactement (limite incluse) doit être accepté."""
+    stack, _ = login_as("Administrateur")
+    at_limit = tmp_path / "at_2mo.png"
+    _make_test_image(at_limit, width=20, height=20)
+    with at_limit.open("ab") as f:
+        f.write(b"0" * (2 * 1024 * 1024 - at_limit.stat().st_size))
+    assert at_limit.stat().st_size == 2 * 1024 * 1024
+
+    config = stack.parameters.set_logo(at_limit)
+
+    assert config.logo_path is not None
+
+
 def test_set_logo_rejects_oversized_dimensions(login_as, tmp_path) -> None:
     stack, _ = login_as("Administrateur")
     wide_file = tmp_path / "wide.png"

@@ -82,6 +82,30 @@ def parse_decimal(text: str, field_label: str) -> Decimal:
         raise ValidationError(f"Le champ « {field_label} » doit être un nombre valide.") from exc
 
 
+def format_decimal_for_input(value) -> str:
+    """Représentation d'un montant/prix pour pré-remplir un champ de saisie
+    éditable (Lot 23, §E) — jamais de décimale superflue (``Decimal("7500.00")``
+    -> ``"7500"``), jamais de notation scientifique, et toute décimale
+    réellement significative est conservée telle quelle (``Decimal("7500.50")``
+    -> ``"7500.5"``). Même principe que ``app.utils.quantity.format_quantity``
+    (déjà utilisé pour les quantités, y compris l'acceptation souple de
+    ``Decimal``/``int``/``float``/``str`` en entrée), mais avec « . » comme
+    séparateur — jamais la virgule, pour rester cohérent avec ce que
+    :func:`parse_decimal` accepte déjà et avec la représentation actuelle
+    des décimales réellement significatives.
+
+    N'affecte jamais la valeur réellement stockée : les colonnes monétaires
+    (``app.models.types.MONEY``) sont quantizées à 2 décimales exactes par
+    SQLAlchemy à chaque lecture, ce qui produit ce ``.00`` superflu — cette
+    fonction ne change que la représentation textuelle affichée, jamais le
+    ``Decimal`` lui-même ni les règles d'arrondi existantes
+    (``app.utils.money.round_money``)."""
+    decimal_value = value if isinstance(value, Decimal) else Decimal(str(value))
+    if decimal_value == 0:
+        return "0"
+    return format(decimal_value.normalize(), "f")
+
+
 def parse_optional_decimal(text: str, field_label: str) -> Optional[Decimal]:
     normalized = (text or "").strip().replace(",", ".")
     if not normalized:

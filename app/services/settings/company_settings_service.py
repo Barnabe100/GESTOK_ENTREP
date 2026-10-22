@@ -74,7 +74,11 @@ SUPPORTED_CURRENCIES = {"XOF", "XAF", "EUR", "USD"}
 DEFAULT_CURRENCY = "XOF"
 
 _ALLOWED_LOGO_EXTENSIONS = {".png", ".jpg", ".jpeg"}
-_MAX_LOGO_FILE_SIZE_BYTES = 5 * 1024 * 1024  # 5 Mo
+# Lot 23 (§D) : abaissée de 5 à 2 Mo, exigence explicite du mandat — ne
+# concerne que la taille du fichier importé, jamais la taille physique
+# d'impression (voir ``receipt_document._fit_logo_box``, entièrement
+# indépendante de ce seuil).
+_MAX_LOGO_FILE_SIZE_BYTES = 2 * 1024 * 1024  # 2 Mo
 _MAX_LOGO_DIMENSION_PX = 4000
 _LOGO_FILENAME_STEM = "logo_entreprise"
 

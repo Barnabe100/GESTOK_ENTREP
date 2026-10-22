@@ -46,6 +46,15 @@ def test_dialog_shows_required_field_legend(qtbot) -> None:
     assert_has_required_field_legend(dialog)
 
 
+def test_montant_placeholder_strips_unnecessary_decimals(qtbot) -> None:
+    """Lot 23 (§E) : le placeholder indicatif du montant à payer (reste à
+    payer) ne doit plus afficher ``62500.00``."""
+    dialog = PaymentFormDialog(Decimal("62500.00"), Decimal("0"), Decimal("62500.00"), "XOF")
+    qtbot.addWidget(dialog)
+
+    assert dialog.montant_edit.placeholderText() == "62500"
+
+
 def test_values_still_returns_optional_fields_as_none_when_empty(qtbot) -> None:
     """Non-régression : le comportement de conversion (chaîne vide -> None)
     n'est pas affecté par le retrait de la mention « (optionnel) »."""

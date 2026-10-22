@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.utils.money import format_money
-from app.views.common import build_required_field_legend, required_label
+from app.views.common import build_required_field_legend, format_decimal_for_input, required_label
 
 
 class LocationCautionDialog(QDialog):
@@ -55,7 +55,7 @@ class LocationCautionDialog(QDialog):
         form = QFormLayout()
         self.montant_edit = QLineEdit(self)
         if peut_modifier_montant:
-            self.montant_edit.setText(str(caution_montant))
+            self.montant_edit.setText(format_decimal_for_input(caution_montant))
             form.addRow(required_label("Nouveau montant de la caution"), self.montant_edit)
         else:
             form.addRow(required_label("Montant à restituer/retenir"), self.montant_edit)

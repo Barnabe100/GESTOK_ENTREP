@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog
 
@@ -57,6 +59,20 @@ def test_dialog_prefills_from_initial(qtbot) -> None:
     assert values["article_id"] == 2
     assert values["quantite"] == "10"
     assert values["prix_unitaire"] == "1400"
+
+
+def test_quantite_prefill_strips_unnecessary_decimals(qtbot) -> None:
+    dialog = SaleLineFormDialog(_ARTICLES, {"article_id": 1, "quantite": Decimal("10.000")})
+    qtbot.addWidget(dialog)
+
+    assert dialog.quantite_edit.text() == "10"
+
+
+def test_prix_unitaire_prefill_strips_unnecessary_decimals(qtbot) -> None:
+    dialog = SaleLineFormDialog(_ARTICLES, {"article_id": 1, "prix_unitaire": Decimal("7500.00")})
+    qtbot.addWidget(dialog)
+
+    assert dialog.prix_unitaire_edit.text() == "7500"
 
 
 def test_save_button_accepts(qtbot) -> None:

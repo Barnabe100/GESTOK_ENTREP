@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.utils.money import format_money
-from app.views.common import build_required_field_legend, required_label
+from app.views.common import build_required_field_legend, format_decimal_for_input, required_label
 
 
 class LocationPaymentFormDialog(QDialog):
@@ -51,7 +51,7 @@ class LocationPaymentFormDialog(QDialog):
 
         form = QFormLayout()
         self.montant_edit = QLineEdit(self)
-        self.montant_edit.setPlaceholderText(str(reste_a_payer))
+        self.montant_edit.setPlaceholderText(format_decimal_for_input(reste_a_payer))
         form.addRow(required_label("Montant du paiement"), self.montant_edit)
 
         self.mode_paiement_edit = QLineEdit(self)

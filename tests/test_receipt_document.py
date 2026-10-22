@@ -2,6 +2,7 @@ from datetime import date, datetime, time
 from decimal import Decimal
 from pathlib import Path
 
+from PySide6.QtCore import QSizeF
 from PySide6.QtGui import QImage
 from PySide6.QtGui import QPageSize
 
@@ -88,6 +89,127 @@ def test_ticket_height_has_a_minimum_for_very_short_content(qapp) -> None:
 
     height_mm = rendered.page_size.size(QPageSize.Unit.Millimeter).height()
     assert height_mm >= 40.0
+
+
+# -- Lot 23 (anomalie A) : pagination — une seule page pour un ticket -----------------
+
+
+def _page_count_at_final_size(document, page_size) -> int:
+    """Reconfigure ``document`` au mode paginé, à la taille de page
+    finalement choisie (celle qui sera réellement transmise au
+    ``QPrinter``), pour vérifier le nombre de pages tel que Qt le
+    calculerait réellement — jamais une estimation indirecte. Remet le
+    document en mode page infinie ensuite, pour ne pas perturber un test
+    qui inspecterait encore ``toHtml()``/``toPlainText()`` après cet appel."""
+    size_mm = page_size.size(QPageSize.Unit.Millimeter)
+    width_pt = size_mm.width() * 72.0 / 25.4
+    height_pt = size_mm.height() * 72.0 / 25.4
+    document.setPageSize(QSizeF(width_pt, height_pt))
+    count = document.pageCount()
+    document.setPageSize(QSizeF(-1, -1))
+    return count
+
+
+def test_ticket_single_article_with_logo_and_footer_fits_one_page(qapp, tmp_path) -> None:
+    """Scénario exact du constat (§A du mandat) : un seul article, un logo
+    et un pied de page configuré ne doivent jamais produire une seconde
+    page contenant uniquement le pied de page."""
+    logo_path = tmp_path / "logo.png"
+    _make_image_file(logo_path, width=200, height=80)
+    data = _make_data(
+        lignes=[_make_line()],
+        entreprise_logo_path=logo_path,
+        pied_de_page="Merci pour votre confiance et à bientôt !",
+    )
+    rendered = build_receipt_document(data, ReceiptFormat.TICKET_80MM)
+
+    assert _page_count_at_final_size(rendered.document, rendered.page_size) == 1
+
+
+def test_ticket_single_article_without_logo_fits_one_page(qapp) -> None:
+    data = _make_data(lignes=[_make_line()], entreprise_logo_path=None)
+    rendered = build_receipt_document(data, ReceiptFormat.TICKET_80MM)
+
+    assert _page_count_at_final_size(rendered.document, rendered.page_size) == 1
+
+
+def test_ticket_single_article_without_footer_fits_one_page(qapp) -> None:
+    data = _make_data(lignes=[_make_line()], pied_de_page="")
+    rendered = build_receipt_document(data, ReceiptFormat.TICKET_80MM)
+
+    assert _page_count_at_final_size(rendered.document, rendered.page_size) == 1
+
+
+def test_ticket_multiple_articles_fits_one_page(qapp) -> None:
+    lignes = [_make_line(reference=f"ART-{i}", designation=f"Article {i}") for i in range(15)]
+    data = _make_data(lignes=lignes, pied_de_page="Merci pour votre confiance et à bientôt !")
+    rendered = build_receipt_document(data, ReceiptFormat.TICKET_80MM)
+
+    assert _page_count_at_final_size(rendered.document, rendered.page_size) == 1
+
+
+def test_ticket_multiple_payments_fits_one_page(qapp) -> None:
+    paiements = tuple(
+        SaleReceiptPaymentLine(
+            date_heure=datetime(2026, 1, 1, 10, i % 60), montant=Decimal("10"),
+            mode_paiement="Espèces", reference=None, commentaire=None, username="v1",
+        )
+        for i in range(10)
+    )
+    data = _make_data(
+        lignes=[_make_line()], paiements=paiements,
+        pied_de_page="Merci pour votre confiance et à bientôt !",
+    )
+    rendered = build_receipt_document(data, ReceiptFormat.TICKET_80MM)
+
+    assert _page_count_at_final_size(rendered.document, rendered.page_size) == 1
+
+
+def test_ticket_long_receipt_still_fits_one_page(qapp) -> None:
+    """Un ticket n'a pas de hauteur de page prédéfinie (rouleau continu) :
+    même très long, le document reste sur une seule page custom, jamais
+    scindé en plusieurs pages physiques (contrairement à l'A4, voir
+    ``test_a4_long_receipt_spans_multiple_pages`` ci-dessous)."""
+    lignes = [_make_line(reference=f"ART-{i}", designation=f"Article numéro {i}") for i in range(60)]
+    paiements = tuple(
+        SaleReceiptPaymentLine(
+            date_heure=datetime(2026, 1, 1, 10, i % 60), montant=Decimal("10"),
+            mode_paiement="Espèces", reference=None, commentaire=None, username="v1",
+        )
+        for i in range(20)
+    )
+    data = _make_data(
+        lignes=lignes, paiements=paiements,
+        pied_de_page="Merci pour votre confiance et à bientôt !",
+    )
+    rendered = build_receipt_document(data, ReceiptFormat.TICKET_80MM)
+
+    assert _page_count_at_final_size(rendered.document, rendered.page_size) == 1
+
+
+def test_ticket_page_fit_never_loses_content(qapp) -> None:
+    """Non-régression explicite : la correction de pagination ne doit
+    jamais tronquer d'information — tous les articles restent présents
+    dans le texte du document final."""
+    lignes = [_make_line(reference=f"ART-{i}", designation=f"Article {i}") for i in range(25)]
+    data = _make_data(lignes=lignes, pied_de_page="Merci pour votre confiance et à bientôt !")
+    rendered = build_receipt_document(data, ReceiptFormat.TICKET_80MM)
+
+    text = rendered.document.toPlainText()
+    for i in range(25):
+        assert f"ART-{i}" in text
+    assert "Merci pour votre confiance et à bientôt !" in text
+
+
+def test_a4_long_receipt_spans_multiple_pages(qapp) -> None:
+    """Non-régression : l'A4 garde sa pagination automatique multi-page
+    pour un contenu réellement long — comportement volontaire, non
+    modifié par la correction de l'anomalie A (spécifique au ticket)."""
+    lignes = [_make_line(reference=f"ART-{i}", designation=f"Article numéro {i}") for i in range(80)]
+    data = _make_data(lignes=lignes)
+    rendered = build_receipt_document(data, ReceiptFormat.A4)
+
+    assert _page_count_at_final_size(rendered.document, rendered.page_size) > 1
 
 
 def test_a4_page_size_unaffected_by_number_of_lines(qapp) -> None:
@@ -478,49 +600,83 @@ def test_payment_receipt_has_no_stockmanager_mention(qapp) -> None:
     assert "généré par" not in text.lower()
 
 
-# -- Lot 21 : logo redimensionné (40 x 18 mm maximum) ----------------------------------
+# -- Lot 21/23 : logo redimensionné (boîte maximale propre à chaque format) -----------
+
+_A4_LOGO_BOX = (40.0, 20.0)
+_TICKET_LOGO_BOX = (30.0, 15.0)
 
 
-def test_logo_box_fit_wide_image_is_width_constrained(qapp) -> None:
+def test_logo_box_fit_wide_image_is_width_constrained_a4(qapp) -> None:
     from app.services.documents.receipt_document import _fit_logo_box
 
-    width_mm, height_mm = _fit_logo_box(400, 100)  # ratio 4:1, plus large que la boîte (40/18 ~= 2.22)
+    # ratio 4:1, plus large que la boîte A4 (40/20 = 2.0) — image haute
+    # résolution (400x100 px), bien au-delà de sa taille naturelle à 150 DPI :
+    # toujours réduite pour tenir dans la boîte.
+    width_mm, height_mm = _fit_logo_box(4000, 1000, *_A4_LOGO_BOX)
 
     assert width_mm == 40.0
     assert round(height_mm, 3) == round(40.0 / 4.0, 3)
 
 
-def test_logo_box_fit_tall_image_is_height_constrained(qapp) -> None:
+def test_logo_box_fit_tall_image_is_height_constrained_a4(qapp) -> None:
     from app.services.documents.receipt_document import _fit_logo_box
 
-    width_mm, height_mm = _fit_logo_box(100, 200)  # ratio 0.5, plus étroit que la boîte
+    width_mm, height_mm = _fit_logo_box(1000, 2000, *_A4_LOGO_BOX)  # ratio 0.5
 
-    assert height_mm == 18.0
-    assert round(width_mm, 3) == round(18.0 * 0.5, 3)
+    assert height_mm == 20.0
+    assert round(width_mm, 3) == round(20.0 * 0.5, 3)
+
+
+def test_logo_box_fit_wide_image_is_width_constrained_ticket(qapp) -> None:
+    from app.services.documents.receipt_document import _fit_logo_box
+
+    width_mm, height_mm = _fit_logo_box(4000, 1000, *_TICKET_LOGO_BOX)  # ratio 4:1
+
+    assert width_mm == 30.0
+    assert round(height_mm, 3) == round(30.0 / 4.0, 3)
+
+
+def test_logo_box_fit_tall_image_is_height_constrained_ticket(qapp) -> None:
+    from app.services.documents.receipt_document import _fit_logo_box
+
+    width_mm, height_mm = _fit_logo_box(1000, 2000, *_TICKET_LOGO_BOX)  # ratio 0.5
+
+    assert height_mm == 15.0
+    assert round(width_mm, 3) == round(15.0 * 0.5, 3)
 
 
 def test_logo_box_fit_never_exceeds_max_dimensions(qapp) -> None:
     from app.services.documents.receipt_document import _fit_logo_box
 
-    for width_px, height_px in [(400, 100), (100, 200), (300, 300), (1, 1), (4000, 1)]:
-        width_mm, height_mm = _fit_logo_box(width_px, height_px)
-        assert width_mm <= 40.0 + 1e-6
-        assert height_mm <= 18.0 + 1e-6
+    for max_box in (_A4_LOGO_BOX, _TICKET_LOGO_BOX):
+        for width_px, height_px in [(4000, 1000), (1000, 2000), (3000, 3000), (1, 1), (4000, 1)]:
+            width_mm, height_mm = _fit_logo_box(width_px, height_px, *max_box)
+            assert width_mm <= max_box[0] + 1e-6
+            assert height_mm <= max_box[1] + 1e-6
 
 
 def test_logo_box_fit_preserves_aspect_ratio(qapp) -> None:
     from app.services.documents.receipt_document import _fit_logo_box
 
-    width_mm, height_mm = _fit_logo_box(200, 50)  # ratio 4:1
-    assert round(width_mm / height_mm, 3) == round(200 / 50, 3)
+    width_mm, height_mm = _fit_logo_box(2000, 500, *_A4_LOGO_BOX)  # ratio 4:1
+    assert round(width_mm / height_mm, 3) == round(2000 / 500, 3)
+
+
+def test_logo_box_fit_never_returns_negative_or_zero_for_valid_image(qapp) -> None:
+    from app.services.documents.receipt_document import _fit_logo_box
+
+    width_mm, height_mm = _fit_logo_box(100, 100, *_TICKET_LOGO_BOX)
+    assert width_mm > 0
+    assert height_mm > 0
 
 
 def test_logo_sized_image_is_embedded_with_explicit_dimensions(qapp, tmp_path) -> None:
     """Le logo valide doit porter des attributs width/height explicites
     (jamais une taille fixe arbitraire) — c'est ce qui garantit le respect
-    de la boîte 40 x 18 mm quelle que soit la forme de l'image source."""
+    de la boîte propre au format, quelle que soit la forme de l'image
+    source."""
     logo_path = tmp_path / "logo_wide.png"
-    _make_image_file(logo_path, width=400, height=100)
+    _make_image_file(logo_path, width=4000, height=1000)
     data = _make_data(entreprise_logo_path=logo_path)
 
     rendered = build_receipt_document(data, ReceiptFormat.A4)
@@ -532,14 +688,71 @@ def test_logo_sized_image_is_embedded_with_explicit_dimensions(qapp, tmp_path) -
 
 
 def test_ticket_logo_does_not_overflow_80mm_width(qapp, tmp_path) -> None:
-    """Le logo (40 mm maximum) doit toujours tenir dans la largeur de
-    contenu du ticket (80 - 2x4 mm de marge = 72 mm) — aucun débordement
-    horizontal possible par construction."""
+    """Le logo (30 mm maximum sur ticket) doit toujours tenir dans la
+    largeur de contenu du ticket (80 - 2x4 mm de marge = 72 mm) — aucun
+    débordement horizontal possible par construction."""
     from app.services.documents.receipt_document import _fit_logo_box
 
-    width_mm, _height_mm = _fit_logo_box(1000, 100)  # image très large
-    assert width_mm <= 40.0
+    width_mm, _height_mm = _fit_logo_box(10000, 1000, *_TICKET_LOGO_BOX)  # image très large
+    assert width_mm <= 30.0
     assert width_mm < 72.0  # largeur de contenu du ticket 80 mm
+
+
+# -- Lot 23 (§C) : seuil de 150 DPI, jamais d'agrandissement d'un logo basse résolution -
+
+
+def test_logo_low_resolution_is_not_upscaled_beyond_natural_size_a4(qapp) -> None:
+    """Un petit logo (ex. 100x50 px) tient déjà dans sa taille naturelle à
+    150 DPI (100/150*25.4 ~= 16.9 mm) sous la boîte A4 (40x20 mm) : il ne
+    doit jamais être agrandi pour la remplir."""
+    from app.services.documents.receipt_document import _fit_logo_box
+
+    width_mm, height_mm = _fit_logo_box(100, 50, *_A4_LOGO_BOX)
+
+    natural_width_mm = (100 / 150.0) * 25.4
+    natural_height_mm = (50 / 150.0) * 25.4
+    assert round(width_mm, 3) == round(natural_width_mm, 3)
+    assert round(height_mm, 3) == round(natural_height_mm, 3)
+    assert width_mm < _A4_LOGO_BOX[0]
+    assert height_mm < _A4_LOGO_BOX[1]
+
+
+def test_logo_low_resolution_is_not_upscaled_beyond_natural_size_ticket(qapp) -> None:
+    from app.services.documents.receipt_document import _fit_logo_box
+
+    width_mm, height_mm = _fit_logo_box(80, 40, *_TICKET_LOGO_BOX)
+
+    natural_width_mm = (80 / 150.0) * 25.4
+    natural_height_mm = (40 / 150.0) * 25.4
+    assert round(width_mm, 3) == round(natural_width_mm, 3)
+    assert round(height_mm, 3) == round(natural_height_mm, 3)
+    assert width_mm < _TICKET_LOGO_BOX[0]
+    assert height_mm < _TICKET_LOGO_BOX[1]
+
+
+def test_logo_high_resolution_is_still_shrunk_to_fit_box(qapp) -> None:
+    """Non-régression : une image dont la taille naturelle à 150 DPI
+    dépasse la boîte reste réduite pour y tenir, exactement comme avant
+    l'introduction du seuil de qualité."""
+    from app.services.documents.receipt_document import _fit_logo_box
+
+    width_mm, height_mm = _fit_logo_box(4000, 1000, *_A4_LOGO_BOX)
+
+    assert width_mm == 40.0
+    assert height_mm <= 20.0
+
+
+def test_logo_natural_size_exactly_matching_box_is_not_altered(qapp) -> None:
+    """Cas limite : une image dont la taille naturelle à 150 DPI correspond
+    exactement à la boîte n'est ni agrandie ni réduite."""
+    from app.services.documents.receipt_document import _fit_logo_box
+
+    width_px = round(_A4_LOGO_BOX[0] / 25.4 * 150.0)
+    height_px = round(_A4_LOGO_BOX[1] / 25.4 * 150.0)
+    width_mm, height_mm = _fit_logo_box(width_px, height_px, *_A4_LOGO_BOX)
+
+    assert round(width_mm, 1) == _A4_LOGO_BOX[0]
+    assert round(height_mm, 1) == _A4_LOGO_BOX[1]
 
 
 # -- Lot 21 : historique des paiements sur le reçu unifié ------------------------------
@@ -680,6 +893,114 @@ def test_ticket_shows_no_footer_phrase_when_empty(qapp) -> None:
     html = rendered.document.toHtml()
 
     assert "margin-top:20px" not in html
+
+
+# -- Lot 23 (§B) : ordre canonique, logo avant toute information d'entreprise --------
+
+
+def test_ticket_logo_appears_before_company_name(qapp, tmp_path) -> None:
+    logo_path = tmp_path / "logo.png"
+    _make_image_file(logo_path, width=100, height=100)
+    data = _make_data(entreprise_logo_path=logo_path, entreprise_nom="Boutique Étoile SARL")
+    rendered = build_receipt_document(data, ReceiptFormat.TICKET_80MM)
+    html = rendered.document.toHtml()
+
+    logo_index = html.find("stockmanager-receipt://logo-entreprise")
+    nom_index = html.find("Boutique")
+    assert logo_index != -1
+    assert nom_index != -1
+    assert logo_index < nom_index
+
+
+def test_ticket_without_logo_starts_directly_with_company_name(qapp) -> None:
+    data = _make_data(entreprise_logo_path=None, entreprise_nom="Boutique Étoile SARL")
+    rendered = build_receipt_document(data, ReceiptFormat.TICKET_80MM)
+    html = rendered.document.toHtml()
+
+    assert "stockmanager-receipt://logo-entreprise" not in html
+    text = rendered.document.toPlainText().strip()
+    assert text.startswith("Boutique Étoile SARL")
+
+
+def test_ticket_footer_preceded_by_separator_when_present(qapp) -> None:
+    rendered = build_receipt_document(
+        _make_data(pied_de_page="Merci pour votre confiance et à bientôt !"), ReceiptFormat.TICKET_80MM
+    )
+    html = rendered.document.toHtml()
+
+    separator_count = html.count("------------------------------")
+    # Trois séparateurs « structurels » (après coordonnées, après client/
+    # infos reçu, après articles) toujours présents, plus celui ajouté
+    # juste avant le pied de page (Lot 23, §B).
+    assert separator_count == 4
+
+
+def test_ticket_no_dangling_separator_when_no_footer(qapp) -> None:
+    rendered_with = build_receipt_document(
+        _make_data(pied_de_page="Phrase"), ReceiptFormat.TICKET_80MM
+    )
+    rendered_without = build_receipt_document(
+        _make_data(pied_de_page=""), ReceiptFormat.TICKET_80MM
+    )
+
+    count_with = rendered_with.document.toHtml().count("------------------------------")
+    count_without = rendered_without.document.toHtml().count("------------------------------")
+    assert count_without == count_with - 1
+
+
+def test_a4_logo_is_centered(qapp, tmp_path) -> None:
+    logo_path = tmp_path / "logo.png"
+    _make_image_file(logo_path, width=100, height=100)
+    data = _make_data(entreprise_logo_path=logo_path)
+    rendered = build_receipt_document(data, ReceiptFormat.A4)
+    html = rendered.document.toHtml()
+
+    img_index = html.find("<img")
+    preceding = html[:img_index]
+    last_p_open = preceding.rfind("<p")
+    assert last_p_open != -1
+    assert "center" in preceding[last_p_open:img_index].lower()
+
+
+def test_location_voucher_logo_is_centered(qapp, tmp_path) -> None:
+    logo_path = tmp_path / "logo.png"
+    _make_image_file(logo_path, width=100, height=100)
+    data = _make_voucher_data(entreprise_logo_path=logo_path)
+    rendered = build_location_reservation_voucher_document(data)
+    html = rendered.document.toHtml()
+
+    img_index = html.find("<img")
+    preceding = html[:img_index]
+    last_p_open = preceding.rfind("<p")
+    assert last_p_open != -1
+    assert "center" in preceding[last_p_open:img_index].lower()
+
+
+def test_location_receipt_logo_is_centered(qapp, tmp_path) -> None:
+    logo_path = tmp_path / "logo.png"
+    _make_image_file(logo_path, width=100, height=100)
+    data = _make_location_receipt_data(entreprise_logo_path=logo_path)
+    rendered = build_location_receipt_document(data)
+    html = rendered.document.toHtml()
+
+    img_index = html.find("<img")
+    preceding = html[:img_index]
+    last_p_open = preceding.rfind("<p")
+    assert last_p_open != -1
+    assert "center" in preceding[last_p_open:img_index].lower()
+
+
+def test_location_voucher_uses_ticket_or_a4_box(qapp, tmp_path) -> None:
+    """Les documents de location restent en A4 uniquement (décision Lot 22,
+    confirmée) : ils utilisent donc la boîte A4 (40x20 mm), jamais la boîte
+    ticket (30x15 mm)."""
+    logo_path = tmp_path / "logo.png"
+    _make_image_file(logo_path, width=4000, height=1000)  # large, haute résolution
+    data = _make_voucher_data(entreprise_logo_path=logo_path)
+    rendered = build_location_reservation_voucher_document(data)
+    html = rendered.document.toHtml()
+
+    assert 'width="113.4"' in html  # 40 mm en points (40 * 72 / 25.4)
 
 
 # -- Lot 22 (anomalie D) : tailles de police explicites sur le ticket 80 mm -----------

@@ -22,7 +22,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.views.common import build_required_field_legend, required_label
+from app.utils.quantity import format_quantity
+from app.views.common import build_required_field_legend, format_decimal_for_input, required_label
 
 
 class LocationLineFormDialog(QDialog):
@@ -53,12 +54,14 @@ class LocationLineFormDialog(QDialog):
         form.addRow(required_label("Article"), self.article_combo)
 
         self.quantite_edit = QLineEdit(self)
-        self.quantite_edit.setText(str(initial.get("quantite", "")) if initial.get("quantite") is not None else "")
+        self.quantite_edit.setText(
+            format_quantity(initial["quantite"]) if initial.get("quantite") is not None else ""
+        )
         form.addRow(required_label("Quantité"), self.quantite_edit)
 
         self.tarif_jour_edit = QLineEdit(self)
         if initial.get("tarif_jour") is not None:
-            self.tarif_jour_edit.setText(str(initial.get("tarif_jour")))
+            self.tarif_jour_edit.setText(format_decimal_for_input(initial.get("tarif_jour")))
         form.addRow(required_label("Tarif journalier"), self.tarif_jour_edit)
 
         layout.addLayout(form)

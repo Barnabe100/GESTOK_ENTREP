@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog
 
@@ -46,6 +48,24 @@ def test_dialog_prefills_from_initial(qtbot) -> None:
     values = dialog.values()
     assert values["article_id"] == 2
     assert values["quantite"] == "10"
+
+
+def test_quantite_prefill_strips_unnecessary_decimals(qtbot) -> None:
+    dialog = ExitLineFormDialog(_ARTICLES, {"article_id": 1, "quantite": Decimal("10.000")})
+    qtbot.addWidget(dialog)
+
+    assert dialog.quantite_edit.text() == "10"
+
+
+def test_cmup_label_strips_unnecessary_decimals(qtbot) -> None:
+    """Lot 23 (§E) : le CMUP affiché (via le tuple ``articles``, construit
+    par ``ExitsPage._load_articles_for_form``) ne doit plus porter de
+    ``.00`` superflu."""
+    articles = [(1, "ART-1 — Eau", "7500")]
+    dialog = ExitLineFormDialog(articles)
+    qtbot.addWidget(dialog)
+
+    assert dialog.cmup_label.text() == "7500"
 
 
 def test_values_never_includes_a_cout_unitaire_field(qtbot) -> None:

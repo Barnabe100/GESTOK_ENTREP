@@ -64,7 +64,7 @@ def test_edit_mode_shows_stock_actuel_and_cmup_as_readonly_labels(qtbot) -> None
     assert dialog.stock_actuel_label is not None
     assert dialog.stock_actuel_label.text() == "42"  # formatage des quantités : pas de décimales superflues
     assert dialog.cmup_label is not None
-    assert dialog.cmup_label.text() == "12.50"
+    assert dialog.cmup_label.text() == "12.5"  # Lot 23 (§E) : pas de décimale superflue
 
 
 def test_dialog_prefills_fields_from_initial(qtbot) -> None:
@@ -83,7 +83,7 @@ def test_dialog_prefills_fields_from_initial(qtbot) -> None:
     assert values["category_id"] == 2
     assert values["fournisseur_principal_id"] == 20
     assert values["unite"] == "kg"
-    assert values["prix_achat"] == "10.00"
+    assert values["prix_achat"] == "10"  # Lot 23 (§E) : pas de décimale superflue
     assert values["stock_max"] == "50"  # formatage des quantités : pas de décimales superflues
     assert values["emplacement"] == "Rayon A1"
     assert values["code_barres"] == "123"

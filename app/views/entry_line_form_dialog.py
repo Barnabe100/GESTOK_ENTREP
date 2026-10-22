@@ -22,7 +22,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.views.common import build_required_field_legend, required_label
+from app.utils.quantity import format_quantity
+from app.views.common import build_required_field_legend, format_decimal_for_input, required_label
 
 
 class EntryLineFormDialog(QDialog):
@@ -51,12 +52,14 @@ class EntryLineFormDialog(QDialog):
         form.addRow(required_label("Article"), self.article_combo)
 
         self.quantite_edit = QLineEdit(self)
-        self.quantite_edit.setText(str(initial.get("quantite", "")) if initial.get("quantite") is not None else "")
+        self.quantite_edit.setText(
+            format_quantity(initial["quantite"]) if initial.get("quantite") is not None else ""
+        )
         form.addRow(required_label("Quantité"), self.quantite_edit)
 
         self.prix_unitaire_edit = QLineEdit(self)
         if initial.get("prix_unitaire") is not None:
-            self.prix_unitaire_edit.setText(str(initial.get("prix_unitaire")))
+            self.prix_unitaire_edit.setText(format_decimal_for_input(initial.get("prix_unitaire")))
         form.addRow(required_label("Prix d'achat unitaire"), self.prix_unitaire_edit)
 
         layout.addLayout(form)

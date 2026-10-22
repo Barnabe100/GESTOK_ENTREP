@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog
 
@@ -70,6 +72,25 @@ def test_cancel_button_rejects(qtbot) -> None:
     qtbot.mouseClick(dialog.cancel_button, Qt.MouseButton.LeftButton)
 
     assert dialog.result() == QDialog.DialogCode.Rejected
+
+
+def test_quantite_prefill_strips_unnecessary_decimals(qtbot) -> None:
+    """Lot 23 (extension quantités) : ``Decimal("10.000")`` affiché ``"10"``,
+    jamais ``"10.000"`` — même principe que les montants (§E)."""
+    dialog = EntryLineFormDialog(_ARTICLES, {"article_id": 1, "quantite": Decimal("10.000")})
+    qtbot.addWidget(dialog)
+
+    assert dialog.quantite_edit.text() == "10"
+
+
+def test_prix_unitaire_prefill_strips_unnecessary_decimals(qtbot) -> None:
+    """Lot 23 (§E) : ``Decimal("7500.00")`` affiché ``"7500"``, jamais
+    ``"7500.00"`` — sur la pré-sélection d'un article comme sur l'édition
+    d'une ligne existante."""
+    dialog = EntryLineFormDialog(_ARTICLES, {"article_id": 1, "prix_unitaire": Decimal("7500.00")})
+    qtbot.addWidget(dialog)
+
+    assert dialog.prix_unitaire_edit.text() == "7500"
 
 
 def test_set_error_displays_message(qtbot) -> None:

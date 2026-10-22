@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog
 
@@ -107,6 +109,15 @@ def test_dialog_prefills_from_initial(qtbot) -> None:
     values = dialog.values()
     assert values["article_id"] == 2
     assert values["stock_physique"] == "48"
+
+
+def test_stock_physique_prefill_strips_unnecessary_decimals(qtbot) -> None:
+    """Lot 23 (extension quantités) : la ligne existante, chargée en
+    modification, ne doit plus afficher ``48.000`` mais ``48``."""
+    dialog = InventoryLineFormDialog(_ARTICLES, {"article_id": 2, "stock_physique": Decimal("48.000")})
+    qtbot.addWidget(dialog)
+
+    assert dialog.stock_physique_edit.text() == "48"
 
 
 def test_values_never_includes_stock_theorique_field(qtbot) -> None:

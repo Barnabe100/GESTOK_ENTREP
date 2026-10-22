@@ -41,7 +41,7 @@ from app.services.settings.company_settings_service import get_effective_currenc
 from app.utils.exceptions import AppError
 from app.utils.money import format_money
 from app.views.client_form_dialog import ClientFormDialog
-from app.views.common import confirm_action, run_modal_form
+from app.views.common import confirm_action, format_decimal_for_input, run_modal_form
 from app.views.location_detail_dialog import LocationDetailDialog
 from app.views.location_form_dialog import LocationFormDialog
 
@@ -231,7 +231,10 @@ class LocationsPage(QWidget):
         except AppError:
             articles = []
         result = [
-            (a.id, f"{a.reference} — {a.designation}", str(a.tarif_location_jour or "0"))
+            (
+                a.id, f"{a.reference} — {a.designation}",
+                format_decimal_for_input(a.tarif_location_jour) if a.tarif_location_jour is not None else "0",
+            )
             for a in articles
             if a.mode_gestion == ModeGestionArticle.LOCATION
         ]
@@ -239,9 +242,13 @@ class LocationsPage(QWidget):
         if include_article_id is not None and include_article_id not in known_ids:
             try:
                 current = self._article_service.get_article(include_article_id)
+                tarif_text = (
+                    format_decimal_for_input(current.tarif_location_jour)
+                    if current.tarif_location_jour is not None else "0"
+                )
                 result.append(
                     (current.id, f"{current.reference} — {current.designation} (hors catalogue Location)",
-                     str(current.tarif_location_jour or "0"))
+                     tarif_text)
                 )
             except AppError:
                 pass

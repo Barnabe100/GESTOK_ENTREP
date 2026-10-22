@@ -36,7 +36,7 @@ from app.services.suppliers.supplier_service import SupplierService
 from app.utils.exceptions import AppError, ValidationError
 from app.utils.money import format_money
 from app.views.cancellation_reason_dialog import CancellationReasonDialog
-from app.views.common import confirm_action, parse_decimal, run_modal_form
+from app.views.common import confirm_action, format_decimal_for_input, parse_decimal, run_modal_form
 from app.views.entry_detail_dialog import EntryDetailDialog
 from app.views.entry_form_dialog import EntryFormDialog
 
@@ -194,7 +194,7 @@ class EntriesPage(QWidget):
             articles = self._article_service.list_articles(include_inactive=False)
         except AppError:
             articles = []
-        return [(a.id, f"{a.reference} — {a.designation}", str(a.prix_achat)) for a in articles]
+        return [(a.id, f"{a.reference} — {a.designation}", format_decimal_for_input(a.prix_achat)) for a in articles]
 
     # -- création / modification --------------------------------------------
 

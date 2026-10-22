@@ -39,7 +39,7 @@ from PySide6.QtWidgets import (
 
 from app.models.enums import ModeGestionArticle
 from app.utils.quantity import format_quantity
-from app.views.common import build_required_field_legend, required_label
+from app.views.common import build_required_field_legend, format_decimal_for_input, required_label
 
 UNIT_SUGGESTIONS = ["pièce", "unité", "carton", "paquet", "kg", "litre", "mètre"]
 
@@ -245,6 +245,10 @@ class ArticleFormDialog(QDialog):
 
 
 def _as_text(value, default: str = "") -> str:
+    """Lot 23 (§E) : les champs utilisant ce helper sont tous des montants
+    (prix d'achat/vente, tarif de location, CMUP) — ``format_decimal_for_input``
+    supprime les décimales superflues (``7500.00`` -> ``7500``) sans jamais
+    perdre une décimale réellement significative."""
     if value is None:
         return default
-    return str(value)
+    return format_decimal_for_input(value)

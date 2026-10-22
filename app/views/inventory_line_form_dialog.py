@@ -59,7 +59,7 @@ class InventoryLineFormDialog(QDialog):
 
         self.stock_physique_edit = QLineEdit(self)
         self.stock_physique_edit.setText(
-            str(initial.get("stock_physique", "")) if initial.get("stock_physique") is not None else ""
+            format_quantity(initial["stock_physique"]) if initial.get("stock_physique") is not None else ""
         )
         form.addRow(required_label("Stock compté"), self.stock_physique_edit)
 
