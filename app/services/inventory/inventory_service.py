@@ -59,6 +59,7 @@ from app.repositories.mouvement_repository import MouvementRepository
 from app.services.auth.permission_service import PermissionService
 from app.services.stock.movement_summary import MouvementSummary
 from app.services.stock.stock_service import StockService
+from app.utils.atomic_transition import apply_atomic_status_transition
 from app.utils.dates import validate_not_future_date
 from app.utils.exceptions import ConflictError, NotFoundError, ValidationError
 from app.utils.logging_config import get_logger
@@ -322,8 +323,15 @@ class InventoryService:
             inventaire = inventaire_repo.get_by_id(inventory_id)
             if inventaire is None:
                 raise NotFoundError(f"Inventaire {inventory_id} introuvable.")
-            if inventaire.statut != StatutInventaire.BROUILLON:
-                raise ConflictError("Seul un inventaire en brouillon peut être validé.")
+            # Transition atomique (audit de concurrence, Lot C) : une simple
+            # lecture-puis-test Python laisserait passer deux validations
+            # concurrentes du même inventaire — voir app.utils.atomic_transition.
+            apply_atomic_status_transition(
+                session, Inventaire, inventaire.id,
+                expected_status=StatutInventaire.BROUILLON, new_status=StatutInventaire.VALIDE,
+                error_message="Seul un inventaire en brouillon peut être validé.",
+            )
+            session.refresh(inventaire)
             if not inventaire.lignes:
                 raise ValidationError("Un inventaire doit contenir au moins une ligne pour être validé.")
 
@@ -347,7 +355,6 @@ class InventoryService:
                     inventaire_ligne_id=ligne.id,
                 )
 
-            inventaire.statut = StatutInventaire.VALIDE
             self._audit(session, "INVENTORY_VALIDATE", inventaire.id)
             summary = InventaireSummary.from_model(inventaire)
 

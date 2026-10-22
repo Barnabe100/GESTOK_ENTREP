@@ -51,7 +51,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional, Sequence
 
-from sqlalchemy import exists, update
+from sqlalchemy import exists, select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.config.settings import Settings
@@ -64,6 +64,7 @@ from app.repositories.client_repository import ClientRepository
 from app.repositories.location_repository import LocationRepository
 from app.services.auth.permission_service import PermissionService
 from app.services.stock.stock_service import StockService
+from app.utils.atomic_transition import apply_atomic_status_transition
 from app.utils.dates import validate_not_future_date
 from app.utils.exceptions import ConflictError, NotFoundError, PermissionDeniedError, ValidationError
 from app.utils.logging_config import get_logger
@@ -620,8 +621,15 @@ class LocationService:
             location = LocationRepository(session).get_by_id(location_id)
             if location is None:
                 raise NotFoundError(f"Location {location_id} introuvable.")
-            if location.statut != StatutLocation.CONFIRMEE:
-                raise ConflictError("Seule une location confirmée peut partir.")
+            # Transition atomique (audit de concurrence, Lot C) : une simple
+            # lecture-puis-test Python laisserait passer deux départs
+            # concurrents de la même location — voir app.utils.atomic_transition.
+            apply_atomic_status_transition(
+                session, Location, location.id,
+                expected_status=StatutLocation.CONFIRMEE, new_status=StatutLocation.EN_COURS,
+                error_message="Seule une location confirmée peut partir.",
+            )
+            session.refresh(location)
             if date_depart < location.date:
                 raise ValidationError("La date de départ ne peut pas être antérieure à la date de la location.")
 
@@ -645,7 +653,6 @@ class LocationService:
                 ligne.qte_en_location = ligne.qte_reservee
                 ligne.qte_reservee = Decimal("0")
 
-            location.statut = StatutLocation.EN_COURS
             location.date_depart = date_depart
             self._audit(session, "LOCATION_DEPART", location.id)
             summary = LocationSummary.from_model(location)
@@ -734,16 +741,35 @@ class LocationService:
             # lecture Python déjà en mémoire au moment de ce calcul serait
             # obsolète (même défaut que le compteur de tentatives du lot
             # Récupération administrateur, voir account_recovery_service.py)
-            # — la soustraction/addition doit être évaluée par SQLite au
+            # — la soustraction/addition doit être évaluée par le moteur au
             # moment de l'écriture, sur la valeur réellement en base.
-            session.execute(
+            #
+            # Audit de concurrence (Lot C) : la clause WHERE ci-dessous
+            # (qte_en_location >= total_retour) est ajoutée ici — sans elle,
+            # deux retours concurrents sur cette même ligne pouvaient tous
+            # les deux réussir le contrôle Python ci-dessus (lecture
+            # commune, avant écriture) et faire passer qte_en_location en
+            # négatif, exactement le défaut déjà corrigé pour
+            # Article.stock_actuel par StockService.apply_movement — repris
+            # ici selon le même principe (jamais une emphase sur la lecture
+            # Python, toujours une condition évaluée par le moteur au
+            # moment de l'écriture), pas une copie de son code.
+            result = session.execute(
                 update(LocationLigne)
-                .where(LocationLigne.id == ligne.id)
+                .where(LocationLigne.id == ligne.id, LocationLigne.qte_en_location >= total_retour)
                 .values(
                     qte_en_location=LocationLigne.qte_en_location - total_retour,
                     qte_immobilisee=LocationLigne.qte_immobilisee + quantite_immobilisee,
                 )
             )
+            if result.rowcount == 0:
+                qte_en_location_reelle = session.scalar(
+                    select(LocationLigne.qte_en_location).where(LocationLigne.id == ligne.id)
+                )
+                raise ValidationError(
+                    "La quantité retournée "
+                    f"({total_retour}) dépasse la quantité encore en location ({qte_en_location_reelle})."
+                )
             session.refresh(ligne)
 
             # Transition RETOURNEE elle aussi décidée de façon atomique :

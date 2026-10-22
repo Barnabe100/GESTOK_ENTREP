@@ -76,6 +76,7 @@ from app.repositories.vente_repository import VenteRepository
 from app.services.auth.permission_service import PermissionService
 from app.services.stock.movement_summary import MouvementSummary
 from app.services.stock.stock_service import StockService
+from app.utils.atomic_transition import apply_atomic_status_transition
 from app.utils.dates import validate_not_future_date
 from app.utils.exceptions import ConflictError, NotFoundError, PermissionDeniedError, ValidationError
 from app.utils.logging_config import get_logger
@@ -636,8 +637,15 @@ class SaleService:
             if vente is None:
                 raise NotFoundError(f"Vente {sale_id} introuvable.")
             self._enforce_sale_ownership(session, vente, "SALE_VALIDATE")
-            if vente.statut != StatutOperation.BROUILLON:
-                raise ConflictError("Seule une vente en brouillon peut être validée.")
+            # Transition atomique (audit de concurrence, Lot C) : une simple
+            # lecture-puis-test Python laisserait passer deux validations
+            # concurrentes de la même vente — voir app.utils.atomic_transition.
+            apply_atomic_status_transition(
+                session, Vente, vente.id,
+                expected_status=StatutOperation.BROUILLON, new_status=StatutOperation.VALIDEE,
+                error_message="Seule une vente en brouillon peut être validée.",
+            )
+            session.refresh(vente)
             if not vente.lignes:
                 raise ValidationError("Une vente doit contenir au moins une ligne pour être validée.")
             if paiement_initial > vente.total:
@@ -669,7 +677,6 @@ class SaleService:
                     vente_ligne_id=ligne.id,
                 )
 
-            vente.statut = StatutOperation.VALIDEE
             if paiement_initial > 0:
                 session.add(
                     Paiement(
@@ -729,8 +736,14 @@ class SaleService:
             # d'exiger un motif valide, pour qu'un refus lié à la propriété
             # ne soit jamais masqué par une erreur de motif.
             self._enforce_sale_ownership(session, vente, "SALE_CANCEL")
-            if vente.statut != StatutOperation.VALIDEE:
-                raise ConflictError("Seule une vente validée peut être annulée.")
+            # Transition atomique (audit de concurrence, Lot C) : voir
+            # validate_sale ci-dessus et app.utils.atomic_transition.
+            apply_atomic_status_transition(
+                session, Vente, vente.id,
+                expected_status=StatutOperation.VALIDEE, new_status=StatutOperation.ANNULEE,
+                error_message="Seule une vente validée peut être annulée.",
+            )
+            session.refresh(vente)
             motif = _validate_annulation_motif(motif)
 
             for ligne in vente.lignes:
@@ -752,7 +765,6 @@ class SaleService:
                     mouvement_origine_id=mouvement_origine_id,
                 )
 
-            vente.statut = StatutOperation.ANNULEE
             vente.annulation_motif = motif
             self._audit(
                 session, "SALE_CANCEL", vente.id, details=json.dumps({"motif": motif})

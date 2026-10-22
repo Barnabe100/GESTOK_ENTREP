@@ -47,6 +47,7 @@ from app.repositories.sortie_repository import SortieRepository
 from app.services.auth.permission_service import PermissionService
 from app.services.stock.movement_summary import MouvementSummary
 from app.services.stock.stock_service import StockService
+from app.utils.atomic_transition import apply_atomic_status_transition
 from app.utils.dates import validate_not_future_date
 from app.utils.exceptions import ConflictError, NotFoundError, ValidationError
 from app.utils.logging_config import get_logger
@@ -420,8 +421,15 @@ class ExitService:
             sortie = sortie_repo.get_by_id(sortie_id)
             if sortie is None:
                 raise NotFoundError(f"Sortie {sortie_id} introuvable.")
-            if sortie.statut != StatutOperation.BROUILLON:
-                raise ConflictError("Seule une sortie en brouillon peut être validée.")
+            # Transition atomique (audit de concurrence, Lot C) : une simple
+            # lecture-puis-test Python laisserait passer deux validations
+            # concurrentes de la même sortie — voir app.utils.atomic_transition.
+            apply_atomic_status_transition(
+                session, Sortie, sortie.id,
+                expected_status=StatutOperation.BROUILLON, new_status=StatutOperation.VALIDEE,
+                error_message="Seule une sortie en brouillon peut être validée.",
+            )
+            session.refresh(sortie)
             if not sortie.lignes:
                 raise ValidationError("Une sortie doit contenir au moins une ligne pour être validée.")
 
@@ -445,7 +453,6 @@ class ExitService:
                     sortie_ligne_id=ligne.id,
                 )
 
-            sortie.statut = StatutOperation.VALIDEE
             self._audit(session, "STOCK_EXIT_VALIDATE", sortie.id)
             summary = SortieSummary.from_model(sortie)
 
@@ -476,8 +483,14 @@ class ExitService:
             sortie = sortie_repo.get_by_id(sortie_id)
             if sortie is None:
                 raise NotFoundError(f"Sortie {sortie_id} introuvable.")
-            if sortie.statut != StatutOperation.VALIDEE:
-                raise ConflictError("Seule une sortie validée peut être annulée.")
+            # Transition atomique (audit de concurrence, Lot C) : voir
+            # validate_exit ci-dessus et app.utils.atomic_transition.
+            apply_atomic_status_transition(
+                session, Sortie, sortie.id,
+                expected_status=StatutOperation.VALIDEE, new_status=StatutOperation.ANNULEE,
+                error_message="Seule une sortie validée peut être annulée.",
+            )
+            session.refresh(sortie)
 
             for ligne in sortie.lignes:
                 article = article_repo.get_by_id(ligne.article_id)
@@ -498,7 +511,6 @@ class ExitService:
                     mouvement_origine_id=mouvement_origine_id,
                 )
 
-            sortie.statut = StatutOperation.ANNULEE
             sortie.annulation_motif = motif
             self._audit(
                 session, "STOCK_EXIT_CANCEL", sortie.id, details=json.dumps({"motif": motif})

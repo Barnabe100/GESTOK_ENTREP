@@ -42,6 +42,7 @@ from app.repositories.supplier_repository import SupplierRepository
 from app.services.auth.permission_service import PermissionService
 from app.services.stock.movement_summary import MouvementSummary
 from app.services.stock.stock_service import StockService
+from app.utils.atomic_transition import apply_atomic_status_transition
 from app.utils.dates import validate_not_future_date
 from app.utils.exceptions import ConflictError, NotFoundError, ValidationError
 from app.utils.logging_config import get_logger
@@ -403,8 +404,15 @@ class EntryService:
             entree = entree_repo.get_by_id(entree_id)
             if entree is None:
                 raise NotFoundError(f"Entrée {entree_id} introuvable.")
-            if entree.statut != StatutOperation.BROUILLON:
-                raise ConflictError("Seule une entrée en brouillon peut être validée.")
+            # Transition atomique (audit de concurrence, Lot C) : une simple
+            # lecture-puis-test Python laisserait passer deux validations
+            # concurrentes de la même entrée — voir app.utils.atomic_transition.
+            apply_atomic_status_transition(
+                session, Entree, entree.id,
+                expected_status=StatutOperation.BROUILLON, new_status=StatutOperation.VALIDEE,
+                error_message="Seule une entrée en brouillon peut être validée.",
+            )
+            session.refresh(entree)
             if not entree.lignes:
                 raise ValidationError("Une entrée doit contenir au moins une ligne pour être validée.")
 
@@ -422,7 +430,6 @@ class EntryService:
                     entree_ligne_id=ligne.id,
                 )
 
-            entree.statut = StatutOperation.VALIDEE
             self._audit(session, "STOCK_ENTRY_VALIDATE", entree.id)
             summary = EntreeSummary.from_model(entree)
 
@@ -454,8 +461,14 @@ class EntryService:
             entree = entree_repo.get_by_id(entree_id)
             if entree is None:
                 raise NotFoundError(f"Entrée {entree_id} introuvable.")
-            if entree.statut != StatutOperation.VALIDEE:
-                raise ConflictError("Seule une entrée validée peut être annulée.")
+            # Transition atomique (audit de concurrence, Lot C) : voir
+            # validate_entry ci-dessus et app.utils.atomic_transition.
+            apply_atomic_status_transition(
+                session, Entree, entree.id,
+                expected_status=StatutOperation.VALIDEE, new_status=StatutOperation.ANNULEE,
+                error_message="Seule une entrée validée peut être annulée.",
+            )
+            session.refresh(entree)
 
             for ligne in entree.lignes:
                 article = article_repo.get_by_id(ligne.article_id)
@@ -476,7 +489,6 @@ class EntryService:
                     mouvement_origine_id=mouvement_origine_id,
                 )
 
-            entree.statut = StatutOperation.ANNULEE
             entree.annulation_motif = motif
             self._audit(
                 session, "STOCK_ENTRY_CANCEL", entree.id, details=json.dumps({"motif": motif})
