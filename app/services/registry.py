@@ -21,6 +21,7 @@ from app.services.backups.backup_service import BackupService
 from app.services.categories.category_service import CategoryService
 from app.services.clients.client_service import ClientService
 from app.services.dashboard.dashboard_service import DashboardService
+from app.services.database_admin.database_admin_service import DatabaseAdminService
 from app.services.documents.receipt_service import ReceiptService
 from app.services.entries.entry_service import EntryService
 from app.services.exit_reasons.exit_reason_service import ExitReasonService
@@ -72,6 +73,7 @@ class ServiceRegistry:
     data_reset: DataResetService
     account_recovery: AccountRecoveryService
     rentals: LocationService
+    database_admin: DatabaseAdminService
 
 
 def build_service_registry(
@@ -128,4 +130,5 @@ def build_service_registry(
         data_reset=DataResetService(permission_service, backup_service, settings),
         account_recovery=AccountRecoveryService(permission_service, settings),
         rentals=LocationService(permission_service, settings),
+        database_admin=DatabaseAdminService(permission_service, settings),
     )

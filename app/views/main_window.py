@@ -42,6 +42,7 @@ from app.views.pages.backups_page import BackupsPage
 from app.views.pages.categories_page import CategoriesPage
 from app.views.pages.clients_page import ClientsPage
 from app.views.pages.dashboard_page import DashboardPage
+from app.views.pages.database_admin_page import DatabaseAdminPage
 from app.views.pages.entries_page import EntriesPage
 from app.views.pages.exit_reasons_page import ExitReasonsPage
 from app.views.pages.exits_page import ExitsPage
@@ -87,6 +88,7 @@ NAVIGATION_MODULES: list[str] = [
     "Utilisateurs",
     "Rôles",
     "Paramètres",
+    "Base de données",
     "Sauvegardes",
     "Audit",
     "Licences",
@@ -112,6 +114,7 @@ NAVIGATION_PERMISSIONS: dict[str, str] = {
     "Utilisateurs": "USER_VIEW",
     "Rôles": "ROLE_VIEW",
     "Paramètres": "SETTINGS_VIEW",
+    "Base de données": "DATABASE_CONFIG_VIEW",
     "Sauvegardes": "BACKUP_VIEW",
     "Audit": "AUDIT_VIEW",
     "Licences": "LICENSE_VIEW",
@@ -269,6 +272,8 @@ class MainWindow(QMainWindow):
                 self._services.parameters, self._permissions, self._services.account_recovery,
                 self._services.rentals,
             )
+        if module_name == "Base de données":
+            return DatabaseAdminPage(self._services.database_admin, self._permissions)
         if module_name == "Sauvegardes":
             return BackupsPage(self._services.backups, self._permissions, self._services.data_reset)
         if module_name == "Audit":

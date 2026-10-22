@@ -23,7 +23,8 @@ def test_main_window_administrateur_sees_all_modules(qtbot, login_as) -> None:
     window = _build_window(stack)
     qtbot.addWidget(window)
 
-    assert window.navigation_list.count() == 20
+    # Lot D : +1 module ("Base de données", DATABASE_CONFIG_VIEW — Administrateur uniquement).
+    assert window.navigation_list.count() == 21
     assert window.visible_modules[0] == "Dashboard"
 
 
@@ -478,7 +479,8 @@ def test_locations_entry_hidden_when_module_disabled(qtbot, login_as) -> None:
     qtbot.addWidget(window)
 
     assert "Locations" not in window.visible_modules
-    assert window.navigation_list.count() == 19
+    # Lot D : +1 module ("Base de données") par rapport au compte historique (20 - 1 Locations + 1).
+    assert window.navigation_list.count() == 20
 
 
 def test_other_modules_unaffected_by_locations_deactivation(qtbot, login_as) -> None:

@@ -6,7 +6,7 @@ EXPECTED_MODULES_BY_ROLE = {
     "Administrateur": {
         "Dashboard", "Articles", "Catégories", "Fournisseurs", "Motifs de sortie", "Entrées",
         "Sorties", "Clients", "Ventes", "Créances", "Locations", "Mouvements", "Inventaires", "Rapports",
-        "Utilisateurs", "Rôles", "Paramètres", "Sauvegardes", "Audit", "Licences",
+        "Utilisateurs", "Rôles", "Paramètres", "Base de données", "Sauvegardes", "Audit", "Licences",
     },
     "Gestionnaire de stock": {
         "Dashboard", "Articles", "Catégories", "Fournisseurs", "Entrées", "Sorties",

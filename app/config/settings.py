@@ -68,23 +68,40 @@ class PostgreSQLConnectionConfig:
     username: str
     password_env_var: str = DEFAULT_PASSWORD_ENV_VAR
     connect_timeout_seconds: int = DEFAULT_POSTGRESQL_CONNECT_TIMEOUT_SECONDS
+    # Lot D : lorsqu'une configuration provient du fichier externe
+    # (app.config.db_config_store), le mot de passe est résolu via le coffre
+    # d'identifiants du système (app.security.credential_vault) plutôt que
+    # via une variable d'environnement — ``credential_key`` est l'identifiant
+    # stable et non secret du profil, jamais le mot de passe lui-même.
+    # ``None`` (valeur par défaut, comportement Lot A inchangé) : résolution
+    # par variable d'environnement, comme avant ce lot.
+    credential_key: Optional[str] = None
 
     def resolve_password(self) -> str:
         """Résout le mot de passe au moment de l'usage — jamais mis en cache,
         jamais stocké sur cette instance ni ailleurs.
 
-        Lot A : seule la variable d'environnement ``password_env_var`` est
-        prise en charge. Lève :class:`ValueError` si elle est absente ou
-        vide, plutôt que de se rabattre sur une valeur par défaut ou un
-        stockage en clair — un échec explicite est toujours préférable à une
-        connexion silencieusement non sécurisée.
+        Deux sources possibles, jamais combinées ni basculées silencieusement
+        entre elles : le coffre d'identifiants du système si
+        ``credential_key`` est renseigné (Lot D, poste administré via
+        l'assistant/l'écran d'administration), sinon la variable
+        d'environnement ``password_env_var`` (Lot A, déploiement scripté/tests
+        — comportement inchangé). Lève :class:`ValueError` si la source
+        retenue ne fournit aucune valeur, plutôt que de se rabattre sur une
+        valeur par défaut ou un stockage en clair — un échec explicite est
+        toujours préférable à une connexion silencieusement non sécurisée."""
+        if self.credential_key is not None:
+            from app.security.credential_vault import get_credential_vault
 
-        Point d'extension prévu (non implémenté ici) : le lot consacré à la
-        configuration utilisateur remplacera/complétera cette résolution par
-        une lecture du coffre d'identifiants du système d'exploitation
-        (Windows Credential Manager en priorité) — sans changer la signature
-        de cette méthode ni celle de ``Settings.sqlalchemy_database_uri``,
-        qui l'appelle."""
+            password = get_credential_vault().get_password(self.credential_key)
+            if not password:
+                raise ValueError(
+                    "Mot de passe PostgreSQL introuvable dans le coffre d'identifiants "
+                    f"pour le profil {self.credential_key!r}. Aucune valeur n'est stockée "
+                    "en clair dans la configuration de l'application."
+                )
+            return password
+
         password = os.environ.get(self.password_env_var)
         if not password:
             raise ValueError(
@@ -175,6 +192,19 @@ class Settings:
         self.log_dir.mkdir(parents=True, exist_ok=True)
 
 
+def resolve_data_dir() -> Path:
+    """Répertoire de données applicatif, résolu uniquement depuis
+    l'environnement — jamais depuis ``Settings`` (qui n'existe pas encore
+    à ce stade du démarrage, voir ``app.main.bootstrap``). Doit rester
+    cohérent avec le calcul de ``db_path``/``data_dir`` fait par
+    :func:`_load_settings_from_env` (même source : ``STOCKMANAGER_DB_PATH``
+    ou le répertoire de données par défaut du système)."""
+    db_path_override = os.environ.get("STOCKMANAGER_DB_PATH")
+    if db_path_override:
+        return Path(db_path_override).parent
+    return _default_app_data_dir()
+
+
 def _load_postgresql_config_from_env() -> PostgreSQLConnectionConfig:
     """Lit les paramètres de connexion PostgreSQL depuis l'environnement —
     déploiement scripté (§3.A du mandat de ce lot) ; le futur assistant
@@ -261,16 +291,37 @@ def _load_settings_from_env() -> Settings:
 
     default_currency = os.environ.get("STOCKMANAGER_DEFAULT_CURRENCY", "XOF").upper()
 
-    # Lot A (socle multi-moteur) : SQLite reste la valeur par défaut si
-    # STOCKMANAGER_DB_BACKEND n'est pas défini — comportement d'une
-    # installation existante strictement inchangé.
-    db_backend = os.environ.get("STOCKMANAGER_DB_BACKEND", DEFAULT_DB_BACKEND).strip().lower()
-    if db_backend not in VALID_DB_BACKENDS:
-        raise ValueError(
-            f"STOCKMANAGER_DB_BACKEND invalide : {db_backend!r} "
-            f"(valeurs autorisées : {sorted(VALID_DB_BACKENDS)})"
-        )
-    postgresql_config = _load_postgresql_config_from_env() if db_backend == "postgresql" else None
+    # Lot A (socle multi-moteur) : si STOCKMANAGER_DB_BACKEND est explicitement
+    # défini (déploiement scripté/tests), il est prioritaire et autosuffisant
+    # — comportement strictement inchangé par le Lot D.
+    db_backend_env = os.environ.get("STOCKMANAGER_DB_BACKEND")
+    if db_backend_env is not None:
+        db_backend = db_backend_env.strip().lower()
+        if db_backend not in VALID_DB_BACKENDS:
+            raise ValueError(
+                f"STOCKMANAGER_DB_BACKEND invalide : {db_backend!r} "
+                f"(valeurs autorisées : {sorted(VALID_DB_BACKENDS)})"
+            )
+        postgresql_config = _load_postgresql_config_from_env() if db_backend == "postgresql" else None
+    else:
+        # Lot D : aucune variable scriptée définie — lit la configuration
+        # externe (assistant/écran d'administration), SQLite si le fichier
+        # est absent ou invalide (voir app.config.db_config_store, jamais
+        # d'exception propagée par cette lecture).
+        from app.config.db_config_store import default_db_config_path, load_db_config_file
+
+        db_config_file = load_db_config_file(default_db_config_path(db_path.parent))
+        active = db_config_file.active
+        db_backend = active.backend
+        if db_backend == "postgresql":
+            # Garanti non None pour ce backend par load_db_config_file.
+            profile = active.postgresql
+            postgresql_config = PostgreSQLConnectionConfig(
+                host=profile.host, port=profile.port, database=profile.database,
+                username=profile.username, credential_key=profile.credential_key,
+            )
+        else:
+            postgresql_config = None
 
     return Settings(
         environment=environment,

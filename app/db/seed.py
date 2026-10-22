@@ -106,6 +106,17 @@ PERMISSIONS: list[tuple[str, str, str]] = [
     ("LOCATION_CANCEL", "Annuler une location (avant départ uniquement)", "locations"),
     ("LOCATION_CAUTION_MANAGE", "Définir et restituer la caution d'une location", "locations"),
     ("LOCATION_PAYMENT_CREATE", "Enregistrer un paiement sur une location", "locations"),
+    # Lot D (configuration utilisateur PostgreSQL) : réservées à
+    # l'Administrateur (présentes uniquement dans _ALL_CODES, jamais dans
+    # les listes des autres rôles ci-dessous) — même convention que
+    # SETTINGS_VIEW/SETTINGS_UPDATE. DATABASE_CONFIG_VIEW couvre la
+    # consultation de la configuration active/en attente (jamais le mot de
+    # passe, qui n'existe nulle part en base) ; DATABASE_CONFIG_UPDATE
+    # couvre la préparation/le test/l'annulation d'une configuration en
+    # attente — jamais un changement de moteur à chaud (voir
+    # app.services.database_admin_service).
+    ("DATABASE_CONFIG_VIEW", "Consulter la configuration de la base de données", "base_de_donnees"),
+    ("DATABASE_CONFIG_UPDATE", "Modifier la configuration de la base de données", "base_de_donnees"),
 ]
 
 _ALL_CODES = [code for code, _, _ in PERMISSIONS]

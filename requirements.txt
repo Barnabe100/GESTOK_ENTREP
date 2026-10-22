@@ -14,3 +14,15 @@ openpyxl==3.1.5
 # (libpq embarquée), cohérente avec l'empaquetage PyInstaller déjà en place
 # pour ce projet — aucune compilation C requise sur le poste client.
 psycopg[binary]==3.3.6
+
+# Lot D (configuration utilisateur PostgreSQL) : coffre d'identifiants pour
+# le mot de passe PostgreSQL — app.security.credential_vault. Sous Windows,
+# keyring sélectionne keyring.backends.Windows.WinVaultKeyring (dépendance
+# transitive pywin32-ctypes, pure ctypes : aucune extension compilée
+# supplémentaire à empaqueter avec PyInstaller, contrairement à pywin32
+# complet). Sous Linux/macOS, ce backend n'existe pas : get_credential_vault()
+# refuse explicitement plutôt que d'utiliser un autre backend keyring
+# (SecretStorage, etc.) — voir le contrat de sécurité dans le module. La
+# validation réelle du backend Windows sur un poste Windows reste à faire
+# séparément (voir le rapport du Lot D).
+keyring==25.7.0

@@ -51,6 +51,13 @@ class ConfigurationError(AppError):
     """La configuration de l'application est invalide ou incomplète."""
 
 
+class CredentialVaultUnavailableError(ConfigurationError):
+    """Le coffre d'identifiants sécurisé du système d'exploitation (Windows
+    Credential Manager) n'est pas disponible, pas vérifiable, ou son backend
+    réel diffère de celui explicitement autorisé (Lot D) — jamais de repli
+    automatique vers un autre mécanisme de stockage."""
+
+
 class LicenseError(AppError):
     """La fonctionnalité demandée n'est pas autorisée par la licence active
     (ou aucune licence valide n'est présente) — distincte de
