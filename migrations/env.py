@@ -26,19 +26,35 @@ if config.config_file_name is not None:
 if not config.get_main_option("sqlalchemy.url"):
     from app.config import get_settings
 
-    config.set_main_option("sqlalchemy.url", get_settings().sqlalchemy_database_uri)
+    # Lot B : pour PostgreSQL, sqlalchemy_database_uri est un objet URL (Lot
+    # A, masquage du mot de passe dans son propre repr/str) — Config exige
+    # une chaîne. render_as_string(hide_password=False) restitue le mot de
+    # passe réel (indispensable pour se connecter), jamais affiché ni
+    # journalisé ici : seule la valeur transmise à Alembic en dépend.
+    _uri = get_settings().sqlalchemy_database_uri
+    _uri_str = _uri if isinstance(_uri, str) else _uri.render_as_string(hide_password=False)
+    config.set_main_option("sqlalchemy.url", _uri_str)
 
 target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
     url = config.get_main_option("sqlalchemy.url")
+    # Lot B : render_as_batch n'est utile (et nécessaire) que pour SQLite,
+    # dont l'ALTER TABLE limité impose de recréer la table ; PostgreSQL
+    # applique les ALTER TABLE directement (voir op.batch_alter_table,
+    # recreate='auto', dans les fichiers de migration). Ne change rien à
+    # l'exécution des migrations existantes, seulement au futur
+    # autogenerate si celui-ci est un jour pointé sur PostgreSQL.
+    from sqlalchemy.engine import make_url
+
+    render_as_batch = make_url(url).get_backend_name() == "sqlite"
     context.configure(
         url=url,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
-        render_as_batch=True,
+        render_as_batch=render_as_batch,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -52,10 +68,11 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
+        render_as_batch = connection.dialect.name == "sqlite"
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
-            render_as_batch=True,
+            render_as_batch=render_as_batch,
         )
         with context.begin_transaction():
             context.run_migrations()

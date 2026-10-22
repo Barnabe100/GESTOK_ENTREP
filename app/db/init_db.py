@@ -26,7 +26,14 @@ MIGRATIONS_PATH = PROJECT_ROOT / "migrations"
 def _alembic_config(settings: Settings) -> Config:
     config = Config(str(ALEMBIC_INI_PATH))
     config.set_main_option("script_location", str(MIGRATIONS_PATH))
-    config.set_main_option("sqlalchemy.url", settings.sqlalchemy_database_uri)
+    # Lot B : pour PostgreSQL, sqlalchemy_database_uri est un objet URL (Lot
+    # A, masquage du mot de passe dans son propre repr/str) — Config exige
+    # une chaîne. render_as_string(hide_password=False) restitue le mot de
+    # passe réel (indispensable pour se connecter), jamais affiché ni
+    # journalisé ici : seule la valeur transmise à Alembic en dépend.
+    uri = settings.sqlalchemy_database_uri
+    uri_str = uri if isinstance(uri, str) else uri.render_as_string(hide_password=False)
+    config.set_main_option("sqlalchemy.url", uri_str)
     return config
 
 

@@ -7,3 +7,10 @@ alembic==1.13.2
 argon2-cffi==23.1.0
 cryptography==50.0.1
 openpyxl==3.1.5
+
+# Lot A (socle multi-moteur) : pilote PostgreSQL, requis uniquement si
+# Settings.db_backend == "postgresql" (SQLite reste le moteur par défaut,
+# sans dépendance supplémentaire). Extra [binary] : distribution précompilée
+# (libpq embarquée), cohérente avec l'empaquetage PyInstaller déjà en place
+# pour ce projet — aucune compilation C requise sur le poste client.
+psycopg[binary]==3.3.6

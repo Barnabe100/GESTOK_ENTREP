@@ -1,8 +1,20 @@
-"""Connexion SQLite, moteur SQLAlchemy et gestion transactionnelle.
+"""Connexion base de données, moteur SQLAlchemy et gestion transactionnelle.
 
 Point d'entrée unique pour obtenir une session : ``session_scope()``. Les
-services métier des phases suivantes s'appuieront dessus pour garantir que
-toute opération de stock est atomique (commit intégral ou rollback complet).
+services métier s'appuient dessus pour garantir que toute opération de stock
+est atomique (commit intégral ou rollback complet) — ceci est strictement
+indépendant du moteur de base de données actif (voir Lot A, ci-dessous) :
+aucun service métier n'a besoin de savoir si la session qu'il manipule est
+adossée à SQLite ou à PostgreSQL.
+
+Lot A (socle multi-moteur) : ``create_db_engine`` construit le moteur en
+fonction de ``Settings.db_backend`` — les options propres à SQLite
+(``check_same_thread``, l'écouteur ``PRAGMA foreign_keys=ON``) ne sont
+appliquées que pour ce moteur ; PostgreSQL reçoit à la place un délai de
+connexion explicite, sans qu'aucune option SQLite ne lui soit jamais
+transmise. L'intégrité référentielle est de toute façon garantie nativement
+par PostgreSQL (contrainte FK toujours active), sans configuration
+supplémentaire de notre part.
 """
 from __future__ import annotations
 
@@ -38,6 +50,32 @@ def create_db_engine(settings: Optional[Settings] = None) -> Engine:
 
     settings = settings or get_settings()
     settings.ensure_directories()
+
+    if settings.db_backend == "postgresql":
+        if settings.postgresql is None:
+            raise ValueError(
+                "db_backend='postgresql' mais aucune configuration de connexion "
+                "(Settings.postgresql) n'a été fournie."
+            )
+        # Jamais d'option SQLite ici (ni check_same_thread, ni l'écouteur
+        # PRAGMA foreign_keys=ON ci-dessous, réservé à la branche SQLite) —
+        # seul un délai de connexion explicite est transmis au pilote
+        # psycopg3, pour échouer proprement plutôt que d'attendre
+        # indéfiniment un serveur réseau inaccessible (§3.B du mandat).
+        engine = create_engine(
+            settings.sqlalchemy_database_uri,
+            connect_args={"connect_timeout": settings.postgresql.connect_timeout_seconds},
+            future=True,
+        )
+        # Jamais l'URL/le mot de passe dans ce message : seuls les éléments
+        # non sensibles de la configuration (voir PostgreSQLConnectionConfig,
+        # qui ne porte jamais le mot de passe lui-même).
+        logger.info(
+            "Moteur SQLAlchemy créé pour PostgreSQL (%s:%s/%s)",
+            settings.postgresql.host, settings.postgresql.port, settings.postgresql.database,
+        )
+        return engine
+
     engine = create_engine(
         settings.sqlalchemy_database_uri,
         connect_args={"check_same_thread": False},

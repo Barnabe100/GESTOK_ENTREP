@@ -9,10 +9,19 @@ empêchait un article désactivé de « libérer » son code-barres pour un
 nouvel article actif (règle métier demandée : éviter les doublons entre
 articles ACTIFS seulement, en conservant l'historique d'un article
 désactivé sans le modifier). Remplacée par un index unique partiel,
-restreint aux lignes ``statut = 'ACTIF'`` (SQLite supporte les index
-partiels via la clause WHERE) — deux articles inactifs, ou un actif et un
-inactif, peuvent désormais partager le même code-barres ; deux articles
-actifs, jamais.
+restreint aux lignes ``statut = 'ACTIF'`` (SQLite et PostgreSQL supportent
+tous deux les index partiels via une clause WHERE) — deux articles
+inactifs, ou un actif et un inactif, peuvent désormais partager le même
+code-barres ; deux articles actifs, jamais.
+
+Lot B : ``sqlite_where`` et ``postgresql_where`` sont deux arguments
+dialecte-spécifiques distincts, chacun ignoré par l'autre dialecte — les
+deux sont nécessaires pour que cette même règle métier (restriction aux
+seuls articles actifs) s'applique identiquement sur les deux moteurs ;
+sans ``postgresql_where``, PostgreSQL aurait créé un index unique global
+(règle différente, plus stricte). Aucune nouvelle logique introduite : la
+condition PostgreSQL est strictement identique à la condition SQLite déjà
+en place.
 """
 from alembic import op
 import sqlalchemy as sa
@@ -34,6 +43,7 @@ def upgrade() -> None:
         ['code_barres'],
         unique=True,
         sqlite_where=sa.text("statut = 'ACTIF'"),
+        postgresql_where=sa.text("statut = 'ACTIF'"),
     )
 
 

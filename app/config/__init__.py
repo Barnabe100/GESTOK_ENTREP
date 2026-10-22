@@ -1,3 +1,3 @@
-from app.config.settings import Settings, get_settings
+from app.config.settings import PostgreSQLConnectionConfig, Settings, get_settings
 
-__all__ = ["Settings", "get_settings"]
+__all__ = ["PostgreSQLConnectionConfig", "Settings", "get_settings"]
