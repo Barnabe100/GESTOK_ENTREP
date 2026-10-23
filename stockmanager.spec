@@ -19,6 +19,7 @@ cross-compilation) :
 Sortie : dist/StockManager/ (dossier autonome, voir packaging/README.md).
 """
 from PyInstaller.building.datastruct import Tree
+from PyInstaller.utils.hooks import copy_metadata
 
 block_cipher = None
 
@@ -35,20 +36,66 @@ datas = [
 migrations_tree = Tree("migrations", prefix="migrations", excludes=["__pycache__", "*.pyc"])
 resources_tree = Tree("app/resources", prefix="app/resources", excludes=["__pycache__", "*.pyc"])
 
+# Lot E (§E.1.2) : keyring sélectionne son backend par découverte de points
+# d'entrée (``importlib.metadata.entry_points(group="keyring.backends")``),
+# qui lit les métadonnées ``.dist-info`` du paquet installé — jamais
+# embarquées automatiquement par l'analyse de PyInstaller (qui ne regarde
+# que le code source, pas les métadonnées d'installation). Sans ceci, la
+# découverte par points d'entrée échouerait silencieusement dans
+# l'exécutable gelé (elle retournerait une liste vide, sans erreur) ; le
+# code applicatif (app/security/credential_vault.py) s'en sortait jusqu'ici
+# uniquement parce qu'il importe explicitement ``keyring.backends.Windows``
+# avant d'appeler ``keyring.get_keyring()`` — effet de bord de l'ordre des
+# imports, jamais garanti par aucun contrat de keyring. ``copy_metadata``
+# rend ce mécanisme robuste indépendamment de cet ordre d'imports.
+datas += copy_metadata("keyring")
+
 # -- imports non détectés statiquement par l'analyse de PyInstaller -----------------
-# SQLAlchemy résout son dialecte (sqlite) par chaîne de caractères
-# (importlib), invisible à l'analyse statique des imports — jamais détecté
-# automatiquement sans cette liste explicite.
+# SQLAlchemy résout chacun de ses dialectes (sqlite, postgresql) par chaîne
+# de caractères (``__import__("sqlalchemy.dialects.%s" % nom)``, voir
+# sqlalchemy/dialects/__init__.py::_auto_fn) — invisible à l'analyse
+# statique des imports, jamais détecté automatiquement sans ces entrées
+# explicites. ``sqlalchemy.dialects.postgresql`` et son sous-module
+# ``psycopg`` manquaient jusqu'ici (seul le dialecte sqlite avait été
+# ajouté) : un exécutable gelé configuré en PostgreSQL échouait donc dès
+# ``create_engine()`` avec ``NoSuchModuleError``, avant même d'atteindre le
+# coffre d'identifiants — confirmé par lecture du mécanisme de résolution
+# dynamique de SQLAlchemy (aucune occurrence littérale de
+# ``sqlalchemy.dialects.postgresql``/``psycopg`` nulle part dans ``app/``).
+#
+# keyring.backends.Windows (et son propre import conditionnel, protégé par
+# un ``ExceptionTrap``, de win32ctypes/pywintypes/win32cred — voir le
+# fichier source de ce module) : ajoutés explicitement plutôt que de
+# compter sur la découverte automatique de PyInstaller pour un module dont
+# les dépendances ne sont installées (``pywin32-ctypes``, marqueur
+# ``sys_platform == "win32"``) que sur une construction Windows réelle.
+# Sous Linux, ces entrées sont simplement introuvables (avertissement de
+# PyInstaller, jamais un échec de build — vérifié par un build Linux de
+# contrôle, voir packaging/README.md) : inoffensif, nécessaire uniquement
+# pour la construction Windows réelle.
+# keyring.backends.fail : backend de repli sûr de keyring lui-même
+# (« aucun backend disponible »), déjà utilisé tel quel par les tests Linux
+# de ce projet — ajouté explicitement pour qu'il soit également disponible,
+# par cohérence, dans l'exécutable gelé.
 #
 # migrations/env.py n'est PAS suivi par Analysis() (c'est un fichier de
 # données, exécuté par Alembic via un chargement de fichier à l'exécution,
 # jamais importé normalement) : ses propres imports ne sont donc jamais vus
-# par l'analyse statique. Le seul import non déjà couvert par ailleurs est
-# logging.config (repéré par un build de validation Linux : absent, échec
-# immédiat au premier lancement avec "ModuleNotFoundError: logging.config").
+# par l'analyse statique. logging.config (repéré par un build de validation
+# Linux : absent, échec immédiat au premier lancement avec
+# "ModuleNotFoundError: logging.config") suit la même logique.
 hiddenimports = [
     "sqlalchemy.dialects.sqlite",
     "sqlalchemy.dialects.sqlite.pysqlite",
+    "sqlalchemy.dialects.postgresql",
+    "sqlalchemy.dialects.postgresql.psycopg",
+    "psycopg",
+    "keyring.backends.Windows",
+    "keyring.backends.fail",
+    "win32ctypes.pywin32",
+    "win32ctypes.core",
+    "pywintypes",
+    "win32cred",
     "logging.config",
 ]
 

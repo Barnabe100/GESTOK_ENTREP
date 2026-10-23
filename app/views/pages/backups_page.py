@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -44,7 +43,16 @@ from app.views.data_reset_confirm_dialog import DataResetConfirmDialog
 _FREQUENCY_LABELS = {FREQUENCY_DAILY: "Quotidienne", FREQUENCY_WEEKLY: "Hebdomadaire"}
 _FREQUENCY_BY_LABEL = {label: value for value, label in _FREQUENCY_LABELS.items()}
 
-_HISTORY_COLUMNS = ["Date", "Nom", "Taille", "Statut"]
+_HISTORY_COLUMNS = ["Moteur", "Date", "Nom", "Taille", "Statut"]
+
+# Lot E (§E.3/E.4) : jamais présenter une sauvegarde d'un moteur comme celle
+# de l'autre — libellé et description de format distincts, affichés aussi
+# bien dans l'historique que dans le bandeau « moteur actif ».
+_ENGINE_LABELS = {"sqlite": "SQLite", "postgresql": "PostgreSQL"}
+_ENGINE_DESCRIPTIONS = {
+    "sqlite": "Fichier de base SQLite (.db), copié par l'API de sauvegarde en ligne.",
+    "postgresql": "Archive pg_dump au format personnalisé (.dump) — nécessite pg_dump/pg_restore sur ce poste.",
+}
 
 
 def _format_size(size_bytes: int) -> str:
@@ -68,9 +76,24 @@ class BackupsPage(QWidget):
         self._backup_service = backup_service
         self._permissions = permission_service
         self._data_reset_service = data_reset_service
+        self._history_entries: list = []
+
+        try:
+            self._active_engine = backup_service.active_engine()
+        except AppError:
+            self._active_engine = "sqlite"
+
+        try:
+            # Jamais le mot de passe (voir BackupService.active_postgresql_target) ;
+            # ``None`` en mode SQLite ou si la permission/la configuration
+            # manque — l'affichage se limite alors au nom du moteur (Lot E.7, §E.7.2).
+            self._active_postgresql_target = backup_service.active_postgresql_target()
+        except AppError:
+            self._active_postgresql_target = None
 
         layout = QVBoxLayout(self)
 
+        layout.addWidget(self._build_engine_group())
         layout.addWidget(self._build_config_group())
         layout.addLayout(self._build_actions_row())
         layout.addWidget(QLabel("Historique des sauvegardes", self))
@@ -79,6 +102,33 @@ class BackupsPage(QWidget):
 
         self._load_config_into_form()
         self.refresh_history()
+
+    # -- moteur actif (Lot E, §E.4) ------------------------------------------------
+
+    def _build_engine_group(self) -> QGroupBox:
+        group = QGroupBox("Moteur de base de données actif", self)
+        layout = QVBoxLayout(group)
+        self.active_engine_label = QLabel(_ENGINE_LABELS.get(self._active_engine, self._active_engine), self)
+        self.active_engine_label.setStyleSheet("font-weight: bold;")
+        layout.addWidget(self.active_engine_label)
+
+        # Lot E.7, §E.7.2 : identifie la base précise (hôte/port/base),
+        # jamais seulement le nom du moteur — jamais le mot de passe, jamais
+        # un champ permettant de choisir une autre base depuis cet écran
+        # (lecture seule de la configuration déjà active, voir
+        # BackupService.active_postgresql_target).
+        self.active_target_label = QLabel("", self)
+        self.active_target_label.setWordWrap(True)
+        if self._active_postgresql_target is not None:
+            self.active_target_label.setText(self._active_postgresql_target.label())
+            layout.addWidget(self.active_target_label)
+
+        description = QLabel(
+            _ENGINE_DESCRIPTIONS.get(self._active_engine, ""), self,
+        )
+        description.setWordWrap(True)
+        layout.addWidget(description)
+        return group
 
     # -- configuration --------------------------------------------------------
 
@@ -212,46 +262,73 @@ class BackupsPage(QWidget):
 
     def refresh_history(self) -> None:
         try:
-            backups = self._backup_service.list_backups()
+            entries = self._backup_service.list_backups()
         except AppError:
+            self._history_entries = []
             self.history_table.setRowCount(0)
             self._update_restore_button()
             return
 
-        self.history_table.setRowCount(len(backups))
-        for row, info in enumerate(backups):
+        self._history_entries = entries
+        self.history_table.setRowCount(len(entries))
+        for row, entry in enumerate(entries):
+            info = entry.info
             try:
                 verification = self._backup_service.verify_backup_file(info.path)
                 statut = "Valide" if verification.valid else "Invalide"
             except AppError:
                 statut = "?"
 
-            date_item = QTableWidgetItem(info.modified_at.strftime("%Y-%m-%d %H:%M:%S"))
-            date_item.setData(Qt.ItemDataRole.UserRole, str(info.path))
-            self.history_table.setItem(row, 0, date_item)
-            self.history_table.setItem(row, 1, QTableWidgetItem(info.name))
-            self.history_table.setItem(row, 2, QTableWidgetItem(_format_size(info.size_bytes)))
-            self.history_table.setItem(row, 3, QTableWidgetItem(statut))
+            engine_item = QTableWidgetItem(_ENGINE_LABELS.get(entry.engine, entry.engine))
+            self.history_table.setItem(row, 0, engine_item)
+            self.history_table.setItem(row, 1, QTableWidgetItem(info.modified_at.strftime("%Y-%m-%d %H:%M:%S")))
+            self.history_table.setItem(row, 2, QTableWidgetItem(info.name))
+            self.history_table.setItem(row, 3, QTableWidgetItem(_format_size(info.size_bytes)))
+            self.history_table.setItem(row, 4, QTableWidgetItem(statut))
 
         self._update_restore_button()
 
-    def _selected_backup_path(self) -> Optional[str]:
+    def _selected_entry(self):
         selected = self.history_table.selectionModel().selectedRows()
         if not selected:
             return None
-        return self.history_table.item(selected[0].row(), 0).data(Qt.ItemDataRole.UserRole)
+        row = selected[0].row()
+        if row >= len(self._history_entries):
+            return None
+        return self._history_entries[row]
 
     def _update_restore_button(self) -> None:
         can_restore = self._permissions.has_permission("BACKUP_RESTORE")
-        self.restore_button.setEnabled(can_restore and self._selected_backup_path() is not None)
+        entry = self._selected_entry()
+        # §E.3 : ne jamais proposer la restauration d'une sauvegarde d'un
+        # moteur différent du moteur actif — refusée de toute façon côté
+        # service (voir BackupService.restore_backup), mais déjà empêchée
+        # ici pour ne pas laisser croire que l'opération est possible.
+        matches_active_engine = entry is not None and entry.engine == self._active_engine
+        self.restore_button.setEnabled(can_restore and matches_active_engine)
 
     def _on_restore_clicked(self) -> None:
-        backup_path = self._selected_backup_path()
-        if backup_path is None:
+        entry = self._selected_entry()
+        if entry is None:
             return
+        if entry.engine != self._active_engine:
+            QMessageBox.warning(
+                self, "Restauration impossible",
+                f"Cette sauvegarde provient du moteur {_ENGINE_LABELS.get(entry.engine, entry.engine)}, "
+                f"alors que le moteur actif est {_ENGINE_LABELS.get(self._active_engine, self._active_engine)}.",
+            )
+            return
+        # Lot E.7, §E.7.2 : la base précise (hôte/port/base) apparaît dans la
+        # confirmation lorsqu'elle est connue — jamais seulement le nom du
+        # moteur — pour qu'un administrateur gérant plusieurs environnements
+        # sache exactement laquelle sera affectée avant de confirmer.
+        target_clause = ""
+        if entry.engine == "postgresql" and self._active_postgresql_target is not None:
+            target_clause = f"Base ciblée : {self._active_postgresql_target.label()}\n\n"
         if not confirm_action(
             self, "Confirmation de restauration",
-            "Voulez-vous vraiment restaurer cette sauvegarde ?\n\n"
+            f"Voulez-vous vraiment restaurer cette sauvegarde {_ENGINE_LABELS.get(entry.engine, entry.engine)} ?\n\n"
+            f"{target_clause}"
             "La base de données actuelle sera remplacée (une sauvegarde de "
             "sécurité de l'état actuel sera créée automatiquement avant toute "
             "modification). L'application devra être redémarrée après une "
@@ -259,7 +336,7 @@ class BackupsPage(QWidget):
             "sauvegarde de sécurité.",
         ):
             return
-        self._restore_selected(backup_path)
+        self._restore_selected(str(entry.info.path))
 
     def _restore_selected(self, backup_path: str) -> bool:
         """Isolé de ``_on_restore_clicked`` pour rester testable sans boîte

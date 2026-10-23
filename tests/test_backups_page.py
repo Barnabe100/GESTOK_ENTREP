@@ -15,6 +15,18 @@ def _build_page(stack) -> BackupsPage:
     return BackupsPage(stack.backups, stack.permissions)
 
 
+def test_sqlite_mode_shows_no_postgresql_target_line(qtbot, login_as) -> None:
+    """Lot E.7, §E.7.2 : la ligne d'identification de cible (hôte/port/base)
+    ne concerne que PostgreSQL — en SQLite, comportement historique
+    inchangé, aucune ligne de cible ajoutée."""
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.active_engine_label.text() == "SQLite"
+    assert page.active_target_label.text() == ""
+
+
 def test_form_prefilled_with_current_config(qtbot, login_as, tmp_path) -> None:
     stack, _ = login_as("Administrateur")
     destination = tmp_path / "backups"
@@ -86,7 +98,8 @@ def test_backup_now_creates_backup_and_refreshes_history(qtbot, login_as, tmp_pa
 
     assert result is True
     assert page.history_table.rowCount() == 1
-    assert page.history_table.item(0, 3).text() == "Valide"
+    # Lot E : colonne "Moteur" ajoutée en tête (§E.3) -> Statut passe de l'index 3 à 4.
+    assert page.history_table.item(0, 4).text() == "Valide"
 
 
 def test_history_shows_name_and_size(qtbot, login_as, tmp_path) -> None:
@@ -98,8 +111,10 @@ def test_history_shows_name_and_size(qtbot, login_as, tmp_path) -> None:
     qtbot.addWidget(page)
 
     assert page.history_table.rowCount() == 1
-    assert page.history_table.item(0, 1).text() == backup_result.file_path.name
-    assert page.history_table.item(0, 2).text() != ""
+    # Lot E : colonne "Moteur" ajoutée en tête (§E.3) -> Nom/Taille passent des index 1/2 à 2/3.
+    assert page.history_table.item(0, 2).text() == backup_result.file_path.name
+    assert page.history_table.item(0, 3).text() != ""
+    assert page.history_table.item(0, 0).text() == "SQLite"
 
 
 def test_restore_button_disabled_until_row_selected(qtbot, login_as, tmp_path) -> None:

@@ -32,6 +32,80 @@ Coût accepté : un dossier à distribuer plutôt qu'un fichier unique — gér�
 par l'installateur Inno Setup (`inno_setup.iss`), qui copie l'intégralité du
 dossier `onedir` et ne présente à l'utilisateur qu'un raccourci.
 
+## Lot E : PostgreSQL, keyring et sauvegarde/restauration
+
+Le Lot D (configuration PostgreSQL utilisateur) a introduit une dépendance
+d'exécution (`keyring`, coffre d'identifiants Windows) et un second moteur de
+base de données (PostgreSQL, via `psycopg`) sans que ce dossier de packaging
+n'ait été mis à jour en conséquence — corrigé par le Lot E :
+
+- **Dialecte PostgreSQL de SQLAlchemy** : SQLAlchemy résout chacun de ses
+  dialectes (`sqlite`, `postgresql`) par une construction dynamique de
+  chaîne de caractères (`__import__("sqlalchemy.dialects.%s" % nom)`),
+  invisible à l'analyse statique de PyInstaller — exactement le même
+  mécanisme déjà documenté dans `stockmanager.spec` pour `sqlite`, jamais
+  répété jusqu'ici pour `postgresql`. Sans `hiddenimports` explicites
+  (`sqlalchemy.dialects.postgresql`, `sqlalchemy.dialects.postgresql.psycopg`,
+  `psycopg`), un exécutable gelé configuré en PostgreSQL échouait dès
+  `create_engine()` avec `NoSuchModuleError` — **confirmé et corrigé** (voir
+  « Validé sous Linux » ci-dessous).
+- **Découverte du backend `keyring`** : `keyring` sélectionne son backend par
+  points d'entrée (`importlib.metadata.entry_points(group="keyring.backends")`),
+  qui lisent les métadonnées `.dist-info` du paquet installé — jamais
+  embarquées automatiquement par PyInstaller (qui n'examine que le code
+  source, pas les métadonnées d'installation). `stockmanager.spec` appelle
+  désormais explicitement `copy_metadata("keyring")` pour les embarquer, et
+  déclare en `hiddenimports` le module `keyring.backends.Windows` (et ses
+  propres dépendances conditionnelles `win32ctypes.pywin32`/`pywintypes`/
+  `win32cred`, présentes uniquement sur une construction Windows réelle —
+  `pywin32-ctypes` étant un paquet conditionné par `sys_platform == "win32"`)
+  plutôt que de compter sur l'ordre des imports du code applicatif (c'était
+  le cas jusqu'ici : `app/security/credential_vault.py` importe
+  `keyring.backends.Windows` avant d'appeler `keyring.get_keyring()`, ce qui
+  masquait fortuitement l'absence des métadonnées — un effet de bord, jamais
+  un contrat garanti par `keyring`).
+
+**Validé sous Linux** (mécanismes génériques de PyInstaller, jamais une
+validation de l'exécutable Windows — voir « Limitations connues ») : un
+build `pyinstaller stockmanager.spec --clean` exécuté sous Linux après ces
+changements a produit un dossier `dist/StockManager/` contenant
+`keyring-25.7.0.dist-info` (métadonnées bien copiées) et tous les
+sous-modules `sqlalchemy.dialects.postgresql.*`/`psycopg`/`psycopg_binary`
+(aucun avertissement « missing module » les concernant). L'exécutable Linux
+ainsi produit a ensuite été exécuté réellement (hors chaîne de compilation)
+contre un serveur PostgreSQL 16.15 local de test : démarrage, migrations
+Alembic, création du moteur SQLAlchemy PostgreSQL, amorçage des données de
+référence et du compte administrateur — tous réussis sans aucune erreur de
+chargement de module. Le même exécutable a aussi été revérifié en mode
+SQLite (comportement historique) pour écarter toute régression. Ceci
+démontre que l'inclusion des modules fonctionne, **pas** que
+`WinVaultKeyring` est réellement sélectionné sur Windows ni que
+l'installateur Inno Setup produit un paquet fonctionnel — ces deux derniers
+points restent à vérifier sur un poste Windows réel (voir
+`docs/postgresql-configuration.md`, section « Procédure de validation
+Windows »).
+
+## Sauvegarde et restauration PostgreSQL (`pg_dump`/`pg_restore`)
+
+La sauvegarde/restauration PostgreSQL (voir
+`app/services/backups/postgresql_backup_engine.py`) invoque les outils
+officiels `pg_dump`/`pg_restore` comme processus externes — **jamais
+embarqués** dans le package StockManager (pas de redistribution binaire,
+pas de contrainte de licence ou de compatibilité de version supplémentaire
+pour l'application). Consé­quence directe pour le déploiement : un poste
+Windows qui doit utiliser la sauvegarde/restauration PostgreSQL doit avoir
+le client PostgreSQL (`pg_dump.exe`/`pg_restore.exe`, généralement installé
+avec le client officiel PostgreSQL ou récupérable séparément) sur son
+`PATH` — StockManager le vérifie explicitement et refuse clairement
+l'opération sinon (jamais un échec confus de sous-processus), mais ne
+l'installe jamais lui-même. En cas d'échec réel (identifiants refusés,
+serveur inaccessible, version incompatible…), le détail technique exact
+est journalisé (jamais affiché à l'écran, jamais le mot de passe) dans le
+journal applicatif du poste — voir `docs/postgresql-configuration.md`,
+§6.5, pour le diagnostic. Voir
+`docs/postgresql-configuration.md` pour le détail des prérequis, formats
+et procédures.
+
 ## Procédure de build (à exécuter sur Windows)
 
 ```text
@@ -76,10 +150,19 @@ Déclarés explicitement dans `stockmanager.spec` (`datas`) :
   démarrage, voir `app/db/init_db.py`) ;
 - `app/resources/` (feuille de style Qt, identité visuelle officielle —
   voir `app/resources/branding/README.md`) ;
+- `keyring-<version>.dist-info/` (Lot E, via `copy_metadata("keyring")`) —
+  métadonnées de paquet nécessaires à la découverte du backend Windows de
+  `keyring` (voir « Lot E : PostgreSQL, keyring et sauvegarde/restauration »
+  ci-dessus) — jamais une donnée métier, uniquement un fichier de métadonnées
+  d'installation Python ;
 - clé publique de licence : embarquée par construction, c'est du code Python
   (`app/services/licensing/public_key.py`), pas un fichier de données —
   collectée automatiquement par l'analyse PyInstaller comme tout le reste du
   package `app`.
+
+Jamais embarqués (choix délibéré, voir « Sauvegarde et restauration
+PostgreSQL » ci-dessus) : les exécutables `pg_dump`/`pg_restore` — prérequis
+du poste client, jamais redistribués par StockManager.
 
 Résolution des chemins à l'exécution : `app/utils/runtime_paths.app_root()`
 (voir ce module) — jamais `Path(__file__).resolve().parents[N]` une fois
@@ -97,6 +180,32 @@ ci-dessous).
 - `tests/`, `.git/`, caches `__pycache__`, environnement virtuel de
   développement, `.env` — aucun n'est référencé par `stockmanager.spec`.
 
+## Tests obligatoires sous Windows
+
+Un build Linux (même réussi, même exécuté avec succès — voir « Lot E »
+ci-dessus) ne remplace jamais ces vérifications : un exécutable ELF ne
+valide pas l'exécutable Windows. Avant de considérer un build Windows prêt
+pour un client, vérifier au minimum (checklist détaillée, reproductible :
+`docs/postgresql-configuration.md`, section « Procédure de validation
+Windows ») :
+
+1. Le dossier `dist\StockManager\` démarre (`StockManager.exe`) sans boîte
+   de dialogue d'erreur, en mode SQLite (installation neuve) comme avec une
+   base SQLite existante.
+2. L'assistant de première configuration et l'écran d'administration de la
+   base de données s'affichent et fonctionnent (Lot D, non réimplémenté par
+   le Lot E — seulement revérifié dans le contexte packagé).
+3. Une connexion PostgreSQL réelle réussit depuis l'exécutable packagé.
+4. `keyring.get_keyring()` retourne bien `WinVaultKeyring` (jamais un autre
+   backend, jamais une exception masquée) une fois un mot de passe
+   PostgreSQL enregistré depuis l'assistant/l'écran d'administration.
+5. Une sauvegarde puis une restauration PostgreSQL réelles réussissent
+   depuis l'écran Sauvegardes de l'exécutable packagé (nécessite
+   `pg_dump`/`pg_restore` installés sur le poste de test, voir « Sauvegarde
+   et restauration PostgreSQL » ci-dessus).
+6. L'installateur Inno Setup s'installe, se désinstalle, et préserve les
+   données utilisateur (`%APPDATA%\StockManager`) dans les deux cas.
+
 ## Limitations connues de la configuration actuelle (à revalider sous Windows)
 
 - La liste `excludes` de modules Qt (`stockmanager.spec`) a été choisie de
@@ -105,7 +214,17 @@ ci-dessous).
   build Linux** ; à revalider sur le premier build Windows réel (un module
   Qt manquant se manifesterait par une erreur au lancement, pas par un échec
   du build lui-même).
-- La taille du build Linux de validation est d'environ 211 Mo (dominée par
-  PySide6, ~132 Mo) ; la taille réelle du build Windows sera différente
-  (pas de bibliothèques X11/GTK, mais ses propres DLL Qt) — à mesurer sur le
-  premier build Windows.
+- La taille du build Linux de validation est d'environ 247 Mo (mesurée après
+  les ajouts du Lot E — `sqlalchemy.dialects.postgresql`, `psycopg`/
+  `psycopg_binary`, métadonnées `keyring` ; dominée par PySide6, ~132 Mo) ;
+  la taille réelle du build Windows sera différente (pas de bibliothèques
+  X11/GTK, mais ses propres DLL Qt et, le cas échéant, `pywin32-ctypes`) — à
+  mesurer sur le premier build Windows.
+- `win32ctypes.pywin32`/`win32ctypes.core`/`pywintypes`/`win32cred` (Lot E,
+  dépendances de `keyring.backends.Windows`) sont déclarés en
+  `hiddenimports` mais **introuvables sous Linux** par construction
+  (`pywin32-ctypes` n'y est jamais installé, marqueur `sys_platform ==
+  "win32"`) : PyInstaller l'y signale par un avertissement, jamais un échec
+  de build — confirmé lors du build Linux de validation de ce lot. Leur
+  inclusion réelle (fichiers présents dans `dist\StockManager\` sous
+  Windows) reste donc à vérifier sur le premier build Windows réel.
