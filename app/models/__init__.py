@@ -7,7 +7,14 @@ relation (``configure_mappers()``).
 from app.models.base import Base
 from app.models.rbac import Permission, Role, role_permissions, user_roles
 from app.models.user import User
-from app.models.catalog import Article, ArticleModeGestionChangement, Category, ExitReason, Supplier
+from app.models.catalog import (
+    Article,
+    ArticleModeGestionChangement,
+    Category,
+    ExitReason,
+    Supplier,
+    UniteArticle,
+)
 from app.models.client import Client
 from app.models.documents import (
     Entree,
@@ -36,6 +43,7 @@ __all__ = [
     "Category",
     "Supplier",
     "ExitReason",
+    "UniteArticle",
     "Client",
     "Article",
     "ArticleModeGestionChangement",

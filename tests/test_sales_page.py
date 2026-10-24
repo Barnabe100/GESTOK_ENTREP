@@ -2023,6 +2023,81 @@ def test_refresh_does_not_reload_caisse_articles_when_list_view_showing(qtbot, l
     assert calls["n"] == 0
 
 
+# -- Incident C : actualisation immédiate des clients dans la caisse -----------------
+
+
+def test_refresh_reloads_caisse_clients_when_caisse_open(qtbot, login_as) -> None:
+    """Reproduit exactement le scénario signalé (Incident C) : un client
+    créé depuis le menu Clients pendant qu'une vente est déjà en cours doit
+    devenir sélectionnable au retour sur Ventes, sans déconnexion ni
+    fermeture de la caisse — symétrique de la régression Lot 22 (anomalie A)
+    ci-dessus pour les articles, jamais appliquée aux clients jusqu'ici."""
+    stack, _ = login_as("Administrateur")
+    existing = stack.clients.create_client("Client existant")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+
+    assert {c[0] for c in page._caisse_clients} == {existing.id}
+
+    new_client = stack.clients.create_client("Nouveau client (menu Clients)")
+    page.refresh()
+
+    assert {c[0] for c in page._caisse_clients} == {existing.id, new_client.id}
+    assert page.caisse_client_combo.findData(new_client.id) != -1
+
+
+def test_refresh_preserves_selected_caisse_client(qtbot, login_as) -> None:
+    """La reconstruction du menu déroulant client (Incident C) ne doit
+    jamais perdre la sélection déjà faite pour la vente en cours."""
+    stack, _ = login_as("Administrateur")
+    client = stack.clients.create_client("Client sélectionné")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+    index = page.caisse_client_combo.findData(client.id)
+    page.caisse_client_combo.setCurrentIndex(index)
+
+    stack.clients.create_client("Autre client")
+    page.refresh()
+
+    assert page.caisse_client_combo.currentData() == client.id
+
+
+def test_refresh_reloads_client_filter_combo_on_list_view(qtbot, login_as) -> None:
+    """Incident C (volet secondaire) : le filtre client de la liste des
+    ventes souffrait de la même obsolescence — jamais rechargé après la
+    construction initiale de la page."""
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    assert page._view_stack.currentIndex() == 0
+
+    new_client = stack.clients.create_client("Client ajouté après ouverture")
+    page.refresh()
+
+    assert page.client_filter_combo.findData(new_client.id) != -1
+
+
+def test_refresh_does_not_reload_caisse_clients_when_list_view_showing(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    assert page._view_stack.currentIndex() == 0
+
+    calls = {"n": 0}
+    original = page._load_clients_for_form
+
+    def _counting(*args, **kwargs):
+        calls["n"] += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(page, "_load_clients_for_form", _counting)
+    page.refresh()
+
+    assert calls["n"] == 0
+
+
 def test_refresh_reload_search_works_immediately_by_reference(qtbot, login_as) -> None:
     stack, _ = login_as("Administrateur")
     page = _build_page(stack)

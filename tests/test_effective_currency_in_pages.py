@@ -39,7 +39,7 @@ def test_pages_default_to_settings_default_currency_when_unconfigured(qtbot, log
 
     pages = [
         DashboardPage(stack.dashboard, stack.permissions),
-        ArticlesPage(stack.articles, stack.categories, stack.suppliers, stack.permissions),
+        ArticlesPage(stack.articles, stack.categories, stack.suppliers, stack.unites_article, stack.permissions),
         EntriesPage(stack.entries, stack.suppliers, stack.articles, stack.permissions),
         ExitsPage(stack.exits, stack.exit_reasons, stack.articles, stack.permissions),
         SalesPage(stack.sales, stack.articles, stack.clients, stack.documents, stack.permissions),
@@ -56,7 +56,7 @@ def test_pages_reflect_currency_configured_in_parameters(qtbot, login_as) -> Non
 
     pages = [
         DashboardPage(stack.dashboard, stack.permissions),
-        ArticlesPage(stack.articles, stack.categories, stack.suppliers, stack.permissions),
+        ArticlesPage(stack.articles, stack.categories, stack.suppliers, stack.unites_article, stack.permissions),
         EntriesPage(stack.entries, stack.suppliers, stack.articles, stack.permissions),
         ExitsPage(stack.exits, stack.exit_reasons, stack.articles, stack.permissions),
         SalesPage(stack.sales, stack.articles, stack.clients, stack.documents, stack.permissions),

@@ -7,6 +7,11 @@ fréquentes, et retour à SQLite sans perte de données. Il s'adresse à la fois
 à l'administrateur qui configure le poste et au développeur qui doit
 comprendre/maintenir ce mécanisme.
 
+Ce document couvre la configuration d'**un seul poste**. Pour partager une
+même base PostgreSQL entre 2 à 5 postes d'un même magasin/bureau (serveur
+réseau, pare-feu, rôle applicatif dédié, limites de concurrence
+multi-postes), voir `docs/postgresql-reseau-multipostes.md`.
+
 **Avertissement important :** à la date de rédaction, le comportement du
 coffre d'identifiants Windows Credential Manager et le packaging de la
 dépendance `keyring` n'ont été vérifiés que par du code et des tests

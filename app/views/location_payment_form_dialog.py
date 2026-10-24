@@ -12,6 +12,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from PySide6.QtWidgets import (
+    QComboBox,
     QDialog,
     QFormLayout,
     QHBoxLayout,
@@ -22,8 +23,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.models.payment_mode import MODES_PAIEMENT
 from app.utils.money import format_money
 from app.views.common import build_required_field_legend, format_decimal_for_input, required_label
+
+_MODE_PAIEMENT_NON_PRECISE = "(Non précisé)"
 
 
 class LocationPaymentFormDialog(QDialog):
@@ -54,9 +58,15 @@ class LocationPaymentFormDialog(QDialog):
         self.montant_edit.setPlaceholderText(format_decimal_for_input(reste_a_payer))
         form.addRow(required_label("Montant du paiement"), self.montant_edit)
 
-        self.mode_paiement_edit = QLineEdit(self)
-        self.mode_paiement_edit.setPlaceholderText("Espèces, Mobile Money, Virement…")
-        form.addRow("Mode de paiement", self.mode_paiement_edit)
+        # Évolution E : même liste fermée que Ventes (voir
+        # app.models.payment_mode et le commentaire équivalent dans
+        # PaymentFormDialog) — source de référence partagée entre les deux
+        # modules.
+        self.mode_paiement_combo = QComboBox(self)
+        self.mode_paiement_combo.addItem(_MODE_PAIEMENT_NON_PRECISE, None)
+        for mode in MODES_PAIEMENT:
+            self.mode_paiement_combo.addItem(mode, mode)
+        form.addRow("Mode de paiement", self.mode_paiement_combo)
 
         self.reference_edit = QLineEdit(self)
         form.addRow("Référence", self.reference_edit)
@@ -87,7 +97,7 @@ class LocationPaymentFormDialog(QDialog):
     def values(self) -> dict:
         return {
             "montant": self.montant_edit.text(),
-            "mode_paiement": self.mode_paiement_edit.text().strip() or None,
+            "mode_paiement": self.mode_paiement_combo.currentData(),
             "reference": self.reference_edit.text().strip() or None,
             "commentaire": self.commentaire_edit.text().strip() or None,
         }

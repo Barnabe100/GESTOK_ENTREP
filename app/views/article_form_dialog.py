@@ -19,10 +19,21 @@ jamais directement ``Article.mode_gestion`` : c'est :class:`ArticlesPage`
 qui, après création/modification des autres champs, appelle
 ``ArticleService.switch_mode_gestion`` si le mode diffère de celui déjà
 enregistré — exactement comme le bouton « Mode de gestion… » existant.
+
+Évolution F : le champ Unité est désormais une liste fermée (``unites``,
+fournie par l'appelant) plutôt qu'une saisie libre — élimine les doublons
+et fautes de frappe (§7.1). Le bouton « Nouveau » qui l'accompagne délègue
+entièrement la création à ``on_create_unite`` (callback zéro-argument,
+même principe que ``on_create_client`` dans ``SaleFormDialog``) : ce
+dialogue ne connaît ni le service, ni la validation d'unicité. Un article
+existant dont l'unité ne figure pas dans ``unites`` (saisie libre
+antérieure à ce lot) reste affichée et modifiable sans aucune altération
+silencieuse — ajoutée temporairement à la liste, jamais à la table de
+référence tant que l'utilisateur ne la change pas explicitement.
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Callable, Optional
 
 from PySide6.QtWidgets import (
     QComboBox,
@@ -41,7 +52,7 @@ from app.models.enums import ModeGestionArticle
 from app.utils.quantity import format_quantity
 from app.views.common import build_required_field_legend, format_decimal_for_input, required_label
 
-UNIT_SUGGESTIONS = ["pièce", "unité", "carton", "paquet", "kg", "litre", "mètre"]
+_DEFAULT_UNITE = "Pièce"
 
 _MODE_GESTION_LABELS = {
     ModeGestionArticle.VENTE: "Vente",
@@ -54,13 +65,16 @@ class ArticleFormDialog(QDialog):
         self,
         categories: list[tuple[int, str]],
         suppliers: list[tuple[int, str]],
+        unites: list[str],
         initial: Optional[dict] = None,
         is_edit: bool = False,
+        on_create_unite: Optional[Callable[[], Optional[str]]] = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         initial = initial or {}
         self.is_edit = is_edit
+        self._on_create_unite = on_create_unite
 
         self.setWindowTitle("Article")
         self.setModal(True)
@@ -90,11 +104,15 @@ class ArticleFormDialog(QDialog):
         self._select_combo_data(self.supplier_combo, initial.get("fournisseur_principal_id"))
         form.addRow("Fournisseur principal", self.supplier_combo)
 
+        self.unite_row = QHBoxLayout()
         self.unite_combo = QComboBox(self)
-        self.unite_combo.setEditable(True)
-        self.unite_combo.addItems(UNIT_SUGGESTIONS)
-        self.unite_combo.setCurrentText(initial.get("unite", "") or "")
-        form.addRow(required_label("Unité"), self.unite_combo)
+        self._populate_unite_combo(unites, initial.get("unite"))
+        self.unite_row.addWidget(self.unite_combo)
+        self.new_unite_button = QPushButton("Nouveau", self)
+        self.new_unite_button.setEnabled(on_create_unite is not None)
+        self.new_unite_button.clicked.connect(self._on_new_unite_clicked)
+        self.unite_row.addWidget(self.new_unite_button)
+        form.addRow(required_label("Unité"), self.unite_row)
 
         self.prix_achat_edit = QLineEdit(self)
         self.prix_achat_edit.setText(_as_text(initial.get("prix_achat"), default="0"))
@@ -204,6 +222,33 @@ class ArticleFormDialog(QDialog):
         if index >= 0:
             combo.setCurrentIndex(index)
 
+    def _populate_unite_combo(self, unites: list[str], current_unite: Optional[str]) -> None:
+        """§7.1/§7.2 : liste fermée (plus de ``setEditable``). ``Pièce`` par
+        défaut à la création (§7.2) quand elle figure dans la liste ; en
+        modification, l'unité déjà enregistrée est toujours sélectionnée —
+        y compris si elle ne figure pas dans ``unites`` (saisie libre
+        antérieure à ce lot, §7.4) : ajoutée ici pour l'affichage, jamais à
+        la table de référence tant que l'utilisateur ne la change pas
+        explicitement."""
+        self.unite_combo.clear()
+        self.unite_combo.addItems(unites)
+        if current_unite and self.unite_combo.findText(current_unite) == -1:
+            self.unite_combo.addItem(current_unite)
+        if current_unite:
+            self.unite_combo.setCurrentText(current_unite)
+        elif self.unite_combo.findText(_DEFAULT_UNITE) != -1:
+            self.unite_combo.setCurrentText(_DEFAULT_UNITE)
+
+    def _on_new_unite_clicked(self) -> None:
+        if self._on_create_unite is None:
+            return
+        libelle = self._on_create_unite()
+        if libelle is None:
+            return
+        if self.unite_combo.findText(libelle) == -1:
+            self.unite_combo.addItem(libelle)
+        self.unite_combo.setCurrentText(libelle)
+
     def _update_price_fields_state(self) -> None:
         """Actualise immédiatement l'état des deux champs de prix au
         changement de mode (Lot 18, symétrique du comportement déjà en
@@ -228,7 +273,24 @@ class ArticleFormDialog(QDialog):
             "category_id": self.category_combo.currentData(),
             "fournisseur_principal_id": self.supplier_combo.currentData(),
             "unite": self.unite_combo.currentText(),
-            "mode_gestion": self.mode_gestion_combo.currentData(),
+            # Correctif (incident « mode de gestion ») : QComboBox.currentData()
+            # restitue la donnée associée via QVariant — pour un membre d'une
+            # énumération dérivant de ``str`` (``ModeGestionArticle(str, Enum)``),
+            # PySide6 la convertit silencieusement en ``str`` nu à la lecture
+            # (confirmé empiriquement : type(combo.currentData()) is str, pas
+            # ModeGestionArticle, bien que ``addItem`` ait reçu le membre
+            # d'énumération lui-même). La comparaison ``== ModeGestionArticle.X``
+            # reste vraie malgré cela (égalité de chaîne), ce qui masquait le
+            # problème jusqu'ici — mais tout accès à ``.value`` plus loin
+            # (``ArticleService.switch_mode_gestion``) levait
+            # ``AttributeError: 'str' object has no attribute 'value'``.
+            # Reconstruire explicitement le membre d'énumération ici, à la
+            # frontière Qt -> code applicatif, est sans risque : le
+            # constructeur d'une énumération retourne le membre déjà existant
+            # si on lui passe un membre, et le reconstruit depuis sa valeur
+            # sinon — jamais une conversion « aveugle », seulement la
+            # restitution du type que cette méthode déclare déjà retourner.
+            "mode_gestion": ModeGestionArticle(self.mode_gestion_combo.currentData()),
             "prix_achat": self.prix_achat_edit.text(),
             "prix_vente": self.prix_vente_edit.text(),
             "stock_min": self.stock_min_edit.text(),

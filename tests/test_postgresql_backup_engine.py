@@ -104,6 +104,151 @@ def test_ensure_tools_available_does_not_raise_when_present() -> None:
     eng.ensure_tools_available()
 
 
+def test_ensure_tools_available_returns_resolved_paths_not_bare_names() -> None:
+    """Incident « détection pg_dump/pg_restore introuvables sous Windows » :
+    le chemin résolu (et non le seul nom nu) doit être restitué, pour que
+    l'outil réellement invoqué par les fonctions ci-dessous soit bien celui
+    dont la présence a été vérifiée ici."""
+    if shutil.which("pg_dump") is None or shutil.which("pg_restore") is None:
+        pytest.skip("pg_dump/pg_restore non installés dans cet environnement.")
+    resolved = eng.ensure_tools_available()
+    assert resolved["pg_dump"] == shutil.which("pg_dump")
+    assert resolved["pg_restore"] == shutil.which("pg_restore")
+
+
+# -- repli Windows quand le PATH ne suffit pas (incident « pg_dump/pg_restore
+# introuvables sous Windows ») : pg_dump.exe/pg_restore.exe réellement
+# présents et utilisables à l'emplacement standard de l'installeur officiel,
+# mais absents du PATH du processus (ex. service, PATH non mis à jour) --------
+
+
+def test_locate_tool_falls_back_to_windows_standard_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(eng.shutil, "which", lambda name: None)
+    monkeypatch.setattr(eng.platform, "system", lambda: "Windows")
+    pg_root = tmp_path / "PostgreSQL"
+    bin_dir = pg_root / "16" / "bin"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "pg_dump.exe").write_text("")
+    monkeypatch.setattr(eng, "_WINDOWS_PG_BASE_DIRS", (str(pg_root),))
+
+    found = eng._locate_tool("pg_dump")
+
+    assert found == bin_dir / "pg_dump.exe"
+
+
+def test_locate_tool_prefers_the_highest_version_when_several_are_installed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§G : jamais une seule version codée en dur — plusieurs versions
+    peuvent coexister sur le même poste."""
+    monkeypatch.setattr(eng.shutil, "which", lambda name: None)
+    monkeypatch.setattr(eng.platform, "system", lambda: "Windows")
+    pg_root = tmp_path / "PostgreSQL"
+    for version in ("13", "16", "9.6"):
+        bin_dir = pg_root / version / "bin"
+        bin_dir.mkdir(parents=True)
+        (bin_dir / "pg_restore.exe").write_text("")
+    monkeypatch.setattr(eng, "_WINDOWS_PG_BASE_DIRS", (str(pg_root),))
+
+    found = eng._locate_tool("pg_restore")
+
+    assert found == pg_root / "16" / "bin" / "pg_restore.exe"
+
+
+def test_locate_tool_returns_none_when_absent_from_path_and_standard_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(eng.shutil, "which", lambda name: None)
+    monkeypatch.setattr(eng.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(eng, "_WINDOWS_PG_BASE_DIRS", (str(tmp_path / "PostgreSQL"),))
+
+    assert eng._locate_tool("pg_dump") is None
+
+
+def test_locate_tool_never_searches_windows_directories_outside_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """La recherche de repli reste strictement réservée à Windows — jamais
+    une tentative sur un autre système, même si un répertoire portant ce
+    nom existe fortuitement."""
+    monkeypatch.setattr(eng.shutil, "which", lambda name: None)
+    monkeypatch.setattr(eng.platform, "system", lambda: "Linux")
+    pg_root = tmp_path / "PostgreSQL"
+    bin_dir = pg_root / "16" / "bin"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "pg_dump.exe").write_text("")
+    monkeypatch.setattr(eng, "_WINDOWS_PG_BASE_DIRS", (str(pg_root),))
+
+    assert eng._locate_tool("pg_dump") is None
+
+
+def test_ensure_tools_available_succeeds_via_windows_fallback_when_path_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reproduit exactement le symptôme signalé : les deux outils sont
+    réellement présents et exécutables à l'emplacement standard, absents
+    du seul PATH — ne doit plus lever ``PostgreSQLToolNotFoundError``."""
+    monkeypatch.setattr(eng.shutil, "which", lambda name: None)
+    monkeypatch.setattr(eng.platform, "system", lambda: "Windows")
+    pg_root = tmp_path / "PostgreSQL"
+    bin_dir = pg_root / "16" / "bin"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "pg_dump.exe").write_text("")
+    (bin_dir / "pg_restore.exe").write_text("")
+    monkeypatch.setattr(eng, "_WINDOWS_PG_BASE_DIRS", (str(pg_root),))
+
+    resolved = eng.ensure_tools_available()
+
+    assert resolved == {
+        "pg_dump": str(bin_dir / "pg_dump.exe"),
+        "pg_restore": str(bin_dir / "pg_restore.exe"),
+    }
+
+
+def test_ensure_tools_available_raises_when_absent_from_path_and_standard_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(eng.shutil, "which", lambda name: None)
+    monkeypatch.setattr(eng.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(eng, "_WINDOWS_PG_BASE_DIRS", (str(tmp_path / "PostgreSQL"),))
+
+    with pytest.raises(eng.PostgreSQLToolNotFoundError) as excinfo:
+        eng.ensure_tools_available()
+    assert "pg_dump" in str(excinfo.value)
+    assert "pg_restore" in str(excinfo.value)
+
+
+def test_verify_backup_file_uses_windows_fallback_path_for_pg_restore(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Le même repli doit s'appliquer à la vérification d'archive, pas
+    seulement à la sauvegarde/restauration elle-même."""
+    monkeypatch.setattr(eng.shutil, "which", lambda name: None)
+    monkeypatch.setattr(eng.platform, "system", lambda: "Windows")
+    pg_root = tmp_path / "PostgreSQL"
+    bin_dir = pg_root / "16" / "bin"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "pg_restore.exe").write_text("")
+    monkeypatch.setattr(eng, "_WINDOWS_PG_BASE_DIRS", (str(pg_root),))
+
+    captured_args = {}
+
+    def _fake_run(args, **kwargs):
+        captured_args["args"] = args
+        raise OSError("simulation : exécution non pertinente pour ce test")
+
+    monkeypatch.setattr(eng.subprocess, "run", _fake_run)
+
+    fake_backup = tmp_path / "fake.dump"
+    fake_backup.write_text("contenu factice")
+    result = eng.verify_backup_file(fake_backup)
+
+    assert captured_args["args"][0] == str(bin_dir / "pg_restore.exe")
+    assert result.valid is False
+
+
 # -- nommage et collision (aucun serveur requis) -----------------------------------
 
 

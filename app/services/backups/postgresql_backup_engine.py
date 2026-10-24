@@ -17,6 +17,23 @@ ou de maintenance supplémentaire pour StockManager, mais une installation
 cliente doit disposer de ces outils pour utiliser la sauvegarde/restauration
 PostgreSQL (le mode SQLite, par défaut, n'en a jamais besoin).
 
+Correctif (incident « détection pg_dump/pg_restore introuvables sous
+Windows ») : la détection se limitait jusqu'ici au ``PATH`` du processus
+(``shutil.which``) — or l'installeur officiel PostgreSQL pour Windows
+n'ajoute pas toujours « ...PostgreSQL/<version>/bin » au ``PATH`` (selon
+les options choisies à l'installation, ou le contexte d'exécution du
+service), même quand les deux exécutables sont réellement présents et
+utilisables à cet emplacement standard. :func:`_locate_tool` cherche
+désormais, uniquement sous Windows et seulement si le ``PATH`` échoue,
+dans tous les répertoires ``bin`` standards de toutes les versions
+installées (jamais une seule version codée en dur, voir
+:func:`_windows_pg_bin_candidates` — triés version décroissante en
+l'absence de tout autre indice disponible côté client) ; le chemin ainsi
+résolu (et non plus le seul nom nu de la commande) est celui réellement
+transmis à chaque appel de sous-processus, afin qu'un outil trouvé hors du
+``PATH`` soit aussi celui qui s'exécute, pas seulement celui dont la
+présence est signalée.
+
 Limite documentée, délibérée (Lot E.7, §E.7.3) : ce module ne tente
 **jamais** de déterminer par avance si la version locale de
 ``pg_dump``/``pg_restore`` est compatible avec le serveur ou avec une
@@ -63,6 +80,7 @@ connexion, voir ``app.services.database_admin``).
 from __future__ import annotations
 
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -134,11 +152,81 @@ class PostgreSQLTarget:
         return f"{self.host}:{self.port}/{self.database} (utilisateur « {self.username} »)"
 
 
-def ensure_tools_available() -> None:
+# Emplacements Windows standards de l'installeur officiel PostgreSQL (EDB) —
+# module-level pour rester substituable en test (voir
+# tests/test_postgresql_backup_engine.py) sans dépendre d'un vrai système
+# de fichiers Windows.
+_WINDOWS_PG_BASE_DIRS: tuple[str, ...] = (
+    r"C:\Program Files\PostgreSQL",
+    r"C:\Program Files (x86)\PostgreSQL",
+)
+
+
+def _windows_pg_bin_candidates() -> list[Path]:
+    """Répertoires ``bin`` standards d'installation du client PostgreSQL
+    sous Windows (installeur officiel EDB), toutes versions confondues —
+    jamais une seule version codée en dur (incident « détection pg_dump/
+    pg_restore introuvables »). Triés version décroissante : à défaut de
+    tout autre indice disponible côté client sur la version du serveur
+    réellement utilisée (hors périmètre de ce module, voir la docstring),
+    c'est la meilleure heuristique disponible lorsque plusieurs versions
+    coexistent sur le même poste."""
+    candidates: list[Path] = []
+    for base in _WINDOWS_PG_BASE_DIRS:
+        base_path = Path(base)
+        if not base_path.is_dir():
+            continue
+        versions: list[tuple[float, Path]] = []
+        for entry in base_path.iterdir():
+            if not entry.is_dir():
+                continue
+            try:
+                versions.append((float(entry.name), entry))
+            except ValueError:
+                continue  # dossier qui n'est pas un numéro de version -> ignoré.
+        for _, version_dir in sorted(versions, reverse=True):
+            bin_dir = version_dir / "bin"
+            if bin_dir.is_dir():
+                candidates.append(bin_dir)
+    return candidates
+
+
+def _locate_tool(tool_name: str) -> Optional[Path]:
+    """Résout l'exécutable ``tool_name`` (``pg_dump``/``pg_restore``, sans
+    extension) : d'abord le ``PATH`` (``shutil.which``, comportement déjà
+    en place), puis — uniquement sous Windows et seulement si le ``PATH``
+    n'a rien donné — les répertoires d'installation standards du client
+    PostgreSQL. Retourne ``None`` si introuvable partout ; ne tente jamais
+    d'exécuter l'outil ici, seulement de résoudre son chemin."""
+    found = shutil.which(tool_name)
+    if found:
+        return Path(found)
+    if platform.system() != "Windows":
+        return None
+    exe_name = f"{tool_name}.exe"
+    for directory in _windows_pg_bin_candidates():
+        candidate = directory / exe_name
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def ensure_tools_available() -> dict[str, str]:
     """Vérifie la présence de ``pg_dump`` et ``pg_restore`` sur ce poste —
     à appeler avant toute tentative de sauvegarde/restauration PostgreSQL,
-    jamais supposée silencieusement (§E.2.1 du mandat)."""
-    missing = [tool for tool in ("pg_dump", "pg_restore") if shutil.which(tool) is None]
+    jamais supposée silencieusement (§E.2.1 du mandat). Retourne le chemin
+    résolu de chaque outil (``{"pg_dump": ..., "pg_restore": ...}``) — voir
+    :func:`_locate_tool` : jamais seulement le nom nu de la commande, pour
+    qu'un outil trouvé hors du ``PATH`` soit bien celui effectivement
+    invoqué par les fonctions ci-dessous."""
+    resolved: dict[str, str] = {}
+    missing: list[str] = []
+    for tool in ("pg_dump", "pg_restore"):
+        path = _locate_tool(tool)
+        if path is None:
+            missing.append(tool)
+        else:
+            resolved[tool] = str(path)
     if missing:
         raise PostgreSQLToolNotFoundError(
             "Les outils PostgreSQL requis sont introuvables sur ce poste : "
@@ -146,6 +234,7 @@ def ensure_tools_available() -> None:
             + ". Installez le client PostgreSQL (pg_dump/pg_restore) correspondant à la "
             "version du serveur avant d'utiliser la sauvegarde/restauration PostgreSQL."
         )
+    return resolved
 
 
 def _filename_pattern(prefix: str) -> re.Pattern[str]:
@@ -224,13 +313,19 @@ def _log_subprocess_failure(tool: str, returncode: Optional[int], stderr: Option
 
 
 def _run(
-    args: list[str], *, password: str, timeout_seconds: int
+    args: list[str], *, password: str, timeout_seconds: int, tool_label: Optional[str] = None
 ) -> subprocess.CompletedProcess[str]:
     """Exécute ``pg_dump``/``pg_restore`` avec le mot de passe fourni
     uniquement via l'environnement du sous-processus (jamais en argument,
     jamais dans l'environnement du processus StockManager lui-même, jamais
     journalisé) — ``--no-password`` (déjà inclus par l'appelant) interdit
-    toute invite interactive bloquante."""
+    toute invite interactive bloquante.
+
+    ``args[0]`` peut désormais être un chemin résolu hors ``PATH`` (voir
+    :func:`_locate_tool`), potentiellement long (ex. sous Windows) :
+    ``tool_label`` (``"pg_dump"``/``"pg_restore"``) garde les messages
+    journalisés/remontés courts et génériques, jamais ce chemin brut."""
+    label = tool_label or args[0]
     env = dict(os.environ)
     env["PGPASSWORD"] = password
     try:
@@ -241,12 +336,12 @@ def _run(
         # exc.stdout/exc.stderr peuvent porter une sortie partielle déjà
         # produite avant l'expiration du délai — journalisée pour le même
         # bénéfice diagnostique, jamais affichée à l'utilisateur.
-        _log_subprocess_failure(args[0], None, exc.stderr if isinstance(exc.stderr, str) else None)
+        _log_subprocess_failure(label, None, exc.stderr if isinstance(exc.stderr, str) else None)
         raise PostgreSQLBackupError(
-            f"Délai dépassé ({timeout_seconds} s) lors de l'exécution de {args[0]}."
+            f"Délai dépassé ({timeout_seconds} s) lors de l'exécution de {label}."
         ) from exc
     except OSError as exc:
-        raise PostgreSQLBackupError(f"Impossible d'exécuter {args[0]} : {exc}") from exc
+        raise PostgreSQLBackupError(f"Impossible d'exécuter {label} : {exc}") from exc
 
 
 def _expected_tables() -> set[str]:
@@ -268,7 +363,7 @@ def create_backup_file(
     prétend jamais un succès sur la seule existence d'un fichier (§E.2.2).
     Supprime le fichier temporaire en cas d'échec (§E.2.2 : jamais de
     fichier incomplet laissé en place)."""
-    ensure_tools_available()
+    tools = ensure_tools_available()
     destination_dir.mkdir(parents=True, exist_ok=True)
 
     fd, tmp_path_str = tempfile.mkstemp(dir=str(destination_dir), prefix=f".{prefix}_", suffix=".dump.tmp")
@@ -277,11 +372,11 @@ def create_backup_file(
     try:
         result = _run(
             [
-                "pg_dump", f"--host={target.host}", f"--port={target.port}",
+                tools["pg_dump"], f"--host={target.host}", f"--port={target.port}",
                 f"--username={target.username}", f"--dbname={target.database}",
                 "--format=custom", "--no-password", f"--file={tmp_path}",
             ],
-            password=password, timeout_seconds=timeout_seconds,
+            password=password, timeout_seconds=timeout_seconds, tool_label="pg_dump",
         )
         if result.returncode != 0:
             _log_subprocess_failure("pg_dump", result.returncode, result.stderr)
@@ -329,7 +424,8 @@ def verify_backup_file(
     ``get_embedded_alembic_version``/``get_live_alembic_version``)."""
     if not file_path.exists() or not file_path.is_file():
         return BackupVerification(False, False, False, None, ["Le fichier de sauvegarde est introuvable."])
-    if shutil.which("pg_restore") is None:
+    pg_restore_path = _locate_tool("pg_restore")
+    if pg_restore_path is None:
         return BackupVerification(
             False, False, False, None,
             ["pg_restore est introuvable sur ce poste : impossible de vérifier l'archive."],
@@ -337,7 +433,7 @@ def verify_backup_file(
 
     try:
         result = subprocess.run(
-            ["pg_restore", "--list", str(file_path)],
+            [str(pg_restore_path), "--list", str(file_path)],
             capture_output=True, text=True, timeout=timeout_seconds, check=False,
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
@@ -379,9 +475,12 @@ def get_embedded_alembic_version(
     isole la ligne de données entre l'instruction ``COPY ... FROM stdin;``
     et son terminateur ``\\.`` — pendant, en lecture seule, de
     ``backup_engine.get_alembic_version`` (SQLite)."""
+    pg_restore_path = _locate_tool("pg_restore")
+    if pg_restore_path is None:
+        return None
     try:
         result = subprocess.run(
-            ["pg_restore", "--data-only", "--table=alembic_version", "--file=-", str(file_path)],
+            [str(pg_restore_path), "--data-only", "--table=alembic_version", "--file=-", str(file_path)],
             capture_output=True, text=True, timeout=timeout_seconds, check=False,
         )
     except (subprocess.TimeoutExpired, OSError):
@@ -438,15 +537,15 @@ def restore_database_from_backup(
     --no-privileges`` ne touche jamais aux rôles ni aux permissions
     serveur. Cible toujours ``target.database``, qui doit déjà exister —
     cette fonction ne crée jamais de base ni de rôle."""
-    ensure_tools_available()
+    tools = ensure_tools_available()
     result = _run(
         [
-            "pg_restore", f"--host={target.host}", f"--port={target.port}",
+            tools["pg_restore"], f"--host={target.host}", f"--port={target.port}",
             f"--username={target.username}", f"--dbname={target.database}",
             "--no-password", "--clean", "--if-exists", "--no-owner", "--no-privileges",
             "--exit-on-error", "--single-transaction", str(backup_path),
         ],
-        password=password, timeout_seconds=timeout_seconds,
+        password=password, timeout_seconds=timeout_seconds, tool_label="pg_restore",
     )
     if result.returncode != 0:
         _log_subprocess_failure("pg_restore", result.returncode, result.stderr)

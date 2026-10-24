@@ -17,6 +17,7 @@ from app.config.settings import Settings, get_settings
 from app.db import session as db_session_module
 from app.db.init_db import init_database
 from app.db.seed import seed_reference_data
+from app.db.unite_article_seed import sync_unites_article_reference_data
 from app.models.enums import EditionLicence, StatutLicence
 from app.models.license import Licence
 from app.models.rbac import Role
@@ -98,6 +99,7 @@ def initialized_db(test_settings: Settings) -> Settings:
     init_database(test_settings)
     with db_session_module.session_scope(test_settings) as session:
         seed_reference_data(session)
+        sync_unites_article_reference_data(session)
         session.add(_full_access_test_licence())
     return test_settings
 

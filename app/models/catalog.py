@@ -83,6 +83,29 @@ class ExitReason(TimestampMixin, Base):
         return f"ExitReason(libelle={self.libelle!r})"
 
 
+class UniteArticle(TimestampMixin, Base):
+    """Unités proposées dans le menu déroulant « Unité » des articles (§7,
+    évolution F) : table de référence dédiée, même principe qu'``ExitReason``,
+    pour que ce menu reste extensible (bouton « Nouveau ») sans jamais
+    redevenir un champ de saisie libre.
+
+    ``Article.unite`` (inchangé, simple texte) ne référence jamais cette
+    table par clé étrangère : un article existant dont l'unité ne figure pas
+    ici (saisie libre antérieure à ce lot) continue de s'afficher et de se
+    modifier normalement, sans aucune altération silencieuse — seule la
+    proposition d'une *nouvelle* unité à la création/modification d'un
+    article passe désormais par cette liste fermée.
+    """
+
+    __tablename__ = "unites_article"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    libelle: Mapped[str] = mapped_column(String(20), unique=True, nullable=False)
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"UniteArticle(libelle={self.libelle!r})"
+
+
 class Article(TimestampMixin, Base):
     __tablename__ = "articles"
     __table_args__ = (

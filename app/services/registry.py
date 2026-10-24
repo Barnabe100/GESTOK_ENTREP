@@ -42,6 +42,7 @@ from app.services.settings.company_settings_service import CompanySettingsServic
 from app.services.stock.movement_service import MovementService
 from app.services.suppliers.supplier_service import SupplierService
 from app.services.system.data_reset_service import DataResetService
+from app.services.units.unite_article_service import UniteArticleService
 from app.services.users.user_service import UserService
 
 
@@ -55,6 +56,7 @@ class ServiceRegistry:
     clients: ClientService
     exit_reasons: ExitReasonService
     articles: ArticleService
+    unites_article: UniteArticleService
     entries: EntryService
     exits: ExitService
     sales: SaleService
@@ -112,6 +114,7 @@ def build_service_registry(
         clients=ClientService(permission_service, settings),
         exit_reasons=ExitReasonService(permission_service, settings),
         articles=ArticleService(permission_service, settings),
+        unites_article=UniteArticleService(permission_service, settings),
         entries=EntryService(permission_service, settings),
         exits=ExitService(permission_service, settings),
         sales=sale_service,

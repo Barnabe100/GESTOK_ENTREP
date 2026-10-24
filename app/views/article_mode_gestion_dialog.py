@@ -112,7 +112,14 @@ class ArticleModeGestionDialog(QDialog):
             self.tarif_warning_label.setText("")
 
     def nouveau_mode(self) -> ModeGestionArticle:
-        return self.mode_combo.currentData()
+        # Correctif (incident « mode de gestion ») : voir le commentaire
+        # équivalent dans ``app/views/article_form_dialog.py::values`` —
+        # ``QComboBox.currentData()`` restitue un ``str`` nu, jamais le
+        # membre ``ModeGestionArticle`` réellement passé à ``addItem``, pour
+        # une énumération dérivant de ``str``. Reconstruit ici le membre
+        # d'énumération pour que cette méthode retourne réellement le type
+        # qu'elle déclare.
+        return ModeGestionArticle(self.mode_combo.currentData())
 
     def set_error(self, message: str) -> None:
         self.error_label.setText(message)

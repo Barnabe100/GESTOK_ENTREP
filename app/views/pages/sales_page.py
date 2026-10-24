@@ -243,7 +243,15 @@ class SalesPage(QWidget):
 
     def _reload_client_filter_combo(self) -> None:
         """Liste tous les clients (actifs et inactifs : filtrer l'historique
-        d'un client désormais désactivé doit rester possible, §8)."""
+        d'un client désormais désactivé doit rester possible, §8).
+
+        Incident C : appelée non seulement à la construction de la page mais
+        aussi à chaque retour sur ce module (voir ``refresh``) — la
+        sélection courante doit donc être préservée (``blockSignals``, sinon
+        ``clear()``/``addItem`` déclencheraient ``currentIndexChanged`` ->
+        ``refresh`` de façon récursive, ce signal y étant connecté)."""
+        selected_id = self.client_filter_combo.currentData()
+        self.client_filter_combo.blockSignals(True)
         self.client_filter_combo.clear()
         self.client_filter_combo.addItem(_ALL_CLIENTS_LABEL, None)
         try:
@@ -253,6 +261,11 @@ class SalesPage(QWidget):
         for client in clients:
             label = client.nom if client.actif else f"{client.nom} (inactif)"
             self.client_filter_combo.addItem(label, client.id)
+        if selected_id is not None:
+            index = self.client_filter_combo.findData(selected_id)
+            if index != -1:
+                self.client_filter_combo.setCurrentIndex(index)
+        self.client_filter_combo.blockSignals(False)
 
     def refresh(self) -> None:
         # Lot 22 (anomalie A) : si la caisse est ouverte, son cache
@@ -264,9 +277,25 @@ class SalesPage(QWidget):
         # un rechargement n'y aurait aucun effet visible et interrogerait
         # la base pour rien. Réutilise exactement les méthodes du Lot 19,
         # aucun nouveau mécanisme de cache.
+        #
+        # Incident C : même anomalie, jamais corrigée pour les clients —
+        # ``self._caisse_clients``/``caisse_client_combo`` n'étaient
+        # actualisés qu'à l'ouverture de la caisse (``_open_caisse``) ou par
+        # la création rapide depuis ce même écran
+        # (``_on_caisse_new_client_clicked``), jamais au retour sur ce
+        # module après une création depuis le menu Clients. La sélection en
+        # cours est préservée (``selected_id``) exactement comme pour le
+        # cache articles ci-dessus.
         if self._view_stack.currentIndex() == 1:
             self._caisse_articles_cache = self._load_articles_for_form()
             self._refresh_caisse_search_results()
+            self._caisse_clients = self._load_clients_for_form()
+            self._refresh_caisse_client_combo(selected_id=self.caisse_client_combo.currentData())
+
+        # Incident C : le filtre client de la liste des ventes (index 0)
+        # souffrait de la même obsolescence — jamais rechargé après la
+        # construction initiale de la page.
+        self._reload_client_filter_combo()
 
         statut = self.status_filter_combo.currentData()
         client_id = self.client_filter_combo.currentData()

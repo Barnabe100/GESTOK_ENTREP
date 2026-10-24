@@ -23,6 +23,7 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDialog,
     QHBoxLayout,
     QLineEdit,
     QMessageBox,
@@ -39,12 +40,14 @@ from app.services.auth.permission_service import PermissionService
 from app.services.categories.category_service import CategoryService
 from app.services.settings.company_settings_service import get_effective_currency
 from app.services.suppliers.supplier_service import SupplierService
+from app.services.units.unite_article_service import UniteArticleService
 from app.utils.exceptions import AppError, ValidationError
 from app.utils.money import format_money
 from app.utils.quantity import format_quantity
 from app.views.article_detail_dialog import ArticleDetailDialog
 from app.views.article_form_dialog import ArticleFormDialog
 from app.views.article_mode_gestion_dialog import ArticleModeGestionDialog
+from app.views.article_unite_dialog import ArticleUniteDialog
 from app.views.common import confirm_action, parse_decimal, parse_optional_decimal, run_modal_form
 
 _COLUMNS = [
@@ -71,6 +74,7 @@ class ArticlesPage(QWidget):
         article_service: ArticleService,
         category_service: CategoryService,
         supplier_service: SupplierService,
+        unite_article_service: UniteArticleService,
         permission_service: PermissionService,
         parent: QWidget | None = None,
     ) -> None:
@@ -78,6 +82,7 @@ class ArticlesPage(QWidget):
         self._article_service = article_service
         self._category_service = category_service
         self._supplier_service = supplier_service
+        self._unite_article_service = unite_article_service
         self._permissions = permission_service
         self._currency_code = get_effective_currency()
 
@@ -251,12 +256,20 @@ class ArticlesPage(QWidget):
                 pass
         return result
 
+    def _load_unites_for_form(self) -> list[str]:
+        try:
+            unites = self._unite_article_service.list_unites()
+        except AppError:
+            unites = []
+        return [u.libelle for u in unites]
+
     # -- création / modification --------------------------------------------
 
     def _on_add_clicked(self) -> None:
         categories = self._load_categories_for_form()
         suppliers = self._load_suppliers_for_form()
-        self._open_form(article_id=None, categories=categories, suppliers=suppliers, initial={})
+        unites = self._load_unites_for_form()
+        self._open_form(article_id=None, categories=categories, suppliers=suppliers, unites=unites, initial={})
 
     def _on_edit_clicked(self) -> None:
         article_id = self._selected_article_id()
@@ -267,7 +280,10 @@ class ArticlesPage(QWidget):
             return
         categories = self._load_categories_for_form(include_category_id=initial["category_id"])
         suppliers = self._load_suppliers_for_form(include_supplier_id=initial["fournisseur_principal_id"])
-        self._open_form(article_id=article_id, categories=categories, suppliers=suppliers, initial=initial)
+        unites = self._load_unites_for_form()
+        self._open_form(
+            article_id=article_id, categories=categories, suppliers=suppliers, unites=unites, initial=initial
+        )
 
     def _load_edit_initial(self, article_id: int) -> Optional[dict]:
         """Récupère les valeurs actuelles d'un article pour pré-remplir le
@@ -302,13 +318,20 @@ class ArticlesPage(QWidget):
         article_id: Optional[int],
         categories: list[tuple[int, str]],
         suppliers: list[tuple[int, str]],
+        unites: list[str],
         initial: dict,
     ) -> None:
-        state = {"values": initial}
+        state = {"values": initial, "unites": unites}
 
         def factory() -> ArticleFormDialog:
             return ArticleFormDialog(
-                categories, suppliers, state["values"], is_edit=(article_id is not None), parent=self
+                categories,
+                suppliers,
+                state["unites"],
+                state["values"],
+                is_edit=(article_id is not None),
+                on_create_unite=self._create_unite_from_form,
+                parent=self,
             )
 
         def submit(dialog: ArticleFormDialog) -> bool:
@@ -317,6 +340,21 @@ class ArticlesPage(QWidget):
 
         run_modal_form(factory, submit)
         self.refresh()
+
+    def _create_unite_from_form(self) -> Optional[str]:
+        """Callback ``on_create_unite`` du bouton « Nouveau » (§7.3) —
+        même principe que ``on_create_client`` dans ``SaleFormDialog`` :
+        ``ArticleFormDialog`` ne connaît ni le service, ni la validation
+        d'unicité."""
+        dialog = ArticleUniteDialog(parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        try:
+            created = self._unite_article_service.create_unite(dialog.libelle())
+        except AppError as exc:
+            QMessageBox.warning(self, "Création refusée", str(exc))
+            return None
+        return created.libelle
 
     def _submit_form(self, article_id: Optional[int], values: dict) -> bool:
         """Convertit la saisie, appelle le service et affiche le résultat.

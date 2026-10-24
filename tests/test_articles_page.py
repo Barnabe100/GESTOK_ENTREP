@@ -14,7 +14,9 @@ def _no_blocking_dialogs(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _build_page(stack) -> ArticlesPage:
-    return ArticlesPage(stack.articles, stack.categories, stack.suppliers, stack.permissions)
+    return ArticlesPage(
+        stack.articles, stack.categories, stack.suppliers, stack.unites_article, stack.permissions
+    )
 
 
 def test_articles_page_formats_whole_stock_without_decimals(qtbot, login_as) -> None:

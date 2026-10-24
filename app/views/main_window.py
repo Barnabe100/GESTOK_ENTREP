@@ -234,7 +234,11 @@ class MainWindow(QMainWindow):
             return ExitReasonsPage(self._services.exit_reasons, self._permissions)
         if module_name == "Articles":
             return ArticlesPage(
-                self._services.articles, self._services.categories, self._services.suppliers, self._permissions
+                self._services.articles,
+                self._services.categories,
+                self._services.suppliers,
+                self._services.unites_article,
+                self._permissions,
             )
         if module_name == "Entrées":
             return EntriesPage(

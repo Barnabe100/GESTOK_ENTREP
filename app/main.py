@@ -14,6 +14,7 @@ from app.db.init_db import init_database
 from app.db.reference_data_sync import sync_reference_data
 from app.db.seed import seed_initial_admin, seed_reference_data
 from app.db.session import session_scope
+from app.db.unite_article_seed import sync_unites_article_reference_data
 from app.resources import load_stylesheet
 from app.services.registry import ServiceRegistry, build_service_registry
 from app.utils.error_handler import install_global_exception_handler
@@ -112,6 +113,7 @@ def bootstrap() -> None:
     with session_scope(settings) as session:
         seed_reference_data(session)
         sync_reference_data(session)
+        sync_unites_article_reference_data(session)
         generated_password = seed_initial_admin(session)
 
     if generated_password:

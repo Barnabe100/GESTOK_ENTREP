@@ -12,6 +12,7 @@ from decimal import Decimal
 from typing import Optional
 
 from PySide6.QtWidgets import (
+    QComboBox,
     QDialog,
     QFormLayout,
     QHBoxLayout,
@@ -22,8 +23,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.models.payment_mode import MODES_PAIEMENT
 from app.utils.money import format_money
 from app.views.common import build_required_field_legend, format_decimal_for_input, required_label
+
+_MODE_PAIEMENT_NON_PRECISE = "(Non précisé)"
 
 
 class PaymentFormDialog(QDialog):
@@ -54,9 +58,16 @@ class PaymentFormDialog(QDialog):
         self.montant_edit.setPlaceholderText(format_decimal_for_input(reste_a_payer))
         form.addRow(required_label("Montant du paiement"), self.montant_edit)
 
-        self.mode_paiement_edit = QLineEdit(self)
-        self.mode_paiement_edit.setPlaceholderText("Espèces, Mobile Money, Virement…")
-        form.addRow("Mode de paiement", self.mode_paiement_edit)
+        # Évolution D : remplace l'ancien champ libre par une liste fermée
+        # (voir app.models.payment_mode) — élimine les saisies arbitraires
+        # ou fautées tout en conservant le caractère facultatif du champ
+        # ("(Non précisé)", données associée ``None``, sélectionné par
+        # défaut : comportement identique à l'ancien champ laissé vide).
+        self.mode_paiement_combo = QComboBox(self)
+        self.mode_paiement_combo.addItem(_MODE_PAIEMENT_NON_PRECISE, None)
+        for mode in MODES_PAIEMENT:
+            self.mode_paiement_combo.addItem(mode, mode)
+        form.addRow("Mode de paiement", self.mode_paiement_combo)
 
         self.reference_edit = QLineEdit(self)
         form.addRow("Référence", self.reference_edit)
@@ -87,7 +98,7 @@ class PaymentFormDialog(QDialog):
     def values(self) -> dict:
         return {
             "montant": self.montant_edit.text(),
-            "mode_paiement": self.mode_paiement_edit.text().strip() or None,
+            "mode_paiement": self.mode_paiement_combo.currentData(),
             "reference": self.reference_edit.text().strip() or None,
             "commentaire": self.commentaire_edit.text().strip() or None,
         }
