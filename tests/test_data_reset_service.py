@@ -458,3 +458,30 @@ def test_reset_remains_atomic_if_locations_tables_missing_from_delete_order(logi
 
     counts_after = _business_table_counts()
     assert counts_after == counts_before  # rien n'a été supprimé (rollback complet)
+
+
+# -- moteur SQLite : non-régression du contrôle d'intégrité (incident « PRAGMA sous PostgreSQL ») --
+
+
+def test_reset_still_calls_pragma_integrity_check_on_sqlite(login_as, monkeypatch) -> None:
+    """Le correctif qui réserve PRAGMA integrity_check à SQLite (voir
+    tests/test_data_reset_service_postgresql.py) ne doit jamais, par
+    inadvertance, désactiver ce contrôle pour SQLite lui-même."""
+    import app.services.system.data_reset_service as data_reset_module
+
+    stack, _ = login_as("Administrateur")
+    _seed_full_business_data(stack)
+
+    original_text = data_reset_module.text
+    executed_sql: list[str] = []
+
+    def _spy_text(sql_string):
+        executed_sql.append(sql_string)
+        return original_text(sql_string)
+
+    monkeypatch.setattr(data_reset_module, "text", _spy_text)
+
+    result = stack.data_reset.reset_business_data()
+
+    assert result.success is True
+    assert any("PRAGMA integrity_check" in sql for sql in executed_sql)

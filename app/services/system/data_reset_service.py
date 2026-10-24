@@ -37,6 +37,20 @@ Comme pour ``BackupService.restore_backup``, l'événement d'audit
 (succès/échec) est écrit **après coup**, dans une transaction séparée de
 l'opération elle-même : un échec qui déclenche un rollback de la
 réinitialisation ne doit jamais effacer la trace de la tentative.
+
+Correctif (incident « PRAGMA sous PostgreSQL ») : la vérification
+d'intégrité ``PRAGMA integrity_check`` exécutée après les suppressions
+(dans ``reset_business_data``) est une commande propre à SQLite —
+PostgreSQL n'expose aucune commande ``PRAGMA`` et la lève comme une erreur
+de syntaxe SQL, ce qui annulait systématiquement la transaction (rollback
+automatique de ``session_scope`` : aucune donnée n'était donc jamais
+réellement perdue, mais la réinitialisation échouait toujours sous
+PostgreSQL). Ce contrôle est désormais réservé à SQLite
+(``settings.db_backend == "sqlite"``, même détection que le reste du
+projet) : jamais remplacé par un équivalent PostgreSQL artificiel, ce
+contrôle de bas niveau (intégrité du fichier SQLite lui-même) n'ayant pas
+d'équivalent fonctionnel nécessaire pour PostgreSQL (voir le commentaire
+en ligne, dans ``reset_business_data``).
 """
 from __future__ import annotations
 
@@ -46,7 +60,7 @@ from typing import Optional
 
 from sqlalchemy import text
 
-from app.config.settings import Settings
+from app.config.settings import Settings, get_settings
 from app.db.session import session_scope
 from app.models.audit import AuditLog
 from app.models.catalog import Article, ArticleModeGestionChangement, Category, ExitReason, Supplier
@@ -115,6 +129,9 @@ class DataResetService:
         self._backups = backup_service
         self._settings = settings
 
+    def _effective_settings(self) -> Settings:
+        return self._settings or get_settings()
+
     def _acting_user_id(self) -> Optional[int]:
         current_user = self._permissions.current_user
         return current_user.id if current_user else None
@@ -152,12 +169,26 @@ class DataResetService:
                 for label, model in _DELETE_ORDER:
                     deleted_counts[label] = session.query(model).delete(synchronize_session=False)
 
-                # Jamais commis si la base est corrompue par l'opération elle-même.
-                integrity = session.execute(text("PRAGMA integrity_check")).scalar()
-                if integrity != "ok":
-                    raise ValidationError(
-                        f"Vérification d'intégrité SQLite échouée après réinitialisation : {integrity!r}."
-                    )
+                # Correctif (incident « PRAGMA sous PostgreSQL ») : PRAGMA
+                # integrity_check est un contrôle de bas niveau propre au
+                # fichier SQLite lui-même (pages/B-tree) — jamais une
+                # vérification d'intégrité référentielle (déjà garantie par
+                # les contraintes de clé étrangère du moteur, quel qu'il
+                # soit, et par _verify_preserved_data_intact() ci-dessous,
+                # commune aux deux moteurs). PostgreSQL n'expose aucune
+                # commande ``PRAGMA`` et ne présente pas la même classe de
+                # risque de corruption de fichier dans ce contexte (gestion
+                # de page et journal WAL côté serveur, hors de portée d'une
+                # simple session applicative) : aucun équivalent fonctionnel
+                # n'est nécessaire ici, jamais remplacé artificiellement par
+                # une autre commande — ce contrôle reste donc strictement
+                # réservé à SQLite.
+                if self._effective_settings().db_backend == "sqlite":
+                    integrity = session.execute(text("PRAGMA integrity_check")).scalar()
+                    if integrity != "ok":
+                        raise ValidationError(
+                            f"Vérification d'intégrité SQLite échouée après réinitialisation : {integrity!r}."
+                        )
         except Exception as exc:
             # Rien n'a été commis (rollback automatique de session_scope) :
             # sûr d'affirmer qu'aucune donnée n'a été modifiée.
