@@ -25,7 +25,7 @@ from sqlalchemy.exc import OperationalError
 
 from app.config.settings import PostgreSQLConnectionConfig, Settings
 from app.db import session as db_session_module
-from app.db.init_db import init_database
+from app.db.init_db import _alembic_config, init_database
 
 _PG_HOST = os.environ.get("STOCKMANAGER_TEST_PG_HOST", "127.0.0.1")
 _PG_PORT = int(os.environ.get("STOCKMANAGER_TEST_PG_PORT", "5432"))
@@ -56,6 +56,79 @@ def test_sqlite_migrations_apply_on_fresh_database(tmp_path, monkeypatch: pytest
         revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar()
     assert revision == "0015"
     db_session_module.reset_engine_cache()
+
+
+# -- correctif : mot de passe PostgreSQL percent-encodé (%40, %21...) --------------
+#
+# alembic.config.Config stocke ses options dans configparser.ConfigParser,
+# dont l'interpolation par défaut (BasicInterpolation) interprète tout « % »
+# isolé comme le début d'une référence — un mot de passe PostgreSQL
+# contenant un caractère spécial (ex. « @ », « ! ») percent-encodé par
+# ``URL.render_as_string`` (« %40 », « %21 ») y levait auparavant
+# ``ValueError: invalid interpolation syntax`` dès ``_alembic_config``,
+# avant toute tentative de connexion — reproduit et corrigé ici.
+
+
+def test_alembic_config_accepts_percent_encoded_password_characters() -> None:
+    """Aucun serveur requis : reproduit directement le défaut constaté sur
+    Windows (``ValueError: invalid interpolation syntax``) avec des mots de
+    passe fictifs contenant ``%40``/``%21`` une fois percent-encodés."""
+    import tempfile
+    from pathlib import Path as _Path
+
+    for fake_password in ("P@ssword", "Secret!123", "P@ss!word", "100%Sûr"):
+        with tempfile.TemporaryDirectory() as tmp:
+            env_var = "STOCKMANAGER_TEST_ALEMBIC_PW"
+            os.environ[env_var] = fake_password
+            try:
+                settings = Settings(
+                    environment="test", db_path=_Path(tmp) / "unused.db",
+                    log_dir=_Path(tmp) / "logs", log_level="INFO", default_currency="XOF",
+                    db_backend="postgresql",
+                    postgresql=PostgreSQLConnectionConfig(
+                        host="127.0.0.1", port=5432, database="db", username="user",
+                        password_env_var=env_var,
+                    ),
+                )
+                # Ne doit jamais lever — c'est exactement le défaut corrigé.
+                config = _alembic_config(settings)
+                # La valeur relue via get_section (chemin réellement utilisé
+                # par migrations/env.py::run_migrations_online, pas
+                # seulement get_main_option) doit redonner l'URL
+                # percent-encodée d'origine, mot de passe intact — pas
+                # seulement « ne pas lever ». Calculé ici, avant la
+                # suppression de la variable d'environnement ci-dessous.
+                section = config.get_section(config.config_ini_section, {})
+                expected_url = settings.sqlalchemy_database_uri.render_as_string(hide_password=False)
+            finally:
+                del os.environ[env_var]
+
+            assert section["sqlalchemy.url"] == expected_url
+
+
+def test_alembic_config_never_alters_the_sqlalchemy_url_object(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Le correctif ne doit jamais modifier l'URL utilisée par SQLAlchemy
+    lui-même (``Settings.sqlalchemy_database_uri``) — uniquement la copie
+    transmise à ``Config`` (échappée pour configparser)."""
+    import tempfile
+    from pathlib import Path as _Path
+
+    env_var = "STOCKMANAGER_TEST_ALEMBIC_PW_2"
+    monkeypatch.setenv(env_var, "P@ss!word")
+    with tempfile.TemporaryDirectory() as tmp:
+        settings = Settings(
+            environment="test", db_path=_Path(tmp) / "unused.db",
+            log_dir=_Path(tmp) / "logs", log_level="INFO", default_currency="XOF",
+            db_backend="postgresql",
+            postgresql=PostgreSQLConnectionConfig(
+                host="127.0.0.1", port=5432, database="db", username="user", password_env_var=env_var,
+            ),
+        )
+        before = settings.sqlalchemy_database_uri.render_as_string(hide_password=False)
+        _alembic_config(settings)
+        after = settings.sqlalchemy_database_uri.render_as_string(hide_password=False)
+        assert before == after
+        assert "%%" not in after  # jamais la version échappée côté SQLAlchemy.
 
 
 @pytest.fixture()
@@ -240,3 +313,105 @@ def test_postgresql_revision_matches_actual_schema_state(postgresql_test_schema:
         ).scalar()
     assert revision == "0015"
     assert locations_table_exists is True
+
+
+# -- validation réelle contre un serveur PostgreSQL (correctif percent-encoding) ---
+
+# Mot de passe fictif, jamais le mot de passe réel d'aucun poste client ni
+# de la base applicative — appliqué temporairement au seul rôle de test
+# dédié, puis restauré en toute circonstance (voir la fixture ci-dessous).
+# Contient volontairement les deux caractères signalés dans le défaut
+# (« @ » -> %40, « ! » -> %21).
+_FAKE_SPECIAL_CHARACTER_PASSWORD = "P@ssw0rd!Test"
+_SPECIAL_PASSWORD_ENV_VAR = "STOCKMANAGER_TEST_PG_PASSWORD_VALUE_LOT_B_SPECIAL"
+
+
+def _set_role_password(connection, password: str) -> None:
+    # ALTER ROLE n'accepte pas de paramètre lié pour le mot de passe —
+    # ``_PG_USER``/``password`` sont ici des constantes de test fixes,
+    # jamais une entrée externe : l'échappement des quotes suffit.
+    escaped = password.replace("'", "''")
+    connection.execute(text(f"ALTER ROLE {_PG_USER} WITH PASSWORD '{escaped}'"))
+
+
+@pytest.fixture()
+def postgresql_test_schema_with_special_password(monkeypatch: pytest.MonkeyPatch, tmp_path) -> Settings:
+    """Même principe que ``postgresql_test_schema``, mais le mot de passe du
+    rôle de test est temporairement remplacé par un mot de passe fictif
+    contenant des caractères spéciaux (jamais le mot de passe réel d'un
+    poste client) — seul moyen de valider réellement, de bout en bout
+    (authentification PostgreSQL comprise), le correctif du défaut constaté
+    sur Windows. Le mot de passe d'origine est restauré en toute
+    circonstance, y compris si le test échoue."""
+    if _PG_PASSWORD is None:
+        pytest.skip(
+            "STOCKMANAGER_TEST_PG_PASSWORD non défini : voir la documentation "
+            "de ce lot pour configurer un serveur PostgreSQL de test."
+        )
+    monkeypatch.setenv(_PG_PASSWORD_ENV_VAR, _PG_PASSWORD)
+    real_password_settings = Settings(
+        environment="test", db_path=tmp_path / "unused-for-postgresql.db",
+        log_dir=tmp_path / "logs", log_level="DEBUG", default_currency="XOF",
+        db_backend="postgresql",
+        postgresql=PostgreSQLConnectionConfig(
+            host=_PG_HOST, port=_PG_PORT, database=_PG_DB, username=_PG_USER,
+            password_env_var=_PG_PASSWORD_ENV_VAR, connect_timeout_seconds=5,
+        ),
+    )
+    db_session_module.reset_engine_cache()
+    try:
+        probe_engine = db_session_module.create_db_engine(real_password_settings)
+        with probe_engine.connect() as connection:
+            connection.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
+            connection.execute(text("CREATE SCHEMA public"))
+            _set_role_password(connection, _FAKE_SPECIAL_CHARACTER_PASSWORD)
+            connection.commit()
+        probe_engine.dispose()
+    except OperationalError as exc:
+        db_session_module.reset_engine_cache()
+        pytest.skip(f"Serveur PostgreSQL de test non atteignable ({_PG_HOST}:{_PG_PORT}) : {exc}")
+    db_session_module.reset_engine_cache()
+
+    monkeypatch.setenv(_SPECIAL_PASSWORD_ENV_VAR, _FAKE_SPECIAL_CHARACTER_PASSWORD)
+    special_password_settings = Settings(
+        environment="test", db_path=tmp_path / "unused-for-postgresql.db",
+        log_dir=tmp_path / "logs", log_level="DEBUG", default_currency="XOF",
+        db_backend="postgresql",
+        postgresql=PostgreSQLConnectionConfig(
+            host=_PG_HOST, port=_PG_PORT, database=_PG_DB, username=_PG_USER,
+            password_env_var=_SPECIAL_PASSWORD_ENV_VAR, connect_timeout_seconds=5,
+        ),
+    )
+
+    try:
+        yield special_password_settings
+    finally:
+        db_session_module.reset_engine_cache()
+        restore_engine = db_session_module.create_db_engine(special_password_settings)
+        with restore_engine.connect() as connection:
+            connection.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
+            connection.execute(text("CREATE SCHEMA public"))
+            _set_role_password(connection, _PG_PASSWORD)
+            connection.commit()
+        restore_engine.dispose()
+        db_session_module.reset_engine_cache()
+
+
+def test_postgresql_migrations_apply_with_percent_encoded_special_character_password(
+    postgresql_test_schema_with_special_password: Settings,
+) -> None:
+    """Validation réelle de bout en bout (serveur PostgreSQL réel,
+    authentification comprise) du défaut constaté sur Windows : les
+    migrations doivent s'appliquer jusqu'à la tête même lorsque le mot de
+    passe PostgreSQL contient des caractères percent-encodés par
+    SQLAlchemy (``%40``, ``%21``) dans l'URL transmise à Alembic."""
+    settings = postgresql_test_schema_with_special_password
+    url = settings.sqlalchemy_database_uri.render_as_string(hide_password=False)
+    assert "%40" in url or "%21" in url  # confirme que le mot de passe est bien percent-encodé dans l'URL testée.
+
+    init_database(settings)  # ne doit jamais lever ValueError: invalid interpolation syntax.
+
+    engine = db_session_module.get_engine(settings)
+    with engine.connect() as connection:
+        revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar()
+    assert revision == "0015"

@@ -33,7 +33,18 @@ def _alembic_config(settings: Settings) -> Config:
     # journalisé ici : seule la valeur transmise à Alembic en dépend.
     uri = settings.sqlalchemy_database_uri
     uri_str = uri if isinstance(uri, str) else uri.render_as_string(hide_password=False)
-    config.set_main_option("sqlalchemy.url", uri_str)
+    # Correctif : alembic.config.Config stocke ses options dans un
+    # configparser.ConfigParser, dont l'interpolation par défaut
+    # (BasicInterpolation) traite tout « % » isolé comme le début d'une
+    # référence — un mot de passe PostgreSQL contenant un caractère spécial
+    # percent-encodé par render_as_string (ex. « %40 », « %21 ») y lève
+    # ValueError: invalid interpolation syntax dès cet appel. Doubler
+    # chaque « % » (« %% ») le restitue tel quel à la lecture (configparser
+    # décode « %% » -> « % » dans son before_get) : jamais une altération du
+    # mot de passe ni de l'URL utilisée par SQLAlchemy lui-même (ci-dessus,
+    # `uri`/`uri_str`), qui ne voit jamais cette version échappée — seule la
+    # valeur transmise à ``Config`` en dépend.
+    config.set_main_option("sqlalchemy.url", uri_str.replace("%", "%%"))
     return config
 
 
