@@ -131,6 +131,46 @@ et procédures.
    Sortie : packaging\installer_output\StockManager-Setup-1.0.0.exe
 ```
 
+## Incident résolu : « Failed to load Python DLL » au premier lancement
+
+Constaté lors du tout premier build Windows réel (Python 3.11.9, installation
+par utilisateur sous `...\AppData\Local\Programs\Python\Python311\`) :
+`StockManager.exe` se construisait sans erreur, mais refusait de démarrer
+avec `Failed to load Python DLL '...\_internal\python311.dll'. LoadLibrary:
+Le module spécifié est introuvable.` — `dist\StockManager\_internal\` ne
+contenait ni `python311.dll` ni `python3.dll`.
+
+**Cause confirmée** : sous Windows, PyInstaller localise les dépendances
+binaires de `python.exe` (donc `python3XX.dll`) via l'ordre de recherche de
+DLL standard de Windows — le répertoire de l'exécutable, les répertoires
+système, puis le `PATH` du processus qui exécute `pyinstaller`. Un
+répertoire d'installation Python par utilisateur n'y figure que si l'option
+« Add python.exe to PATH » a été cochée à l'installation ; activer un
+environnement virtuel (`.venv\Scripts\activate`) n'y ajoute jamais le
+répertoire d'installation de base lui-même (qui seul contient la DLL —
+confirmé : `.venv` ne contient jamais `python3XX.dll`). Si ce répertoire est
+absent du `PATH` effectif au moment du build, PyInstaller échoue
+silencieusement à localiser la DLL (un simple avertissement dans le journal
+de build, jamais un échec de build) et l'omet du dossier figé.
+
+**Correctif appliqué** (`stockmanager.spec`) : `python3.dll`/`python3XX.dll`
+sont désormais résolues explicitement via `sys.base_prefix` (qui pointe
+toujours sur l'installation Python réelle, même exécuté depuis un
+environnement virtuel) et déclarées directement dans
+`Analysis(binaries=...)` — la recherche de dépendances par PyInstaller
+devient alors inutile pour ces deux fichiers précis, donc indépendante du
+`PATH` effectif au moment du build, quel que soit l'emplacement
+d'installation de Python. Sans effet sous Linux/macOS (liste vide, aucun
+fichier de ce nom dans `sys.base_prefix`) — revérifié par un build de
+contrôle Linux après ce correctif : `dist/StockManager/_internal/` contient
+toujours `libpython3.11.so.1.0` (équivalent Linux), build inchangé par
+ailleurs.
+
+**Non revérifié** : ce correctif élimine la cause identifiée mais n'a pas
+encore été testé par un nouveau build Windows réel — à faire avant de
+considérer l'incident définitivement clos (voir « Tests obligatoires sous
+Windows » ci-dessous, point 1).
+
 ## Build reproductible (§22)
 
 - Python : 3.11.15 (version utilisée en développement — toute 3.11.x récente

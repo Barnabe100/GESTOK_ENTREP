@@ -18,10 +18,47 @@ cross-compilation) :
 
 Sortie : dist/StockManager/ (dossier autonome, voir packaging/README.md).
 """
+import sys
+from pathlib import Path
+
 from PyInstaller.building.datastruct import Tree
 from PyInstaller.utils.hooks import copy_metadata
 
 block_cipher = None
+
+# -- DLL Python elle-même (incident « Failed to load Python DLL ») -----------------
+# Sous Windows, PyInstaller localise les dépendances binaires de python.exe
+# (donc python3XX.dll/python3.dll) via l'ordre de recherche de DLL standard
+# de Windows (répertoire de l'exécutable qui cherche, répertoires système,
+# PUIS le PATH du processus qui exécute la commande ``pyinstaller``) —
+# jamais via ``sys.base_prefix`` directement. Pour une installation Python
+# officielle dans un répertoire par utilisateur
+# (``...\AppData\Local\Programs\Python\Python3XX\``, cas constaté), ce
+# répertoire ne figure sur le PATH que si l'option « Add python.exe to
+# PATH » a été cochée à l'installation — et activer un environnement
+# virtuel (``.venv\Scripts\activate``) n'y ajoute jamais le répertoire
+# d'installation de base (seul ``.venv\Scripts`` l'est, qui ne contient
+# jamais lui-même ``python3XX.dll`` : la DLL réside uniquement dans
+# l'installation de base). Si ce répertoire est absent du PATH au moment du
+# build, PyInstaller échoue silencieusement à localiser la DLL (un
+# avertissement dans le journal de build, jamais un échec de build) et
+# l'omet du dossier figé — l'exécutable produit refuse alors de démarrer
+# (« Failed to load Python DLL »).
+#
+# Correctif : résoudre ces deux DLL explicitement via ``sys.base_prefix``
+# (qui pointe toujours sur l'installation Python réelle, même exécuté
+# depuis un environnement virtuel — jamais ``sys.prefix``, qui pointerait
+# sur le ``.venv`` lui-même) et les déclarer directement dans
+# ``Analysis(binaries=...)`` : la recherche de dépendances par PyInstaller
+# devient alors inutile pour ces deux fichiers précis, donc indépendante du
+# PATH effectif au moment du build. Sans effet sous Linux/macOS (aucun
+# fichier de ce nom dans ``sys.base_prefix``, la liste reste vide) —
+# confirmé par un build de contrôle Linux.
+python_dlls = []
+for _dll_name in ("python3.dll", f"python{sys.version_info.major}{sys.version_info.minor}.dll"):
+    _dll_path = Path(sys.base_prefix) / _dll_name
+    if _dll_path.is_file():
+        python_dlls.append((str(_dll_path), "."))
 
 # -- fichiers non-Python nécessaires au runtime (§2) --------------------------------
 # Résolus à l'exécution via app.utils.runtime_paths.app_root(), qui pointe
@@ -102,7 +139,7 @@ hiddenimports = [
 a = Analysis(
     ["app/main.py"],
     pathex=[],
-    binaries=[],
+    binaries=python_dlls,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
