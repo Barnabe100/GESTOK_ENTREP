@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 from app.services.auth.permission_service import PermissionService
 from app.services.suppliers.supplier_service import SupplierService
 from app.utils.exceptions import AppError
-from app.views.common import confirm_action, run_modal_form
+from app.views.common import confirm_action, run_modal_form, sort_by_creation_date_desc
 from app.views.supplier_form_dialog import SupplierFormDialog
 
 _COLUMNS = ["Nom", "Contact", "Téléphone", "Email", "Ville", "Statut", "Créé le", "Modifié le"]
@@ -90,6 +90,10 @@ class SuppliersPage(QWidget):
         except AppError:
             self.table.setRowCount(0)
             return
+
+        # Chantier B : les plus récemment créés en premier — voir le
+        # commentaire équivalent dans categories_page.py.
+        suppliers = sort_by_creation_date_desc(suppliers)
 
         self.table.setRowCount(len(suppliers))
         for row, supplier in enumerate(suppliers):

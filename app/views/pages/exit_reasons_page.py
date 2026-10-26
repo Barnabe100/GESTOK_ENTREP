@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
 from app.services.auth.permission_service import PermissionService
 from app.services.exit_reasons.exit_reason_service import ExitReasonService
 from app.utils.exceptions import AppError
-from app.views.common import confirm_action, run_modal_form
+from app.views.common import confirm_action, run_modal_form, sort_by_creation_date_desc
 from app.views.exit_reason_form_dialog import ExitReasonFormDialog
 
 _COLUMNS = ["Libellé", "Description", "Statut", "Créé le", "Modifié le"]
@@ -92,6 +92,10 @@ class ExitReasonsPage(QWidget):
         except AppError:
             self.table.setRowCount(0)
             return
+
+        # Chantier B : les plus récemment créés en premier — voir le
+        # commentaire équivalent dans categories_page.py.
+        reasons = sort_by_creation_date_desc(reasons)
 
         self.table.setRowCount(len(reasons))
         for row, reason in enumerate(reasons):

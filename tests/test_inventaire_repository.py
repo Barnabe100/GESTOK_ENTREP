@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 
 from app.config.settings import Settings
 from app.db.session import session_scope
@@ -73,3 +73,21 @@ def test_count_all_reflects_number_of_inventories(initialized_db: Settings) -> N
 
         _make_inventaire(session, user, "INV-000002")
         assert repo.count_all() == 2
+
+
+def test_search_orders_by_creation_date_not_business_date(initialized_db: Settings) -> None:
+    """Chantier B : voir le test équivalent dans tests/test_vente_repository.py."""
+    with session_scope(initialized_db) as session:
+        user = _make_user(session)
+        older_creation = _make_inventaire(session, user, "INV-ANCIEN", date=date(2026, 6, 1))
+        older_creation.date_creation = datetime(2026, 1, 1, 8, 0, 0)
+        session.flush()
+
+        newer_creation = _make_inventaire(session, user, "INV-RECENT", date=date(2026, 1, 1))
+        newer_creation.date_creation = datetime(2026, 6, 1, 8, 0, 0)
+        session.flush()
+
+        repo = InventaireRepository(session)
+        results = repo.search()
+
+        assert [i.numero for i in results] == ["INV-RECENT", "INV-ANCIEN"]

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
-from typing import Callable, Optional
+from typing import Callable, Optional, Protocol, TypeVar
 
 from PySide6.QtCore import QDate
 from PySide6.QtWidgets import QDialog, QLabel, QMessageBox, QWidget
@@ -144,3 +144,29 @@ def run_modal_form(dialog_factory: Callable[[], QDialog], submit: Callable[[QDia
             return
         if submit(dialog):
             return
+
+
+class _HasCreationDateAndId(Protocol):
+    date_creation: datetime
+    id: int
+
+
+_T = TypeVar("_T", bound=_HasCreationDateAndId)
+
+
+def sort_by_creation_date_desc(items: list[_T]) -> list[_T]:
+    """Tri à l'affichage « enregistrements les plus récents en premier »
+    (Chantier B) pour les écrans de référence (Catégories, Fournisseurs,
+    Clients, Motifs de sortie, Articles) dont le service partagé
+    (``list_categories``/``list_suppliers``/etc.) reste volontairement trié
+    alphabétiquement — ce service alimente aussi des menus déroulants/
+    sélecteurs ailleurs dans l'application (ex. le filtre catégorie des
+    Rapports, le sélecteur fournisseur des Entrées), où l'ordre alphabétique
+    reste le plus utile et ne doit jamais changer. Ce tri s'applique donc
+    uniquement après coup, sur la liste déjà récupérée par la page
+    d'administration elle-même, jamais dans la requête SQL partagée.
+
+    ``id`` en critère secondaire stable (jamais de recours au seul
+    ``date_creation``, dont la résolution peut ne pas suffire à départager
+    deux enregistrements créés à la même seconde)."""
+    return sorted(items, key=lambda item: (item.date_creation, item.id), reverse=True)

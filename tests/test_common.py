@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 
 import pytest
@@ -10,7 +12,42 @@ from app.views.common import (
     format_decimal_for_input,
     parse_decimal,
     required_label,
+    sort_by_creation_date_desc,
 )
+
+
+@dataclass(frozen=True)
+class _FakeRecord:
+    id: int
+    date_creation: datetime
+
+
+def test_sort_by_creation_date_desc_orders_newest_first() -> None:
+    older = _FakeRecord(id=1, date_creation=datetime(2026, 1, 1))
+    newer = _FakeRecord(id=2, date_creation=datetime(2026, 6, 1))
+
+    assert sort_by_creation_date_desc([older, newer]) == [newer, older]
+
+
+def test_sort_by_creation_date_desc_uses_id_as_stable_tiebreaker() -> None:
+    """Chantier B : deux enregistrements créés à la même date_creation
+    (ex. import en masse) doivent rester départagés de façon stable, jamais
+    arbitraire — le plus récent par identifiant en premier."""
+    same_date = datetime(2026, 1, 1, 12, 0, 0)
+    first_inserted = _FakeRecord(id=1, date_creation=same_date)
+    second_inserted = _FakeRecord(id=2, date_creation=same_date)
+
+    assert sort_by_creation_date_desc([first_inserted, second_inserted]) == [second_inserted, first_inserted]
+
+
+def test_sort_by_creation_date_desc_never_mutates_the_input_list() -> None:
+    older = _FakeRecord(id=1, date_creation=datetime(2026, 1, 1))
+    newer = _FakeRecord(id=2, date_creation=datetime(2026, 6, 1))
+    original = [older, newer]
+
+    sort_by_creation_date_desc(original)
+
+    assert original == [older, newer]
 
 
 def test_required_field_marker_is_a_single_asterisk() -> None:

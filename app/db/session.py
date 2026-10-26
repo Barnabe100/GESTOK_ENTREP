@@ -62,9 +62,35 @@ def create_db_engine(settings: Optional[Settings] = None) -> Engine:
         # seul un délai de connexion explicite est transmis au pilote
         # psycopg3, pour échouer proprement plutôt que d'attendre
         # indéfiniment un serveur réseau inaccessible (§3.B du mandat).
+        #
+        # Chantier A (audit multi-postes) : ``pool_pre_ping`` et
+        # ``pool_recycle`` ajoutés — StockManager Desktop est une application
+        # longue durée connectée à un serveur distant par le réseau local
+        # (voir docs/postgresql-reseau-multipostes.md) : une connexion du
+        # pool restée inactive peut être fermée silencieusement par un
+        # pare-feu/routeur intermédiaire, ou par le serveur lui-même, sans
+        # qu'aucune requête n'en informe l'application avant d'essayer de la
+        # réutiliser. Sans ``pool_pre_ping``, la prochaine opération sur
+        # cette connexion échouerait alors avec une erreur technique brute
+        # (``OperationalError``/connexion réinitialisée) au lieu d'une
+        # reconnexion transparente — ``pool_pre_ping`` exécute un test de
+        # validité léger avant de réutiliser une connexion du pool et la
+        # remplace silencieusement si elle est morte (coût : un aller-retour
+        # réseau supplémentaire, négligeable face à la fiabilité gagnée).
+        # ``pool_recycle`` (30 minutes) referme proactivement toute connexion
+        # plus ancienne, avant qu'un intermédiaire réseau n'ait l'occasion de
+        # le faire à sa place — n'a jamais modifié le comportement applicatif
+        # observable, uniquement la résilience réseau. Taille du pool
+        # (``pool_size``/``max_overflow``) volontairement laissée aux valeurs
+        # par défaut de SQLAlchemy ici : leur dimensionnement définitif pour
+        # un déploiement à grande échelle (nombreux postes) doit s'appuyer
+        # sur les tests de charge progressifs (voir le rapport de ce lot),
+        # pas sur une estimation arbitraire.
         engine = create_engine(
             settings.sqlalchemy_database_uri,
             connect_args={"connect_timeout": settings.postgresql.connect_timeout_seconds},
+            pool_pre_ping=True,
+            pool_recycle=1800,
             future=True,
         )
         # Jamais l'URL/le mot de passe dans ce message : seuls les éléments

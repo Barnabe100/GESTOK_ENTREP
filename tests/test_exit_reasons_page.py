@@ -1,6 +1,11 @@
+from datetime import datetime
+
 import pytest
 from PySide6.QtWidgets import QMessageBox
 
+from app.config.settings import get_settings
+from app.db.session import session_scope
+from app.models.catalog import ExitReason
 from app.views.pages.exit_reasons_page import ExitReasonsPage
 
 
@@ -182,3 +187,20 @@ def test_confirmation_dialog_yes_proceeds_with_toggle(qtbot, login_as, monkeypat
     page._on_toggle_clicked()
 
     assert stack.exit_reasons.get_exit_reason(created.id).actif is False
+
+
+def test_table_shows_most_recently_created_reason_first(qtbot, login_as) -> None:
+    """Chantier B : voir le test équivalent dans tests/test_categories_page.py."""
+    stack, _ = login_as("Administrateur")
+    older = stack.exit_reasons.create_exit_reason("Ancien (Z)")
+    newer = stack.exit_reasons.create_exit_reason("Récent (A)")
+
+    with session_scope(get_settings()) as session:
+        session.query(ExitReason).filter_by(id=older.id).update({"date_creation": datetime(2026, 1, 1, 8, 0, 0)})
+        session.query(ExitReason).filter_by(id=newer.id).update({"date_creation": datetime(2026, 6, 1, 8, 0, 0)})
+
+    page = ExitReasonsPage(stack.exit_reasons, stack.permissions)
+    qtbot.addWidget(page)
+
+    assert page.table.item(0, 0).text() == "Récent (A)"
+    assert page.table.item(1, 0).text() == "Ancien (Z)"

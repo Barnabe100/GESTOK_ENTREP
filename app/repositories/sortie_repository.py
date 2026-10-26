@@ -62,7 +62,10 @@ class SortieRepository(SQLAlchemyRepository[Sortie]):
             query = query.filter(Sortie.date >= date_from)
         if date_to is not None:
             query = query.filter(Sortie.date <= date_to)
-        return query.order_by(Sortie.date.desc(), Sortie.id.desc()).all()
+        # Chantier B : tri par date d'enregistrement réelle (date_creation),
+        # jamais la date métier (Sortie.date, modifiable/antidatée) — voir
+        # le commentaire équivalent dans vente_repository.py.
+        return query.order_by(Sortie.date_creation.desc(), Sortie.id.desc()).all()
 
     def count_all(self) -> int:
         """Utilisé pour générer le prochain numéro de sortie (SOR-NNNNNN).

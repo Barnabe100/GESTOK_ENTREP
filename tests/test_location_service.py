@@ -1,10 +1,13 @@
 import threading
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 import pytest
 
+from app.config.settings import get_settings
+from app.db.session import session_scope
 from app.models.enums import ModeGestionArticle, StatutActifInactif, StatutLocation, TypeMouvement
+from app.models.rental import Location
 from app.services.rentals.location_service import LocationLigneInput
 from app.services.sales.sale_service import VenteLigneInput
 from app.utils.exceptions import ConflictError, NotFoundError, PermissionDeniedError, ValidationError
@@ -833,3 +836,31 @@ def test_location_without_client_supports_full_lifecycle_at_service_level(login_
     assert returned.statut == StatutLocation.RETOURNEE
     assert returned.client_id is None
     assert stack.articles.get_article(article.id).stock_actuel == Decimal("5")
+
+
+def test_list_locations_orders_by_creation_date_not_business_date(login_as) -> None:
+    """Chantier B : voir le test équivalent dans tests/test_vente_repository.py
+    — une location enregistrée à l'instant mais datée d'hier doit apparaître
+    avant une location plus ancienne mais datée d'aujourd'hui."""
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    client = _make_client(stack)
+
+    older_creation = stack.rentals.create_location(
+        date(2026, 6, 1), client.id, [LocationLigneInput(article.id, Decimal("1"))]
+    )
+    newer_creation = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("1"))]
+    )
+
+    with session_scope(get_settings()) as session:
+        session.query(Location).filter_by(id=older_creation.id).update(
+            {"date_creation": datetime(2026, 1, 1, 8, 0, 0)}
+        )
+        session.query(Location).filter_by(id=newer_creation.id).update(
+            {"date_creation": datetime(2026, 6, 1, 8, 0, 0)}
+        )
+
+    results = stack.rentals.list_locations()
+
+    assert [r.id for r in results] == [newer_creation.id, older_creation.id]

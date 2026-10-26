@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 from app.config.settings import Settings
@@ -86,3 +86,27 @@ def test_delete_removes_draft_sale(initialized_db: Settings) -> None:
         repo.delete(vente)
 
         assert repo.find_by_numero("VNT-000001") is None
+
+
+def test_search_orders_by_creation_date_not_business_date(initialized_db: Settings) -> None:
+    """Chantier B : une vente enregistrée à l'instant mais datée d'hier
+    (``date``, modifiable par l'utilisateur) doit apparaître avant une
+    vente plus ancienne mais datée d'aujourd'hui — jamais l'inverse."""
+    with session_scope(initialized_db) as session:
+        user = _make_user(session)
+        older_creation_later_business_date = _make_vente(
+            session, user, "VNT-ANCIENNE", date=date(2026, 6, 1)
+        )
+        older_creation_later_business_date.date_creation = datetime(2026, 1, 1, 8, 0, 0)
+        session.flush()
+
+        newer_creation_earlier_business_date = _make_vente(
+            session, user, "VNT-RECENTE", date=date(2026, 1, 1)
+        )
+        newer_creation_earlier_business_date.date_creation = datetime(2026, 6, 1, 8, 0, 0)
+        session.flush()
+
+        repo = VenteRepository(session)
+        results = repo.search()
+
+        assert [v.numero for v in results] == ["VNT-RECENTE", "VNT-ANCIENNE"]

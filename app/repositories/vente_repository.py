@@ -53,7 +53,12 @@ class VenteRepository(SQLAlchemyRepository[Vente]):
             query = query.filter(Vente.client_id == client_id)
         if statut_paiement is not None:
             query = query.filter(Vente.statut_paiement == statut_paiement)
-        return query.order_by(Vente.date.desc(), Vente.id.desc()).all()
+        # Chantier B : tri par date d'enregistrement réelle (date_creation),
+        # jamais la date métier (Vente.date, modifiable/antidatée par
+        # l'utilisateur) — une vente créée à l'instant mais datée d'hier
+        # doit apparaître avant une vente plus ancienne datée d'aujourd'hui.
+        # id en critère secondaire stable (égalité de date_creation possible).
+        return query.order_by(Vente.date_creation.desc(), Vente.id.desc()).all()
 
     def count_all(self) -> int:
         """Utilisé pour générer le prochain numéro de vente (VNT-NNNNNN).

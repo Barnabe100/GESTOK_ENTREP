@@ -45,7 +45,10 @@ class InventaireRepository(SQLAlchemyRepository[Inventaire]):
             query = query.filter(Inventaire.date >= date_from)
         if date_to is not None:
             query = query.filter(Inventaire.date <= date_to)
-        return query.order_by(Inventaire.date.desc(), Inventaire.id.desc()).all()
+        # Chantier B : tri par date d'enregistrement réelle (date_creation),
+        # jamais la date métier (Inventaire.date, modifiable/antidatée) —
+        # voir le commentaire équivalent dans vente_repository.py.
+        return query.order_by(Inventaire.date_creation.desc(), Inventaire.id.desc()).all()
 
     def count_all(self) -> int:
         """Utilisé pour générer le prochain numéro d'inventaire (INV-NNNNNN).

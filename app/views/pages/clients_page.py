@@ -30,7 +30,7 @@ from app.services.settings.company_settings_service import get_effective_currenc
 from app.utils.exceptions import AppError
 from app.views.client_detail_dialog import ClientDetailDialog
 from app.views.client_form_dialog import ClientFormDialog
-from app.views.common import confirm_action, run_modal_form
+from app.views.common import confirm_action, run_modal_form, sort_by_creation_date_desc
 
 _COLUMNS = ["Nom", "Téléphone", "Email", "Statut", "Créé le", "Modifié le"]
 
@@ -101,6 +101,10 @@ class ClientsPage(QWidget):
         except AppError:
             self.table.setRowCount(0)
             return
+
+        # Chantier B : les plus récemment créés en premier — voir le
+        # commentaire équivalent dans categories_page.py.
+        clients = sort_by_creation_date_desc(clients)
 
         self.table.setRowCount(len(clients))
         for row, client in enumerate(clients):

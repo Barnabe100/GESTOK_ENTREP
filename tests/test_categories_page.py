@@ -1,6 +1,11 @@
+from datetime import datetime
+
 import pytest
 from PySide6.QtWidgets import QMessageBox
 
+from app.config.settings import get_settings
+from app.db.session import session_scope
+from app.models.catalog import Category
 from app.views.pages.categories_page import CategoriesPage
 
 
@@ -190,3 +195,22 @@ def test_confirmation_dialog_yes_proceeds_with_toggle(qtbot, login_as, monkeypat
     page._on_toggle_clicked()
 
     assert stack.categories.get_category(created.id).actif is False
+
+
+def test_table_shows_most_recently_created_category_first(qtbot, login_as) -> None:
+    """Chantier B : la table affiche les catégories les plus récentes en
+    premier — jamais l'ordre alphabétique de CategoryService.list_categories,
+    réutilisé tel quel ailleurs (ex. filtre catégorie des Rapports)."""
+    stack, _ = login_as("Administrateur")
+    older = stack.categories.create_category("Ancienne (Z)")
+    newer = stack.categories.create_category("Récente (A)")
+
+    with session_scope(get_settings()) as session:
+        session.query(Category).filter_by(id=older.id).update({"date_creation": datetime(2026, 1, 1, 8, 0, 0)})
+        session.query(Category).filter_by(id=newer.id).update({"date_creation": datetime(2026, 6, 1, 8, 0, 0)})
+
+    page = CategoriesPage(stack.categories, stack.permissions)
+    qtbot.addWidget(page)
+
+    assert page.table.item(0, 0).text() == "Récente (A)"
+    assert page.table.item(1, 0).text() == "Ancienne (Z)"

@@ -48,7 +48,13 @@ from app.views.article_detail_dialog import ArticleDetailDialog
 from app.views.article_form_dialog import ArticleFormDialog
 from app.views.article_mode_gestion_dialog import ArticleModeGestionDialog
 from app.views.article_unite_dialog import ArticleUniteDialog
-from app.views.common import confirm_action, parse_decimal, parse_optional_decimal, run_modal_form
+from app.views.common import (
+    confirm_action,
+    parse_decimal,
+    parse_optional_decimal,
+    run_modal_form,
+    sort_by_creation_date_desc,
+)
 
 _COLUMNS = [
     "Référence", "Désignation", "Catégorie", "Stock actuel", "Stock min", "Stock max",
@@ -187,6 +193,13 @@ class ArticlesPage(QWidget):
             articles = [a for a in articles if a.actif]
         elif status_filter == "inactifs":
             articles = [a for a in articles if not a.actif]
+
+        # Chantier B : les plus récemment créés en premier — tri appliqué
+        # uniquement ici (jamais dans ArticleService.list_articles, réutilisé
+        # ailleurs comme sélecteur d'articles — ventes, locations, entrées,
+        # sorties, inventaires, rapports — où l'ordre par référence reste le
+        # plus utile, voir sort_by_creation_date_desc).
+        articles = sort_by_creation_date_desc(articles)
 
         self.table.setRowCount(len(articles))
         for row, article in enumerate(articles):

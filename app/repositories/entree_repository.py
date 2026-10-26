@@ -62,7 +62,10 @@ class EntreeRepository(SQLAlchemyRepository[Entree]):
             query = query.filter(Entree.date >= date_from)
         if date_to is not None:
             query = query.filter(Entree.date <= date_to)
-        return query.order_by(Entree.date.desc(), Entree.id.desc()).all()
+        # Chantier B : tri par date d'enregistrement réelle (date_creation),
+        # jamais la date métier (Entree.date, modifiable/antidatée) — voir
+        # le commentaire équivalent dans vente_repository.py.
+        return query.order_by(Entree.date_creation.desc(), Entree.id.desc()).all()
 
     def count_all(self) -> int:
         """Utilisé pour générer le prochain numéro d'entrée (ENT-NNNNNN).

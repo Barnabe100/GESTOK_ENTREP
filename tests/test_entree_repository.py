@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 from app.config.settings import Settings
@@ -102,3 +102,22 @@ def test_count_all_reflects_number_of_entries(initialized_db: Settings) -> None:
 
         _make_entree(session, supplier, user, "ENT-000002")
         assert repo.count_all() == 2
+
+
+def test_search_orders_by_creation_date_not_business_date(initialized_db: Settings) -> None:
+    """Chantier B : voir le test équivalent dans tests/test_vente_repository.py."""
+    with session_scope(initialized_db) as session:
+        supplier = _make_supplier(session)
+        user = _make_user(session)
+        older_creation = _make_entree(session, supplier, user, "ENT-ANCIENNE", date=date(2026, 6, 1))
+        older_creation.date_creation = datetime(2026, 1, 1, 8, 0, 0)
+        session.flush()
+
+        newer_creation = _make_entree(session, supplier, user, "ENT-RECENTE", date=date(2026, 1, 1))
+        newer_creation.date_creation = datetime(2026, 6, 1, 8, 0, 0)
+        session.flush()
+
+        repo = EntreeRepository(session)
+        results = repo.search()
+
+        assert [e.numero for e in results] == ["ENT-RECENTE", "ENT-ANCIENNE"]

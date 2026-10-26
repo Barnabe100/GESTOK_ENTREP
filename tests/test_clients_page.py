@@ -1,9 +1,12 @@
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 import pytest
 from PySide6.QtWidgets import QMessageBox
 
+from app.config.settings import get_settings
+from app.db.session import session_scope
+from app.models.client import Client
 from app.services.sales.sale_service import VenteLigneInput
 from app.views.pages.clients_page import ClientsPage
 
@@ -271,3 +274,20 @@ def test_load_client_for_detail_returns_empty_sales_without_sale_view(qtbot, log
     loaded_client, sales = result
     assert loaded_client.nom == "Client"
     assert sales == []
+
+
+def test_table_shows_most_recently_created_client_first(qtbot, login_as) -> None:
+    """Chantier B : voir le test équivalent dans tests/test_categories_page.py."""
+    stack, _ = login_as("Administrateur")
+    older = stack.clients.create_client("Ancien (Z)")
+    newer = stack.clients.create_client("Récent (A)")
+
+    with session_scope(get_settings()) as session:
+        session.query(Client).filter_by(id=older.id).update({"date_creation": datetime(2026, 1, 1, 8, 0, 0)})
+        session.query(Client).filter_by(id=newer.id).update({"date_creation": datetime(2026, 6, 1, 8, 0, 0)})
+
+    page = ClientsPage(stack.clients, stack.sales, stack.permissions)
+    qtbot.addWidget(page)
+
+    assert page.table.item(0, 0).text() == "Récent (A)"
+    assert page.table.item(1, 0).text() == "Ancien (Z)"

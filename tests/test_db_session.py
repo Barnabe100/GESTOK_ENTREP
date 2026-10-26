@@ -94,6 +94,28 @@ def test_postgresql_engine_receives_no_sqlite_option(tmp_path, monkeypatch: pyte
     assert engine.dialect.driver == "psycopg"
 
 
+def test_postgresql_engine_enables_pool_pre_ping_and_recycle(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Chantier A (audit multi-postes) : une connexion du pool restée
+    inactive peut être fermée silencieusement par un intermédiaire réseau
+    (pare-feu/routeur) sans que l'application ne le sache avant de tenter de
+    la réutiliser — ``pool_pre_ping`` doit être actif pour PostgreSQL."""
+    captured: dict = {}
+    from sqlalchemy import create_engine as real_create_engine
+
+    def _spy_create_engine(url, **kwargs):
+        captured.update(kwargs)
+        return real_create_engine(url, **kwargs)
+
+    monkeypatch.setenv("STOCKMANAGER_DB_PASSWORD", "s3cret")
+    monkeypatch.setattr("sqlalchemy.create_engine", _spy_create_engine)
+
+    settings = _make_postgresql_settings(tmp_path)
+    create_db_engine(settings)
+
+    assert captured["pool_pre_ping"] is True
+    assert captured["pool_recycle"] == 1800
+
+
 def test_sqlite_engine_still_receives_check_same_thread(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Non-régression explicite : l'ajout de la branche PostgreSQL ne doit
     jamais altérer les options déjà appliquées pour SQLite."""
@@ -114,6 +136,8 @@ def test_sqlite_engine_still_receives_check_same_thread(tmp_path, monkeypatch: p
 
     assert captured["connect_args"] == {"check_same_thread": False}
     assert "connect_timeout" not in captured["connect_args"]
+    assert "pool_pre_ping" not in captured
+    assert "pool_recycle" not in captured
     assert engine.dialect.name == "sqlite"
 
 

@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 from app.config.settings import Settings
@@ -103,3 +103,22 @@ def test_count_all_reflects_number_of_exits(initialized_db: Settings) -> None:
 
         _make_sortie(session, motif, user, "SOR-000002")
         assert repo.count_all() == 2
+
+
+def test_search_orders_by_creation_date_not_business_date(initialized_db: Settings) -> None:
+    """Chantier B : voir le test équivalent dans tests/test_vente_repository.py."""
+    with session_scope(initialized_db) as session:
+        motif = _make_motif(session)
+        user = _make_user(session)
+        older_creation = _make_sortie(session, motif, user, "SOR-ANCIENNE", date=date(2026, 6, 1))
+        older_creation.date_creation = datetime(2026, 1, 1, 8, 0, 0)
+        session.flush()
+
+        newer_creation = _make_sortie(session, motif, user, "SOR-RECENTE", date=date(2026, 1, 1))
+        newer_creation.date_creation = datetime(2026, 6, 1, 8, 0, 0)
+        session.flush()
+
+        repo = SortieRepository(session)
+        results = repo.search()
+
+        assert [s.numero for s in results] == ["SOR-RECENTE", "SOR-ANCIENNE"]

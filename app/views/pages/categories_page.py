@@ -25,7 +25,7 @@ from app.services.auth.permission_service import PermissionService
 from app.services.categories.category_service import CategoryService
 from app.utils.exceptions import AppError
 from app.views.category_form_dialog import CategoryFormDialog
-from app.views.common import confirm_action, run_modal_form
+from app.views.common import confirm_action, run_modal_form, sort_by_creation_date_desc
 
 _COLUMNS = ["Nom", "Statut", "Créée le", "Modifiée le"]
 
@@ -89,6 +89,12 @@ class CategoriesPage(QWidget):
         except AppError:
             self.table.setRowCount(0)
             return
+
+        # Chantier B : les plus récemment créées en premier — tri appliqué
+        # uniquement ici (jamais dans CategoryService.list_categories,
+        # réutilisé ailleurs comme sélecteur où l'ordre alphabétique reste
+        # le plus utile, voir sort_by_creation_date_desc).
+        categories = sort_by_creation_date_desc(categories)
 
         self.table.setRowCount(len(categories))
         for row, category in enumerate(categories):

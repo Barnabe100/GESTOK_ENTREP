@@ -52,7 +52,10 @@ class LocationRepository(SQLAlchemyRepository[Location]):
             query = query.filter(Location.date <= date_to)
         if client_id is not None:
             query = query.filter(Location.client_id == client_id)
-        return query.order_by(Location.date.desc(), Location.id.desc()).all()
+        # Chantier B : tri par date d'enregistrement réelle (date_creation),
+        # jamais la date métier (Location.date, modifiable/antidatée) —
+        # voir le commentaire équivalent dans vente_repository.py.
+        return query.order_by(Location.date_creation.desc(), Location.id.desc()).all()
 
     def count_all(self) -> int:
         """Utilisé pour générer le prochain numéro de location (LOC-NNNNNN),

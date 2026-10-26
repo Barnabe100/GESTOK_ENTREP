@@ -1,8 +1,12 @@
+from datetime import datetime
 from decimal import Decimal
 
 import pytest
 from PySide6.QtWidgets import QMessageBox
 
+from app.config.settings import get_settings
+from app.db.session import session_scope
+from app.models.catalog import Article
 from app.models.enums import ModeGestionArticle
 from app.views.pages.articles_page import ArticlesPage
 
@@ -735,3 +739,27 @@ def test_submit_mode_gestion_still_allows_switch_without_tarif(qtbot, login_as) 
 
     assert result is True
     assert stack.articles.get_article(article.id).mode_gestion == ModeGestionArticle.LOCATION
+
+
+def test_table_shows_most_recently_created_article_first(qtbot, login_as) -> None:
+    """Chantier B : voir le test équivalent dans tests/test_categories_page.py
+    — jamais l'ordre par référence de ArticleService.list_articles, réutilisé
+    tel quel comme sélecteur ailleurs (Ventes, Locations, Entrées, Sorties...)."""
+    stack, _ = login_as("Administrateur")
+    category = stack.categories.create_category("Cat")
+    older = stack.articles.create_article(
+        "ART-Z-ANCIEN", "Ancien", category.id, "unité", Decimal("100"), Decimal("150"), Decimal("0")
+    )
+    newer = stack.articles.create_article(
+        "ART-A-RECENT", "Récent", category.id, "unité", Decimal("100"), Decimal("150"), Decimal("0")
+    )
+
+    with session_scope(get_settings()) as session:
+        session.query(Article).filter_by(id=older.id).update({"date_creation": datetime(2026, 1, 1, 8, 0, 0)})
+        session.query(Article).filter_by(id=newer.id).update({"date_creation": datetime(2026, 6, 1, 8, 0, 0)})
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.table.item(0, 0).text() == "ART-A-RECENT"
+    assert page.table.item(1, 0).text() == "ART-Z-ANCIEN"
