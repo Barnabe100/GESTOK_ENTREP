@@ -125,6 +125,11 @@ def get_session_factory(settings: Optional[Settings] = None) -> sessionmaker:
         _session_factory = sessionmaker(
             bind=get_engine(settings), expire_on_commit=False, future=True
         )
+        # Chantier D (synchronisation automatique) : n'a aucun effet sous
+        # SQLite (un seul poste) — voir app/db/change_notifications.py.
+        from app.db.change_notifications import register_change_notifications
+
+        register_change_notifications(_session_factory, settings or get_settings())
     return _session_factory
 
 

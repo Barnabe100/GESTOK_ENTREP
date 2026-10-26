@@ -16,6 +16,7 @@ from app.models.catalog import (
     UniteArticle,
 )
 from app.models.client import Client
+from app.models.counters import CompteurNumerotation
 from app.models.documents import (
     Entree,
     EntreeLigne,
@@ -45,6 +46,7 @@ __all__ = [
     "ExitReason",
     "UniteArticle",
     "Client",
+    "CompteurNumerotation",
     "Article",
     "ArticleModeGestionChangement",
     "Entree",

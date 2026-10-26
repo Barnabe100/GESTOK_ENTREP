@@ -71,6 +71,7 @@ from app.models.payment import Paiement
 from app.models.user import User
 from app.repositories.article_repository import ArticleRepository
 from app.repositories.client_repository import ClientRepository
+from app.repositories.counter_repository import CounterRepository
 from app.repositories.mouvement_repository import MouvementRepository
 from app.repositories.vente_repository import VenteRepository
 from app.services.auth.permission_service import PermissionService
@@ -506,10 +507,11 @@ class SaleService:
         acting_user_id = self._acting_user_id()
 
         with session_scope(self._settings) as session:
-            vente_repo = VenteRepository(session)
             client_id = self._validate_client(session, client_id)
 
-            numero = f"VNT-{vente_repo.count_all() + 1:06d}"
+            # Compteur atomique (audit multi-poste) : élimine les collisions
+            # entre postes concurrents — voir app/models/counters.py.
+            numero = f"VNT-{CounterRepository(session).next_value('VNT'):06d}"
 
             vente = Vente(
                 numero=numero,

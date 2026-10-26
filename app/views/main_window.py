@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.db.change_listener import PostgreSQLChangeListener
 from app.db.seed import INITIAL_ADMIN_USERNAME
 from app.resources import APP_ICON_PATH
 from app.services.registry import ServiceRegistry
@@ -65,6 +66,20 @@ logger = get_logger("views.main_window")
 # phase Sauvegardes) : ce minuteur ne peut s'exécuter que si l'application
 # est ouverte — voir app/backup_cli.py pour le cas application fermée.
 _BACKUP_SCHEDULER_CHECK_INTERVAL_MS = 60_000
+
+# Chantier D (synchronisation automatique multi-poste) : sondage non
+# bloquant (voir app/db/change_listener.py) de la connexion LISTEN dédiée
+# — jamais une requête sur les tables métier elles-mêmes, uniquement sur
+# la file d'attente de notifications déjà en mémoire côté serveur.
+_CHANGE_LISTENER_POLL_INTERVAL_MS = 2_000
+
+# Filet de sécurité (notification manquée pendant une coupure réseau, ou
+# émission NOTIFY elle-même en échec côté émetteur — voir
+# app/db/change_notifications.py) : rafraîchit l'écran actif indépendamment
+# des notifications reçues, à une fréquence volontairement beaucoup plus
+# basse que le sondage ci-dessus (c'est une requête réelle sur les données
+# de l'écran concerné, contrairement au sondage LISTEN).
+_CHANGE_RECONCILIATION_INTERVAL_MS = 90_000
 
 # Ordre de navigation conforme au cahier des charges (§22), complété par
 # « Motifs de sortie » (administration réservée à l'Administrateur, cf.
@@ -192,7 +207,79 @@ class MainWindow(QMainWindow):
         self._backup_scheduler_timer.timeout.connect(self._check_scheduled_backup)
         self._backup_scheduler_timer.start(_BACKUP_SCHEDULER_CHECK_INTERVAL_MS)
 
+        # Chantier D (synchronisation automatique) : jamais sous SQLite (un
+        # seul poste existe alors, voir app/db/change_notifications.py) —
+        # ``self._change_listener`` reste ``None`` dans ce cas, vérifié
+        # avant chaque usage ci-dessous. ``services.settings`` (jamais
+        # ``app.config.get_settings()``, le paramètre global du processus,
+        # qui peut différer de l'instance réellement utilisée par CETTE
+        # pile de services, notamment en test) — voir ServiceRegistry.
+        self._change_listener: Optional[PostgreSQLChangeListener] = None
+        if services.settings.db_backend == "postgresql":
+            self._change_listener = PostgreSQLChangeListener(services.settings)
+            # LISTEN souscrit dès l'ouverture, jamais paresseusement au
+            # premier sondage : une notification émise entre l'ouverture de
+            # la fenêtre et le premier passage du minuteur serait sinon
+            # silencieusement perdue (NOTIFY n'est jamais un stockage
+            # durable, voir app/db/change_notifications.py).
+            self._change_listener.connect()
+
+            self._change_listener_timer = QTimer(self)
+            self._change_listener_timer.timeout.connect(self._poll_change_notifications)
+            self._change_listener_timer.start(_CHANGE_LISTENER_POLL_INTERVAL_MS)
+
+            self._change_reconciliation_timer = QTimer(self)
+            self._change_reconciliation_timer.timeout.connect(self._reconcile_current_page)
+            self._change_reconciliation_timer.start(_CHANGE_RECONCILIATION_INTERVAL_MS)
+
         self._maybe_show_onboarding_dialog()
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - signature imposée par Qt
+        # Correctif (suite de non-régression) : ``close()`` masque la
+        # fenêtre mais ne détruit pas immédiatement les ``QTimer`` qui lui
+        # sont parentés (seule la destruction effective de l'objet C++ les
+        # arrête, jamais ``close()`` seul) — sans cet arrêt explicite, un
+        # minuteur resté actif peut se déclencher bien après la fermeture
+        # de cette fenêtre (observé : un sondage tardif échouait sur un mot
+        # de passe de test déjà hors de portée dans une suite de tests
+        # ultérieure sans rapport). Arrêtés avant toute autre chose, pour
+        # qu'aucun sondage/réconciliation ne puisse plus jamais se
+        # déclencher après cet appel.
+        if self._change_listener is not None:
+            self._change_listener_timer.stop()
+            self._change_reconciliation_timer.stop()
+            self._change_listener.close()
+        super().closeEvent(event)
+
+    def _refresh_current_page(self) -> None:
+        """Rafraîchit l'écran actuellement affiché — jamais un autre écran
+        en arrière-plan (préserve sa saisie/ses filtres en cours, voir le
+        mandat de ce lot, §6). Identique au rafraîchissement déjà déclenché
+        par ``_on_navigation_changed`` à l'ouverture d'un écran, ici
+        déclenché par une notification de changement ou la réconciliation
+        périodique plutôt que par la navigation."""
+        current_index = self.page_stack.currentIndex()
+        if current_index < 0:
+            return
+        page = self.page_stack.widget(current_index)
+        if hasattr(page, "refresh"):
+            page.refresh()
+
+    def _poll_change_notifications(self) -> None:
+        """Sondage non bloquant (voir ``PostgreSQLChangeListener.poll``) —
+        ne rafraîchit l'écran actif que si au moins une notification est
+        réellement en attente, jamais à chaque sondage."""
+        if self._change_listener is None:
+            return
+        entity_types = self._change_listener.poll()
+        if entity_types:
+            self._refresh_current_page()
+
+    def _reconcile_current_page(self) -> None:
+        """Filet de sécurité périodique (voir la docstring de
+        ``_CHANGE_RECONCILIATION_INTERVAL_MS``) : rafraîchit l'écran actif
+        même en l'absence de toute notification reçue."""
+        self._refresh_current_page()
 
     def _build_navigation_list(self) -> QListWidget:
         navigation_list = QListWidget(self)

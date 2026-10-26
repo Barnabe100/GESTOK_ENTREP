@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from app.config.settings import Settings
+from app.config.settings import Settings, get_settings
 from app.services.articles.article_service import ArticleService
 from app.services.audit.audit_service import AuditService
 from app.services.auth.account_recovery_service import AccountRecoveryService
@@ -48,6 +48,13 @@ from app.services.users.user_service import UserService
 
 @dataclass
 class ServiceRegistry:
+    # Chantier D (synchronisation automatique) : ``MainWindow`` a besoin de
+    # connaître le moteur actif (SQLite/PostgreSQL) de CETTE pile de
+    # services précisément — jamais ``app.config.get_settings()`` (le
+    # paramètre global du processus, qui peut différer de l'instance
+    # ``Settings`` effectivement utilisée pour construire cette pile,
+    # notamment en test) — voir ``build_service_registry`` ci-dessous.
+    settings: Settings
     auth: AuthService
     permissions: PermissionService
     users: UserService
@@ -85,6 +92,7 @@ def build_service_registry(
     seul appelant qui la remplace est ``tests/conftest.py``, avec une clé de
     test éphémère (jamais la clé de production, et surtout jamais une clé
     privée — seule la clé publique correspondante est nécessaire ici)."""
+    resolved_settings = settings or get_settings()
     auth_service = AuthService(settings)
     # PermissionService est construit sans FeatureGate : LicenseService en a
     # besoin pour vérifier LICENSE_VIEW/LICENSE_ACTIVATE (permissions non
@@ -106,6 +114,7 @@ def build_service_registry(
     sale_service = SaleService(permission_service, settings)
 
     return ServiceRegistry(
+        settings=resolved_settings,
         auth=auth_service,
         permissions=permission_service,
         users=UserService(permission_service, settings, license_service=license_service),

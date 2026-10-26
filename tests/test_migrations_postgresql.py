@@ -54,7 +54,7 @@ def test_sqlite_migrations_apply_on_fresh_database(tmp_path, monkeypatch: pytest
     engine = db_session_module.get_engine(settings)
     with engine.connect() as connection:
         revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert revision == "0016"
+    assert revision == "0017"
     db_session_module.reset_engine_cache()
 
 
@@ -186,7 +186,7 @@ def test_postgresql_migrations_apply_on_fresh_database(postgresql_test_schema: S
     engine = db_session_module.get_engine(postgresql_test_schema)
     with engine.connect() as connection:
         revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert revision == "0016"
+    assert revision == "0017"
 
 
 def test_postgresql_partial_unique_index_exists_with_expected_condition(
@@ -311,7 +311,7 @@ def test_postgresql_revision_matches_actual_schema_state(postgresql_test_schema:
         locations_table_exists = connection.execute(
             text("SELECT to_regclass('public.locations') IS NOT NULL")
         ).scalar()
-    assert revision == "0016"
+    assert revision == "0017"
     assert locations_table_exists is True
 
 
@@ -414,4 +414,4 @@ def test_postgresql_migrations_apply_with_percent_encoded_special_character_pass
     engine = db_session_module.get_engine(settings)
     with engine.connect() as connection:
         revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert revision == "0016"
+    assert revision == "0017"

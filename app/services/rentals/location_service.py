@@ -61,6 +61,7 @@ from app.models.enums import ModeGestionArticle, ResultatAudit, StatutActifInact
 from app.models.rental import Location, LocationLigne, LocationPaiement, LocationRetour
 from app.repositories.article_repository import ArticleRepository
 from app.repositories.client_repository import ClientRepository
+from app.repositories.counter_repository import CounterRepository
 from app.repositories.location_repository import LocationRepository
 from app.services.auth.permission_service import PermissionService
 from app.services.stock.stock_service import StockService
@@ -429,10 +430,11 @@ class LocationService:
         acting_user_id = self._acting_user_id()
 
         with session_scope(self._settings) as session:
-            repo = LocationRepository(session)
             client_id = self._validate_client(session, client_id)
 
-            numero = f"LOC-{repo.count_all() + 1:06d}"
+            # Compteur atomique (audit multi-poste) : élimine les collisions
+            # entre postes concurrents — voir app/models/counters.py.
+            numero = f"LOC-{CounterRepository(session).next_value('LOC'):06d}"
 
             location = Location(
                 numero=numero,

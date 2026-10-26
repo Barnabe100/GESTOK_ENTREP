@@ -41,6 +41,7 @@ from app.models.documents import Sortie, SortieLigne
 from app.models.enums import ResultatAudit, StatutActifInactif, StatutOperation, TypeMouvement
 from app.models.movement import MouvementStock
 from app.repositories.article_repository import ArticleRepository
+from app.repositories.counter_repository import CounterRepository
 from app.repositories.exit_reason_repository import ExitReasonRepository
 from app.repositories.mouvement_repository import MouvementRepository
 from app.repositories.sortie_repository import SortieRepository
@@ -307,7 +308,6 @@ class ExitService:
         acting_user_id = self._acting_user_id()
 
         with session_scope(self._settings) as session:
-            sortie_repo = SortieRepository(session)
             reason_repo = ExitReasonRepository(session)
 
             motif = reason_repo.get_by_id(motif_id)
@@ -316,7 +316,9 @@ class ExitService:
             if motif.statut != StatutActifInactif.ACTIF:
                 raise ValidationError("Le motif sélectionné est inactif.")
 
-            numero = f"SOR-{sortie_repo.count_all() + 1:06d}"
+            # Compteur atomique (audit multi-poste) : élimine les collisions
+            # entre postes concurrents — voir app/models/counters.py.
+            numero = f"SOR-{CounterRepository(session).next_value('SOR'):06d}"
 
             sortie = Sortie(
                 numero=numero,

@@ -33,6 +33,17 @@ tout premier, donc toujours avant.
 Ne touche jamais : utilisateurs, rôles, permissions, compte administrateur,
 paramètres de l'entreprise (dont logo/devise), licence, journal d'audit.
 
+Décision délibérée (audit multi-poste, compteurs de numérotation) : les
+compteurs de ``compteurs_numerotation`` ne sont PAS remis à zéro par une
+réinitialisation — un document créé après la réinitialisation continue la
+numérotation là où elle en était, jamais en repartant de 1. Choix retenu
+car aucune règle métier documentée ni aucun test existant n'exigeait le
+redémarrage à 1 (c'était un simple effet de bord de l'ancien mécanisme
+``COUNT(*)+1``, jamais une garantie recherchée) ; le préserver aurait en
+outre permis à deux documents réels distincts (l'un avant, l'autre après
+une réinitialisation) de porter un jour le même numéro — ce que ce lot
+vise justement à ne plus jamais permettre.
+
 Comme pour ``BackupService.restore_backup``, l'événement d'audit
 (succès/échec) est écrit **après coup**, dans une transaction séparée de
 l'opération elle-même : un échec qui déclenche un rollback de la

@@ -54,6 +54,7 @@ from app.models.enums import ResultatAudit, StatutActifInactif, StatutInventaire
 from app.models.inventory import Inventaire, InventaireLigne
 from app.models.movement import MouvementStock
 from app.repositories.article_repository import ArticleRepository
+from app.repositories.counter_repository import CounterRepository
 from app.repositories.inventaire_repository import InventaireRepository
 from app.repositories.mouvement_repository import MouvementRepository
 from app.services.auth.permission_service import PermissionService
@@ -246,9 +247,9 @@ class InventoryService:
         acting_user_id = self._acting_user_id()
 
         with session_scope(self._settings) as session:
-            inventaire_repo = InventaireRepository(session)
-
-            numero = f"INV-{inventaire_repo.count_all() + 1:06d}"
+            # Compteur atomique (audit multi-poste) : élimine les collisions
+            # entre postes concurrents — voir app/models/counters.py.
+            numero = f"INV-{CounterRepository(session).next_value('INV'):06d}"
 
             inventaire = Inventaire(
                 numero=numero,

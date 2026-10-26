@@ -36,6 +36,7 @@ from app.models.documents import Entree, EntreeLigne
 from app.models.enums import ResultatAudit, StatutActifInactif, StatutOperation, TypeMouvement
 from app.models.movement import MouvementStock
 from app.repositories.article_repository import ArticleRepository
+from app.repositories.counter_repository import CounterRepository
 from app.repositories.entree_repository import EntreeRepository
 from app.repositories.mouvement_repository import MouvementRepository
 from app.repositories.supplier_repository import SupplierRepository
@@ -298,7 +299,6 @@ class EntryService:
         acting_user_id = self._acting_user_id()
 
         with session_scope(self._settings) as session:
-            entree_repo = EntreeRepository(session)
             supplier_repo = SupplierRepository(session)
 
             supplier = supplier_repo.get_by_id(fournisseur_id)
@@ -307,7 +307,9 @@ class EntryService:
             if supplier.statut != StatutActifInactif.ACTIF:
                 raise ValidationError("Le fournisseur sélectionné est inactif.")
 
-            numero = f"ENT-{entree_repo.count_all() + 1:06d}"
+            # Compteur atomique (audit multi-poste) : élimine les collisions
+            # entre postes concurrents — voir app/models/counters.py.
+            numero = f"ENT-{CounterRepository(session).next_value('ENT'):06d}"
 
             entree = Entree(
                 numero=numero,
