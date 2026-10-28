@@ -38,6 +38,7 @@ from app.utils.logging_config import get_logger
 from app.version import __version__
 from app.views.about_dialog import AboutDialog
 from app.views.change_password_dialog import ChangePasswordDialog
+from app.views.inactivity_monitor import InactivityMonitor
 from app.views.onboarding_dialog import OnboardingDialog
 from app.views.pages.articles_page import ArticlesPage
 from app.views.pages.audit_page import AuditPage
@@ -209,6 +210,15 @@ class MainWindow(QMainWindow):
         self._backup_scheduler_timer.timeout.connect(self._check_scheduled_backup)
         self._backup_scheduler_timer.start(_BACKUP_SCHEDULER_CHECK_INTERVAL_MS)
 
+        # Déconnexion automatique après inactivité (phase accès réseau/
+        # déconnexion auto/permissions Consultant, point 2) — posé sur
+        # QApplication (jamais sur un widget précis) pour capter aussi les
+        # évènements des boîtes de dialogue modales, voir InactivityMonitor.
+        self._inactivity_monitor = InactivityMonitor(parent=self)
+        self._inactivity_monitor.timed_out.connect(self._on_inactivity_timeout)
+        QApplication.instance().installEventFilter(self._inactivity_monitor)
+        self._inactivity_monitor.start()
+
         # Chantier D (synchronisation automatique) : jamais sous SQLite (un
         # seul poste existe alors, voir app/db/change_notifications.py) —
         # ``self._change_listener`` reste ``None`` dans ce cas, vérifié
@@ -268,6 +278,11 @@ class MainWindow(QMainWindow):
             self._change_listener_timer.stop()
             self._change_reconciliation_timer.stop()
             self._change_listener.close()
+
+        # Même raisonnement pour le minuteur d'inactivité : jamais de
+        # déclenchement possible après la fermeture de cette fenêtre.
+        self._inactivity_monitor.stop()
+        QApplication.instance().removeEventFilter(self._inactivity_monitor)
         super().closeEvent(event)
 
     def _pages_with_active_background_task(self) -> list[QWidget]:
@@ -595,15 +610,58 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def _on_logout_clicked(self) -> None:
-        # Correctif revue finale — même principe que ``closeEvent`` :
-        # jamais déconnecter (donc détruire cette fenêtre, voir
-        # app/main.py:run_session) tant qu'une sauvegarde ou une
-        # restauration tourne encore dans un BackgroundTask.
-        if self._warn_if_background_task_active(
+        self._perform_logout(silent=False)
+
+    def _on_inactivity_timeout(self) -> None:
+        # Jamais confondu avec la fermeture de la connexion PostgreSQL
+        # (``_change_listener``/moteur de session, inchangés ici) : seule
+        # la session UI (utilisateur authentifié, fenêtre principale) est
+        # terminée — voir ``_perform_logout``.
+        self._perform_logout(silent=True)
+
+    def _perform_logout(self, *, silent: bool) -> None:
+        """Déconnexion effective, partagée entre le bouton Déconnexion
+        (``silent=False``) et l'expiration du minuteur d'inactivité
+        (``silent=True``, voir ``InactivityMonitor``/point 2 du mandat).
+
+        La protection sauvegarde/restauration (voir
+        ``_warn_if_background_task_active``, correctif revue finale —
+        défaut critique de cycle de vie) s'applique dans les deux cas :
+        jamais déconnecter (donc détruire cette fenêtre, voir
+        app/main.py:run_session) tant qu'un ``BackgroundTask`` tourne
+        encore. En mode silencieux, en revanche, aucune boîte de dialogue
+        bloquante ne doit jamais s'afficher sans utilisateur présent pour
+        la fermer : une opération en cours ne fait alors que reporter
+        l'échéance (``InactivityMonitor.start``), jamais déconnecter
+        par-dessus elle.
+
+        Revue finale — correctif « fenêtres secondaires » : contrairement
+        au clic explicite sur « Déconnexion » (impossible tant qu'une boîte
+        de dialogue modale a le focus — elle bloque toute interaction avec
+        cette fenêtre), le minuteur d'inactivité peut se déclencher à tout
+        moment, y compris pendant qu'un dialogue modal enfant de cette
+        fenêtre (``ChangePasswordDialog``, ``AboutDialog``, ``OnboardingDialog``,
+        etc., tous ouverts via ``QDialog.exec()``) est encore affiché.
+        Fermer cette fenêtre dans ce cas ne fermerait **pas** ce dialogue
+        (``QWidget.close()`` masque le parent sans jamais toucher à un
+        dialogue modal enfant déjà en cours d'exécution, vérifié
+        empiriquement) : il resterait flottant, visible et pleinement
+        interactif, agissant sur des services déjà déconnectés
+        (``AuthService.current_user`` devenu ``None``) — exactement le
+        risque que ce mandat demande d'exclure. Donc, en mode silencieux
+        uniquement, reporter aussi l'échéance si un dialogue modal est
+        actif (``QApplication.activeModalWidget()``, générique — jamais une
+        liste figée de dialogues à maintenir ici)."""
+        if silent:
+            if self._pages_with_active_background_task() or QApplication.activeModalWidget() is not None:
+                self._inactivity_monitor.start()
+                return
+        elif self._warn_if_background_task_active(
             "Une sauvegarde ou une restauration est en cours. "
             "Veuillez patienter avant de vous déconnecter."
         ):
             return
+
         self._backup_scheduler_timer.stop()
         self._services.auth.logout()
         self.logout_requested.emit()

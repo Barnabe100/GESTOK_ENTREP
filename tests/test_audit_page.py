@@ -64,10 +64,26 @@ def test_page_has_no_edit_or_delete_controls(qtbot, login_as) -> None:
 # -- permissions / licence ---------------------------------------------------------------
 
 
-def test_consultation_role_cannot_view_audit(qtbot, login_as) -> None:
-    """Consultation n'a pas AUDIT_VIEW (seule Administrateur l'a) : la page,
-    si elle était atteinte, n'affiche rien."""
+def test_consultation_role_can_view_audit_read_only(qtbot, login_as) -> None:
+    """Extension lecture seule (phase accès réseau) : Consultation a
+    désormais AUDIT_VIEW et voit le journal, sans aucun contrôle
+    d'écriture (déjà garanti par test_page_has_no_edit_or_delete_controls,
+    valable pour tous les rôles ayant AUDIT_VIEW)."""
     stack, _ = login_as("Consultation")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.table.rowCount() >= 1  # au moins l'entrée LOGIN du login_as
+    assert not hasattr(page, "edit_button")
+    assert not hasattr(page, "delete_button")
+    assert not hasattr(page, "add_button")
+
+
+def test_role_without_audit_view_sees_empty_audit_page(qtbot, login_as) -> None:
+    """Vendeur n'a pas AUDIT_VIEW : la page, si elle était atteinte,
+    n'affiche rien (comportement précédemment vérifié avec Consultation,
+    qui a désormais AUDIT_VIEW — voir test ci-dessus)."""
+    stack, _ = login_as("Vendeur")
     page = _build_page(stack)
     qtbot.addWidget(page)
 

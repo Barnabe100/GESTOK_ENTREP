@@ -898,3 +898,216 @@ def test_operation_result_is_still_correctly_processed_after_a_blocked_close_att
 
     assert page.backup_now_button.isEnabled() is True
     assert page.history_table.rowCount() == 1
+
+
+# -- déconnexion automatique après inactivité (phase accès réseau/déconnexion -------
+# auto/permissions Consultant, point 2) ---------------------------------------------
+#
+# ``window._on_inactivity_timeout`` simule l'expiration du minuteur
+# d'inactivité (voir ``InactivityMonitor``) sans attendre le délai réel
+# (10 minutes par défaut) : la détection d'activité elle-même est testée
+# unitairement dans tests/test_inactivity_monitor.py.
+
+
+def test_inactivity_timeout_logs_out_exactly_like_the_logout_button(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+
+    window._on_inactivity_timeout()
+
+    assert stack.auth.is_authenticated is False
+
+
+def test_inactivity_timeout_emits_the_same_logout_signal_as_the_button(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+    received = {"n": 0}
+    window.logout_requested.connect(lambda: received.update(n=received["n"] + 1))
+
+    window._on_inactivity_timeout()
+
+    assert received["n"] == 1
+
+
+def test_inactivity_timeout_defers_instead_of_logging_out_during_an_active_background_task(
+    qtbot, login_as, tmp_path, monkeypatch
+) -> None:
+    """Jamais la boîte de dialogue bloquante de
+    ``_warn_if_background_task_active`` (destinée au clic explicite) lors
+    d'une expiration silencieuse : une opération protégée en cours ne
+    fait que reporter l'échéance, jamais déconnecter par-dessus elle
+    (même protection que pour le bouton Déconnexion, voir les tests du
+    scénario de plantage ci-dessus, mais sans jamais avertir l'utilisateur
+    puisque personne n'est nécessairement présent pour fermer la boîte)."""
+    stack, _ = login_as("Administrateur")
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00",
+        destination=str(tmp_path / "backups"), retention=10,
+    )
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+    page = _backups_page(window)
+    warnings = _capture_main_window_warnings(monkeypatch)
+
+    release = threading.Event()
+    original_create_backup = stack.backups.create_manual_backup
+
+    def _slow_backup():
+        release.wait(timeout=5)
+        return original_create_backup()
+
+    monkeypatch.setattr(stack.backups, "create_manual_backup", _slow_backup)
+
+    page._on_backup_now_clicked()
+    assert page.has_active_background_task() is True
+
+    window._on_inactivity_timeout()
+
+    assert warnings == [], "une déconnexion silencieuse ne doit jamais afficher de boîte de dialogue bloquante."
+    assert stack.auth.is_authenticated is True
+    assert page.has_active_background_task() is True
+    assert page._backup_task.is_running() is True
+    # Le report doit réellement reprogrammer une nouvelle échéance (le
+    # minuteur sous-jacent redémarre, jamais seulement désactivé) : sans
+    # intervention supplémentaire, une fois la tâche terminée, ce même
+    # minuteur redéclenchera lui-même une déconnexion — vérifié ci-dessous
+    # par un second appel manuel, qui simule exactement cette ré-expiration.
+    assert window._inactivity_monitor._timer.isActive() is True
+
+    release.set()
+    qtbot.waitUntil(lambda: page.has_active_background_task() is False, timeout=5000)
+
+    # Une fois l'opération réellement terminée, la déconnexion silencieuse
+    # fonctionne normalement (le minuteur d'inactivité a été reporté, pas
+    # désactivé — voir InactivityMonitor.start) : aucune session ne reste
+    # ouverte indéfiniment après la fin de la tâche protégée.
+    window._on_inactivity_timeout()
+    assert stack.auth.is_authenticated is False
+
+
+def test_inactivity_timeout_defers_instead_of_logging_out_while_a_modal_dialog_is_open(
+    qtbot, login_as
+) -> None:
+    """Revue finale — correctif « fenêtres secondaires » : contrairement au
+    clic manuel sur Déconnexion (bloqué par tout dialogue modal, qui
+    intercepte les interactions avec cette fenêtre), le minuteur
+    d'inactivité peut se déclencher pendant qu'un dialogue modal enfant de
+    ``MainWindow`` est affiché (ex. ``ChangePasswordDialog``). Vérifié
+    empiriquement : fermer la fenêtre dans ce cas ne fermerait jamais ce
+    dialogue (``QWidget.close()`` ne touche jamais un dialogue modal enfant
+    déjà en cours d'exécution) — il resterait flottant, visible et
+    pleinement interactif, agissant sur des services déjà déconnectés."""
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QDialog
+
+    stack, _ = login_as("Administrateur")
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+
+    modal = QDialog(window)
+    modal.setModal(True)
+    qtbot.addWidget(modal)
+
+    captured = {}
+
+    def _fire_timeout_while_modal_is_open() -> None:
+        window._on_inactivity_timeout()
+        captured["authenticated_during_modal"] = stack.auth.is_authenticated
+        modal.accept()  # referme le dialogue pour que exec() se termine.
+
+    QTimer.singleShot(0, _fire_timeout_while_modal_is_open)
+    modal.exec()
+
+    assert captured["authenticated_during_modal"] is True
+    assert stack.auth.is_authenticated is True  # toujours vrai une fois le dialogue refermé.
+
+    # Le minuteur a été reporté (jamais désactivé) : une fois le dialogue
+    # fermé, la déconnexion silencieuse fonctionne normalement.
+    window._on_inactivity_timeout()
+    assert stack.auth.is_authenticated is False
+
+
+def test_inactivity_timeout_never_erases_the_remembered_login(qtbot, login_as, tmp_path, monkeypatch) -> None:
+    """Point impératif du mandat : la déconnexion automatique ne doit
+    jamais effacer les identifiants mémorisés via « Se souvenir de moi »
+    — jamais confondue avec une déconnexion explicite qui voudrait
+    oublier l'utilisateur."""
+    from app.security.remembered_login import get_remembered_password, get_remembered_username, remember_login
+
+    class _FakeLoginCredentialVault:
+        def __init__(self) -> None:
+            self.passwords: dict[str, str] = {}
+
+        def get_password(self, profile_id: str) -> str | None:
+            return self.passwords.get(profile_id)
+
+        def set_password(self, profile_id: str, password: str) -> None:
+            self.passwords[profile_id] = password
+
+        def delete_password(self, profile_id: str) -> None:
+            self.passwords.pop(profile_id, None)
+
+    vault = _FakeLoginCredentialVault()
+    monkeypatch.setattr("app.security.remembered_login.get_login_credential_vault", lambda: vault)
+
+    stack, current_user = login_as("Administrateur")
+    remember_login(stack.settings.data_dir, current_user.username, "MotDePasse!23")
+
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+    window._on_inactivity_timeout()
+
+    assert get_remembered_username(stack.settings.data_dir) == current_user.username
+    assert get_remembered_password(stack.settings.data_dir, current_user.username) == "MotDePasse!23"
+
+
+def test_manual_logout_also_never_erases_the_remembered_login(qtbot, login_as, tmp_path, monkeypatch) -> None:
+    """Non-régression : même garantie pour le bouton Déconnexion
+    (comportement déjà existant, inchangé par la factorisation en
+    ``_perform_logout``)."""
+    from app.security.remembered_login import get_remembered_password, get_remembered_username, remember_login
+
+    class _FakeLoginCredentialVault:
+        def __init__(self) -> None:
+            self.passwords: dict[str, str] = {}
+
+        def get_password(self, profile_id: str) -> str | None:
+            return self.passwords.get(profile_id)
+
+        def set_password(self, profile_id: str, password: str) -> None:
+            self.passwords[profile_id] = password
+
+        def delete_password(self, profile_id: str) -> None:
+            self.passwords.pop(profile_id, None)
+
+    vault = _FakeLoginCredentialVault()
+    monkeypatch.setattr("app.security.remembered_login.get_login_credential_vault", lambda: vault)
+
+    stack, current_user = login_as("Administrateur")
+    remember_login(stack.settings.data_dir, current_user.username, "MotDePasse!23")
+
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+    window._on_logout_clicked()
+
+    assert get_remembered_username(stack.settings.data_dir) == current_user.username
+    assert get_remembered_password(stack.settings.data_dir, current_user.username) == "MotDePasse!23"
+
+
+def test_inactivity_timer_is_stopped_and_filter_removed_on_window_close(qtbot, login_as) -> None:
+    """Jamais de déclenchement possible après la fermeture de cette
+    fenêtre (même raisonnement que pour les minuteurs PostgreSQL
+    existants, voir closeEvent)."""
+    from PySide6.QtWidgets import QApplication
+
+    stack, _ = login_as("Administrateur")
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+    monitor = window._inactivity_monitor
+
+    window.close()
+
+    assert monitor._timer.isActive() is False
+    QApplication.instance().removeEventFilter(monitor)  # déjà retiré par closeEvent : ne doit jamais lever

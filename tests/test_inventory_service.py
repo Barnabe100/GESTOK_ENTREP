@@ -453,3 +453,23 @@ def test_create_and_update_inventory_are_audited(login_as) -> None:
         update_logs = session.query(AuditLog).filter_by(entite="inventaires", action="INVENTORY_UPDATE").all()
         assert len(create_logs) == 1
         assert len(update_logs) == 1
+
+
+# -- extension lecture seule du rôle Consultation (phase accès réseau) ----------------
+
+
+def test_consultation_can_view_inventories_but_not_create(login_as) -> None:
+    admin_stack, _ = login_as("Administrateur")
+    article = _make_article(admin_stack, stock_initial=Decimal("50"))
+    inv = admin_stack.inventory.create_inventory(date(2026, 1, 1), [InventaireLigneInput(article.id, Decimal("48"))])
+
+    stack, _ = login_as("Consultation")
+
+    assert stack.inventory.list_inventories() != []
+    assert stack.inventory.get_inventory(inv.id) is not None
+    with pytest.raises(PermissionDeniedError):
+        stack.inventory.create_inventory(date(2026, 1, 1), [])
+    with pytest.raises(PermissionDeniedError):
+        stack.inventory.update_inventory(inv.id, date(2026, 1, 1), [])
+    with pytest.raises(PermissionDeniedError):
+        stack.inventory.validate_inventory(inv.id)

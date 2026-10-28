@@ -38,10 +38,24 @@ def test_list_audits_denied_for_gestionnaire_stock(login_as) -> None:
 
 
 def test_list_entites_denied_for_role_without_audit_view(login_as) -> None:
-    stack, _ = login_as("Consultation")
+    # Vendeur n'a pas AUDIT_VIEW (Consultation l'a désormais — voir
+    # test_consultation_can_view_audit_log ci-dessous, extension lecture
+    # seule phase accès réseau).
+    stack, _ = login_as("Vendeur")
 
     with pytest.raises(PermissionDeniedError):
         stack.audit.list_entites()
+
+
+# -- extension lecture seule du rôle Consultation (phase accès réseau) ----------------
+
+
+def test_consultation_can_view_audit_log(login_as) -> None:
+    stack, _ = login_as("Consultation")
+
+    audits = stack.audit.list_audits()  # ne doit pas lever : AUDIT_VIEW désormais accordée
+    assert any(a.action == "LOGIN" for a in audits)
+    stack.audit.list_entites()  # idem
 
 
 # -- licence ---------------------------------------------------------------------------

@@ -1291,3 +1291,18 @@ def test_can_manage_sale_false_without_underlying_permission(login_as) -> None:
     sale = _sale_by(stack, article)
 
     assert stack.sales.can_manage_sale(sale.id, "SALE_CANCEL") is False  # pas la permission RBAC
+
+
+# -- extension lecture seule du rôle Consultation (phase accès réseau) ----------------
+
+
+def test_consultation_can_view_sales_but_not_create(login_as) -> None:
+    admin_stack, _ = login_as("Administrateur")
+    article = _make_article(admin_stack, stock_initial=Decimal("50"))
+    _sale_by(admin_stack, article)
+
+    stack, _ = login_as("Consultation")
+
+    assert stack.sales.list_sales() != []
+    with pytest.raises(PermissionDeniedError):
+        stack.sales.create_sale(date.today(), [])

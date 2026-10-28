@@ -503,3 +503,14 @@ def test_set_active_non_admin_role_with_user_activate_cannot_deactivate_last_act
 
         admin_a_row = session.get(User, admin_a.id)
         assert admin_a_row.actif is True
+
+
+# -- extension lecture seule du rôle Consultation (phase accès réseau) ----------------
+
+
+def test_consultation_can_view_users_but_not_create(login_as) -> None:
+    stack, _ = login_as("Consultation")
+
+    assert stack.users.list_users() != []  # au moins l'utilisateur Consultation lui-même
+    with pytest.raises(PermissionDeniedError):
+        stack.users.create_user("intrus", "MotDePasse!23", [1])

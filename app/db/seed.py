@@ -165,6 +165,10 @@ _CONSULTATION_CODES = [
     "STOCK_MOVEMENT_VIEW",
     "REPORT_VIEW",
     "LOCATION_VIEW",
+    # Extension lecture seule (phase accès hors réseau/déconnexion/permissions
+    # Consultant) : consultation des ventes, utilisateurs, inventaires et
+    # journal d'audit, sans aucun code de création/modification/validation.
+    "SALE_VIEW", "USER_VIEW", "INVENTORY_VIEW", "AUDIT_VIEW",
 ]
 
 # nom du rôle -> codes de permission (Administrateur = toutes, calculé)

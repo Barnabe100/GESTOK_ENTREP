@@ -696,14 +696,17 @@ def test_end_date_cannot_be_set_below_start_date(qtbot, login_as) -> None:
 
 
 def _strip_report_view_from_consultation(stack) -> None:
-    """Retire REPORT_VIEW du rôle Consultation (qui n'a pas SALE_VIEW par
-    défaut, voir seed.py) pour obtenir, le temps de ce test, un rôle sans
-    aucune des deux voies d'accès au domaine Ventes du Dashboard —
-    modification en base comme le ferait un administrateur réel depuis
-    l'écran Rôles, jamais du seed lui-même ni de la matrice de référence."""
+    """Retire REPORT_VIEW et SALE_VIEW du rôle Consultation (qui a désormais
+    SALE_VIEW par défaut, voir seed.py — extension lecture seule phase accès
+    réseau) pour obtenir, le temps de ce test, un rôle sans aucune des deux
+    voies d'accès au domaine Ventes du Dashboard — modification en base
+    comme le ferait un administrateur réel depuis l'écran Rôles, jamais du
+    seed lui-même ni de la matrice de référence."""
     role_id = next(r.id for r in stack.roles.list_roles() if r.nom == "Consultation")
     current_codes = stack.roles.get_role_permissions(role_id)
-    stack.roles.update_role_permissions(role_id, [c for c in current_codes if c != "REPORT_VIEW"])
+    stack.roles.update_role_permissions(
+        role_id, [c for c in current_codes if c not in ("REPORT_VIEW", "SALE_VIEW")]
+    )
 
 
 def test_q_sales_chart_shows_permission_message_when_sale_view_missing(qtbot, login_as) -> None:
@@ -713,7 +716,7 @@ def test_q_sales_chart_shows_permission_message_when_sale_view_missing(qtbot, lo
     admin_stack, _ = login_as("Administrateur")
     _strip_report_view_from_consultation(admin_stack)
 
-    stack, _ = login_as("Consultation")  # ni SALE_VIEW ni REPORT_VIEW (retiré ci-dessus)
+    stack, _ = login_as("Consultation")  # ni SALE_VIEW ni REPORT_VIEW (retirés ci-dessus)
     page = _build_page(stack)
     qtbot.addWidget(page)
 

@@ -126,12 +126,13 @@ def test_backup_step_completed_after_a_manual_backup(qtbot, login_as, tmp_path) 
 # -- permissions ----------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("role_name", ["Gestionnaire de stock", "Vendeur", "Consultation"])
+@pytest.mark.parametrize("role_name", ["Gestionnaire de stock", "Vendeur"])
 def test_no_step_shown_for_roles_without_the_relevant_permissions(qtbot, login_as, role_name: str) -> None:
     """Aucune des permissions requises (SETTINGS_VIEW/USER_VIEW/LICENSE_VIEW/
     BACKUP_VIEW) n'est accordée à ces rôles : aucune étape ne doit
     apparaître, et aucune méthode gardée ne doit être appelée (voir test
-    dédié ci-dessous)."""
+    dédié ci-dessous). Consultation a désormais USER_VIEW (extension
+    lecture seule, phase accès réseau) : voir le test dédié ci-dessous."""
     stack, _ = login_as(role_name)
     dialog = _build_dialog(stack)
     qtbot.addWidget(dialog)
@@ -140,6 +141,20 @@ def test_no_step_shown_for_roles_without_the_relevant_permissions(qtbot, login_a
     # fermable) ; aucun bouton d'étape (« Configurer »/« Ouvrir ») ne l'est.
     step_buttons = [b for b in dialog.findChildren(QPushButton) if b.text() != "Fermer"]
     assert step_buttons == []
+
+
+def test_only_the_users_step_is_shown_for_consultation(qtbot, login_as) -> None:
+    """Consultation a désormais USER_VIEW mais toujours ni SETTINGS_VIEW,
+    ni LICENSE_VIEW, ni BACKUP_VIEW : seule l'étape « Utilisateurs »
+    apparaît (en lecture — UsersPage masque déjà ses boutons d'écriture
+    pour ce rôle, voir tests/test_users_page.py)."""
+    stack, _ = login_as("Consultation")
+    dialog = _build_dialog(stack)
+    qtbot.addWidget(dialog)
+
+    step_buttons = [b for b in dialog.findChildren(QPushButton) if b.text() != "Fermer"]
+    assert len(step_buttons) == 1
+    assert "Utilisateurs" in _all_text(dialog)
 
 
 @pytest.mark.parametrize(

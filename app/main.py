@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import os
 import sys
+from typing import Optional
 
 from PySide6.QtCore import QEventLoop
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
+from sqlalchemy.exc import OperationalError
 
 from app.config import get_settings
 from app.config.db_config_store import default_db_config_path, promote_pending_to_active
@@ -23,6 +25,7 @@ from app.utils.logging_config import get_logger, setup_logging
 from app.version import APP_NAME, __version__
 from app.views.change_password_dialog import ChangePasswordDialog
 from app.views.database_setup_wizard import DatabaseSetupWizard
+from app.views.database_unreachable_dialog import DatabaseUnreachableDialog
 from app.views.loading_overlay import StartupSplash
 from app.views.login_window import LoginWindow
 from app.views.main_window import MainWindow
@@ -147,6 +150,70 @@ def _show_fatal_startup_error(exc: Exception) -> None:
     box.exec()
 
 
+def _recover_from_startup_failure(exc: Exception) -> Optional[Exception]:
+    """Phase accès réseau, point 1 : si :func:`bootstrap` échoue parce que
+    le moteur configuré est PostgreSQL et que le serveur est injoignable
+    (ou mal configuré), offre un chemin de correction — écran de
+    configuration atteignable, correction des paramètres, test, nouvel
+    essai — au lieu de quitter immédiatement l'application.
+
+    Ne s'applique jamais à un déploiement scripté
+    (``STOCKMANAGER_DB_BACKEND`` défini : aucun fichier de configuration
+    externe à corriger, voir ``apply_pending_db_config_if_any``) ni à
+    SQLite (base locale, pas de recours réseau applicable). Ne s'applique
+    non plus jamais à une exception qui n'est pas une
+    ``sqlalchemy.exc.OperationalError`` (voir ``app.db.session`` : c'est la
+    convention déjà établie dans tout ce projet pour distinguer une
+    connexion impossible — hôte injoignable, authentification refusée,
+    base inexistante — d'une autre cause, notamment une migration Alembic
+    qui échoue réellement sur un schéma déjà connecté). Une erreur de
+    migration (``ProgrammingError``, ``IntegrityError``, bug Python dans un
+    script de migration, etc.) n'a aucune chance d'être corrigée en
+    modifiant l'hôte/le port/les identifiants : la présenter comme une
+    indisponibilité réseau serait trompeur et retarderait le vrai
+    diagnostic. Dans tous ces cas, retourne ``exc`` immédiatement et
+    l'appelant le traite comme fatal, exactement comme avant ce lot.
+
+    Retourne ``None`` si l'utilisateur a obtenu, après une ou plusieurs
+    corrections, un démarrage réussi (``bootstrap()`` n'a plus levé) ; sinon
+    la plus récente exception rencontrée (celle à afficher), que
+    l'utilisateur ait renoncé (bouton Quitter, fermeture du dialogue) ou
+    qu'une nouvelle tentative ait échoué à son tour — pour une tentative
+    suivante aussi, seule une nouvelle ``OperationalError`` fait boucler le
+    dialogue ; toute autre exception devient immédiatement la valeur
+    retournée, sans nouvel affichage du dialogue de correction réseau."""
+    if "STOCKMANAGER_DB_BACKEND" in os.environ:
+        return exc
+    if not isinstance(exc, OperationalError):
+        return exc
+    try:
+        settings = get_settings()
+    except Exception:
+        return exc
+    if settings.db_backend != "postgresql":
+        return exc
+
+    current_failure = exc
+    while True:
+        dialog = DatabaseUnreachableDialog(settings, current_failure)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return current_failure
+
+        get_settings.cache_clear()
+        try:
+            bootstrap()
+        except Exception as retry_exc:  # noqa: BLE001 - même frontière que main()
+            if not isinstance(retry_exc, OperationalError):
+                return retry_exc
+            current_failure = retry_exc
+            try:
+                settings = get_settings()
+            except Exception:
+                return current_failure
+            continue
+        return None
+
+
 def run_session(services: ServiceRegistry) -> bool:
     """Exécute un cycle connexion -> fenêtre principale -> déconnexion.
 
@@ -205,8 +272,10 @@ def main() -> int:
         maybe_show_first_run_wizard()
         bootstrap()
     except Exception as exc:  # noqa: BLE001 - frontière explicite : voir _show_fatal_startup_error
-        _show_fatal_startup_error(exc)
-        return 1
+        unresolved_failure = _recover_from_startup_failure(exc)
+        if unresolved_failure is not None:
+            _show_fatal_startup_error(unresolved_failure)
+            return 1
 
     try:
         app.setStyleSheet(load_stylesheet())
