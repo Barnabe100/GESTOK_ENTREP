@@ -93,6 +93,7 @@ from typing import Optional
 from app.models import Base
 from app.services.backups.backup_engine import BackupFileInfo
 from app.utils.logging_config import get_logger
+from app.utils.subprocess_windows import no_console_window_kwargs
 
 logger = get_logger("services.backups.postgresql")
 
@@ -284,7 +285,10 @@ def _local_tool_version(tool: str) -> str:
     un format d'erreur stable entre versions, et les versions serveur
     supportées évoluent dans le temps)."""
     try:
-        result = subprocess.run([tool, "--version"], capture_output=True, text=True, timeout=5, check=False)
+        result = subprocess.run(
+            [tool, "--version"], capture_output=True, text=True, timeout=5, check=False,
+            **no_console_window_kwargs(),
+        )
     except (subprocess.TimeoutExpired, OSError):
         return "(version locale indisponible)"
     return (result.stdout or result.stderr or "").strip() or "(version locale indisponible)"
@@ -331,6 +335,7 @@ def _run(
     try:
         return subprocess.run(
             args, env=env, capture_output=True, text=True, timeout=timeout_seconds, check=False,
+            **no_console_window_kwargs(),
         )
     except subprocess.TimeoutExpired as exc:
         # exc.stdout/exc.stderr peuvent porter une sortie partielle déjà
@@ -435,6 +440,7 @@ def verify_backup_file(
         result = subprocess.run(
             [str(pg_restore_path), "--list", str(file_path)],
             capture_output=True, text=True, timeout=timeout_seconds, check=False,
+            **no_console_window_kwargs(),
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
         return BackupVerification(False, False, False, None, [f"Lecture de l'archive impossible : {exc}"])
@@ -482,6 +488,7 @@ def get_embedded_alembic_version(
         result = subprocess.run(
             [str(pg_restore_path), "--data-only", "--table=alembic_version", "--file=-", str(file_path)],
             capture_output=True, text=True, timeout=timeout_seconds, check=False,
+            **no_console_window_kwargs(),
         )
     except (subprocess.TimeoutExpired, OSError):
         return None

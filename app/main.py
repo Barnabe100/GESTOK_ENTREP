@@ -23,6 +23,7 @@ from app.utils.logging_config import get_logger, setup_logging
 from app.version import APP_NAME, __version__
 from app.views.change_password_dialog import ChangePasswordDialog
 from app.views.database_setup_wizard import DatabaseSetupWizard
+from app.views.loading_overlay import StartupSplash
 from app.views.login_window import LoginWindow
 from app.views.main_window import MainWindow
 
@@ -152,7 +153,7 @@ def run_session(services: ServiceRegistry) -> bool:
     Retourne True si l'utilisateur s'est déconnecté (relancer un nouveau
     cycle), False s'il a fermé la fenêtre de connexion (quitter l'application).
     """
-    login_window = LoginWindow(services.auth, services.account_recovery)
+    login_window = LoginWindow(services.auth, services.account_recovery, services.settings.data_dir)
     if login_window.exec() != QDialog.DialogCode.Accepted:
         return False
 
@@ -163,7 +164,21 @@ def run_session(services: ServiceRegistry) -> bool:
             services.auth.logout()
             return True
 
-    window = MainWindow(services)
+    # Phase amélioration UX, point 3 : entre la fermeture de la fenêtre de
+    # connexion (ci-dessus) et l'affichage de la fenêtre principale,
+    # MainWindow.__init__ construit toutes les pages (chacune avec son
+    # propre chargement de données) — plusieurs secondes sans aucune
+    # fenêtre visible, perçues comme un gel de l'application. Une fenêtre
+    # de transition comble cet écart ; jamais de QThread autour de cette
+    # construction (sessions SQLAlchemy ouvertes par chaque page sur le
+    # thread appelant, comme partout ailleurs dans l'application).
+    splash = StartupSplash("Chargement des données…")
+    splash.show()
+    QApplication.processEvents()
+    try:
+        window = MainWindow(services)
+    finally:
+        splash.close()
 
     loop = QEventLoop()
     window.logout_requested.connect(loop.quit)

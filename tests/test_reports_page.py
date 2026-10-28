@@ -568,3 +568,59 @@ def test_period_report_transmits_selected_dates_to_service(qtbot, login_as) -> N
 
     assert page.table.rowCount() == 1
     assert page.table.item(0, 0).text() == recent_entry.numero
+
+
+# -- correctif revue finale (Point 3) : voile non affiché pendant la construction --
+#
+# ReportsPage.__init__ déclenche un premier ``refresh()`` automatique
+# (sélection du rapport par défaut) avant même que la page ne soit visible
+# — potentiellement pendant que MainWindow construit toutes ses pages au
+# démarrage (voir la revue de ce lot). Afficher le voile à ce moment précis
+# n'apporte rien à l'utilisateur et ajoute un appel ``processEvents()``
+# superflu pendant cette construction déjà sensible.
+
+
+def test_overlay_is_not_shown_during_the_automatic_construction_time_refresh(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    calls = []
+    monkeypatch.setattr(
+        "app.views.pages.reports_page.LoadingOverlay.show_with_message",
+        lambda self, message: calls.append(message),
+    )
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert calls == []
+
+
+def test_overlay_is_shown_on_an_explicit_refresh_after_construction(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    calls = []
+    page._loading_overlay.show_with_message = lambda message: calls.append(message)
+    page._loading_overlay.hide_overlay = lambda: calls.append("hide")
+
+    page.refresh()
+
+    assert calls == ["Génération du rapport…", "hide"]
+
+
+def test_overlay_is_shown_when_changing_the_report_type_after_construction(qtbot, login_as) -> None:
+    """Le changement de type de rapport passe par le signal Qt
+    ``currentIndexChanged`` (jamais un appel direct) : vérifie que
+    ``show_loading`` reprend sa valeur par défaut (``True``) une fois la
+    page construite, et non la valeur ``False`` utilisée une seule fois à
+    la construction."""
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    calls = []
+    page._loading_overlay.show_with_message = lambda message: calls.append(message)
+
+    page.report_combo.setCurrentText("Stock faible")
+
+    assert calls == ["Génération du rapport…"]

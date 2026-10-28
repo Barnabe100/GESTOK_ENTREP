@@ -2,10 +2,15 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
+from PySide6.QtWidgets import QMessageBox
 
 from app.models.enums import ModeGestionArticle, StatutLocation
 from app.services.rentals.location_service import LocationLigneInput
-from app.views.pages.locations_page import LocationsPage
+from app.views.pages.locations_page import (
+    _CAISSE_QUANTITY_COLUMN,
+    _CAISSE_TARIF_COLUMN,
+    LocationsPage,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -645,3 +650,282 @@ def test_not_read_only_by_default_preserves_existing_behaviour(qtbot, login_as) 
     qtbot.addWidget(page)
 
     assert page.add_button.isEnabled() is True
+
+
+# -- Phase amélioration UX, point 2 : écran de saisie plein format -----------
+
+
+def test_add_opens_caisse_view_with_articles_visible_immediately(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    _make_rental_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    page._on_add_clicked()
+
+    assert page._view_stack.currentIndex() == 1
+    assert page.caisse_search_results.count() == 1
+
+
+def test_caisse_search_filters_results_by_text(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    _make_rental_article(stack, reference="ART-LOC-A")
+    _make_rental_article(stack, reference="ART-LOC-B")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+
+    page.caisse_search_edit.setText("ART-LOC-A")
+
+    assert page.caisse_search_results.count() == 1
+
+
+def test_caisse_search_result_activation_adds_line(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack, tarif_jour=Decimal("500"))
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+
+    item = page.caisse_search_results.item(0)
+    page._on_caisse_search_result_activated(item)
+
+    assert len(page._caisse_lines) == 1
+    assert page._caisse_lines[0]["article_id"] == article.id
+    assert page.caisse_lines_table.rowCount() == 1
+
+
+def test_caisse_can_add_multiple_distinct_articles(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article_a = _make_rental_article(stack, reference="ART-LOC-A")
+    article_b = _make_rental_article(stack, reference="ART-LOC-B")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+
+    page._add_caisse_line(article_a.id, "A", Decimal("1"), Decimal("500"))
+    page._add_caisse_line(article_b.id, "B", Decimal("2"), Decimal("300"))
+
+    assert len(page._caisse_lines) == 2
+    assert page.caisse_lines_table.rowCount() == 2
+
+
+def test_caisse_scan_adds_line_for_location_mode_article(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    stack.articles.update_article(
+        article.id, article.reference, article.designation, article.category_id, article.unite,
+        article.prix_achat, article.prix_vente, article.stock_min, code_barres="1234567890",
+    )
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+
+    page.caisse_scan_edit.setText("1234567890")
+    page._on_caisse_scan_entered()
+
+    assert len(page._caisse_lines) == 1
+    assert page._caisse_lines[0]["article_id"] == article.id
+
+
+def test_caisse_scan_rejects_sale_mode_article(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    category = stack.categories.create_category("Cat-vente")
+    sale_article = stack.articles.create_article(
+        "ART-VENTE", "Article de vente", category.id, "unité", Decimal("100"), Decimal("150"), Decimal("0"),
+        stock_initial=Decimal("10"),
+    )
+    stack.articles.update_article(
+        sale_article.id, sale_article.reference, sale_article.designation, sale_article.category_id,
+        sale_article.unite, sale_article.prix_achat, sale_article.prix_vente, sale_article.stock_min,
+        code_barres="9999999999",
+    )
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+
+    page.caisse_scan_edit.setText("9999999999")
+    page._on_caisse_scan_entered()
+
+    assert page._caisse_lines == []
+
+
+def test_caisse_remove_line_clears_cart(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+    page._add_caisse_line(article.id, "A", Decimal("1"), Decimal("500"))
+    page.caisse_lines_table.selectRow(0)
+
+    page._on_caisse_remove_line_clicked()
+
+    assert page._caisse_lines == []
+    assert page.caisse_lines_table.rowCount() == 0
+
+
+def test_caisse_line_quantity_and_tarif_are_editable_and_update_estimate(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+    page._add_caisse_line(article.id, "A", Decimal("1"), Decimal("500"))
+
+    page.caisse_lines_table.item(0, _CAISSE_QUANTITY_COLUMN).setText("3")
+    page.caisse_lines_table.item(0, _CAISSE_TARIF_COLUMN).setText("600")
+
+    assert page._caisse_lines[0]["quantite"] == Decimal("3")
+    assert page._caisse_lines[0]["tarif_jour"] == Decimal("600")
+
+
+def test_caisse_line_rejects_invalid_quantity_without_changing_the_line(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+    page._add_caisse_line(article.id, "A", Decimal("1"), Decimal("500"))
+
+    page.caisse_lines_table.item(0, _CAISSE_QUANTITY_COLUMN).setText("0")
+
+    assert page._caisse_lines[0]["quantite"] == Decimal("1")
+    assert page.caisse_error_label.text() != ""
+
+
+def test_caisse_estimate_is_sum_of_tarif_times_quantite_never_a_real_total(qtbot, login_as) -> None:
+    """Point 2 : jamais de « total facturé » fabriqué à la création — seule
+    une estimation (tarif × quantité) explicitement libellée comme telle."""
+    stack, _ = login_as("Administrateur")
+    article_a = _make_rental_article(stack, reference="ART-LOC-A")
+    article_b = _make_rental_article(stack, reference="ART-LOC-B")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+
+    page._add_caisse_line(article_a.id, "A", Decimal("2"), Decimal("500"))
+    page._add_caisse_line(article_b.id, "B", Decimal("3"), Decimal("100"))
+
+    assert page._caisse_estimate_total() == Decimal("1300")
+
+
+def test_caisse_save_draft_persists_location_and_returns_to_list(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    client = _make_client(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+    page.caisse_client_combo.setCurrentIndex(page.caisse_client_combo.findData(client.id))
+    page._add_caisse_line(article.id, "A", Decimal("2"), Decimal("500"))
+
+    page._on_caisse_save_draft_clicked()
+
+    assert page._view_stack.currentIndex() == 0
+    created = stack.rentals.list_locations()[0]
+    assert created.statut == StatutLocation.BROUILLON
+    assert created.client_id == client.id
+
+
+def test_caisse_validate_confirms_location(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+    page._add_caisse_line(article.id, "A", Decimal("1"), Decimal("500"))
+
+    page._on_caisse_validate_clicked()
+
+    created = stack.rentals.list_locations()[0]
+    assert created.statut == StatutLocation.CONFIRMEE
+
+
+def test_caisse_edit_prefills_existing_lines(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack, tarif_jour=Decimal("500"))
+    client = _make_client(stack)
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("4"))]
+    )
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page.refresh()
+    page.table.selectRow(0)
+
+    page._on_edit_clicked()
+
+    assert page._view_stack.currentIndex() == 1
+    assert len(page._caisse_lines) == 1
+    assert page._caisse_lines[0]["quantite"] == Decimal("4")
+
+
+def test_caisse_back_without_changes_needs_no_confirmation(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+
+    called = {"confirm": False}
+    monkeypatch.setattr(
+        "app.views.pages.locations_page.QMessageBox.question",
+        lambda *a, **k: called.update(confirm=True) or QMessageBox.StandardButton.Yes,
+    )
+
+    page._on_caisse_back_clicked()
+
+    assert called["confirm"] is False
+    assert page._view_stack.currentIndex() == 0
+
+
+def test_caisse_back_with_unsaved_changes_asks_for_confirmation(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+    page._add_caisse_line(article.id, "A", Decimal("1"), Decimal("500"))
+
+    monkeypatch.setattr(
+        "app.views.common.QMessageBox.question", lambda *a, **k: QMessageBox.StandardButton.No
+    )
+
+    page._on_caisse_back_clicked()
+
+    # Annulé : la caisse reste ouverte, rien n'est perdu.
+    assert page._view_stack.currentIndex() == 1
+    assert len(page._caisse_lines) == 1
+
+
+def test_confirm_can_leave_hook_matches_back_button_behaviour(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+    page._add_caisse_line(article.id, "A", Decimal("1"), Decimal("500"))
+
+    monkeypatch.setattr(
+        "app.views.common.QMessageBox.question", lambda *a, **k: QMessageBox.StandardButton.Yes
+    )
+
+    assert page.confirm_can_leave() is True
+
+
+def test_reopening_existing_draft_unchanged_has_no_unsaved_changes(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    client = _make_client(stack)
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("4"))]
+    )
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page.refresh()
+    page.table.selectRow(0)
+    page._on_edit_clicked()
+
+    assert page._caisse_has_unsaved_changes() is False

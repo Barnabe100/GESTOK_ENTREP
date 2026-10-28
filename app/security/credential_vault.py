@@ -1,4 +1,15 @@
-"""Coffre d'identifiants pour le mot de passe PostgreSQL (Lot D).
+"""Coffre d'identifiants pour le mot de passe PostgreSQL (Lot D) et, depuis
+la phase « amélioration UX » (point 1, « Se souvenir de moi »), pour les
+identifiants de connexion applicative (utilisateur StockManager) — deux
+domaines de secrets **jamais mélangés** : chacun a son propre nom de
+« service » ``keyring`` (voir :data:`_KEYRING_SERVICE_NAME` et
+:data:`_LOGIN_KEYRING_SERVICE_NAME`), donc son propre espace d'entrées dans
+le coffre Windows, même mécanisme sous-jacent (``WindowsCredentialVault``,
+désormais paramétrée par le nom de service), jamais la même instance ni le
+même ``profile_id``. ``get_credential_vault()`` (PostgreSQL) et
+``get_login_credential_vault()`` (connexion utilisateur) restent deux
+points d'entrée distincts — aucun appelant ne peut, par erreur, lire ou
+écrire un secret de l'autre domaine.
 
 Contrat de sécurité (non négociable, voir le mandat de ce lot) :
 
@@ -47,12 +58,12 @@ from app.utils.logging_config import get_logger
 
 logger = get_logger("security.credential_vault")
 
-# Nom de « service » keyring (regroupe toutes les entrées StockManager dans
-# le coffre, sans jamais les confondre avec un autre logiciel) — jamais
-# modifié après une première version publiée : en changer casserait la
-# correspondance avec les ``credential_key`` déjà enregistrés sur les
-# postes existants.
+# Noms de « service » keyring — un espace distinct par domaine de secret,
+# jamais modifiés après une première version publiée : en changer casserait
+# la correspondance avec les entrées déjà enregistrées sur les postes
+# existants.
 _KEYRING_SERVICE_NAME = "StockManager Desktop - PostgreSQL"
+_LOGIN_KEYRING_SERVICE_NAME = "StockManager Desktop - Connexion utilisateur"
 
 
 @runtime_checkable
@@ -118,12 +129,20 @@ class WindowsCredentialVault:
     via ``keyring`` — n'accepte de fonctionner qu'avec le backend
     ``WinVaultKeyring`` réellement actif, vérifié à chaque opération (jamais
     seulement à la construction : un coffre déjà ouvert pourrait devenir
-    indisponible entre deux appels, ex. service Windows arrêté)."""
+    indisponible entre deux appels, ex. service Windows arrêté).
+
+    ``service_name`` isole les entrées d'un domaine de secret des autres
+    (voir la docstring de module) — jamais partagé entre
+    :func:`get_credential_vault` (PostgreSQL) et
+    :func:`get_login_credential_vault` (connexion utilisateur)."""
+
+    def __init__(self, service_name: str) -> None:
+        self._service_name = service_name
 
     def get_password(self, profile_id: str) -> Optional[str]:
         keyring = _verified_windows_keyring_backend()
         try:
-            return keyring.get_password(_KEYRING_SERVICE_NAME, profile_id)
+            return keyring.get_password(self._service_name, profile_id)
         except Exception as exc:
             # Jamais le mot de passe (il n'a pas encore été résolu ici) ni
             # aucun détail de bas niveau potentiellement sensible dans le
@@ -139,7 +158,7 @@ class WindowsCredentialVault:
     def set_password(self, profile_id: str, password: str) -> None:
         keyring = _verified_windows_keyring_backend()
         try:
-            keyring.set_password(_KEYRING_SERVICE_NAME, profile_id, password)
+            keyring.set_password(self._service_name, profile_id, password)
         except Exception as exc:
             logger.error("Échec d'écriture du coffre d'identifiants pour le profil %r : %s", profile_id, exc)
             raise CredentialVaultUnavailableError(
@@ -151,7 +170,7 @@ class WindowsCredentialVault:
     def delete_password(self, profile_id: str) -> None:
         keyring = _verified_windows_keyring_backend()
         try:
-            keyring.delete_password(_KEYRING_SERVICE_NAME, profile_id)
+            keyring.delete_password(self._service_name, profile_id)
         except keyring.errors.PasswordDeleteError:
             # Rien n'était enregistré pour ce profil : pas une erreur (voir
             # contrat de l'interface CredentialVault.delete_password).
@@ -165,18 +184,42 @@ class WindowsCredentialVault:
             ) from exc
 
 
+def _windows_only_vault(service_name: str, unavailable_hint: str) -> CredentialVault:
+    """Factorise la décision par plateforme, commune aux deux domaines de
+    secret (voir :func:`get_credential_vault`/:func:`get_login_credential_vault`) —
+    jamais un repli silencieux hors Windows."""
+    if sys.platform != "win32":
+        raise CredentialVaultUnavailableError(unavailable_hint)
+    return WindowsCredentialVault(service_name)
+
+
 def get_credential_vault() -> CredentialVault:
-    """Point d'entrée unique pour obtenir le coffre d'identifiants actif.
+    """Point d'entrée unique pour obtenir le coffre d'identifiants
+    PostgreSQL actif.
 
     Décision par plateforme, prise une fois, jamais un repli : hors
     Windows, aucun coffre n'est proposé — le développement/test Linux
     utilise exclusivement la variable d'environnement Lot A (voir
     ``PostgreSQLConnectionConfig.resolve_password``, jamais ce module)."""
-    if sys.platform != "win32":
-        raise CredentialVaultUnavailableError(
-            "Le coffre d'identifiants sécurisé n'est disponible que sous Windows. "
-            "En développement/test, utilisez la variable d'environnement "
-            "STOCKMANAGER_DB_PASSWORD (ou STOCKMANAGER_TEST_PG_PASSWORD pour les "
-            "tests PostgreSQL) plutôt qu'un profil associé à un credential_key."
-        )
-    return WindowsCredentialVault()
+    return _windows_only_vault(
+        _KEYRING_SERVICE_NAME,
+        "Le coffre d'identifiants sécurisé n'est disponible que sous Windows. "
+        "En développement/test, utilisez la variable d'environnement "
+        "STOCKMANAGER_DB_PASSWORD (ou STOCKMANAGER_TEST_PG_PASSWORD pour les "
+        "tests PostgreSQL) plutôt qu'un profil associé à un credential_key.",
+    )
+
+
+def get_login_credential_vault() -> CredentialVault:
+    """Point d'entrée unique pour obtenir le coffre d'identifiants de
+    connexion utilisateur actif (point 1, « Se souvenir de moi ») — jamais
+    le même coffre/espace que :func:`get_credential_vault` (voir la
+    docstring de module). L'appelant (``LoginWindow``) doit traiter
+    :class:`CredentialVaultUnavailableError` comme non bloquant : expliquer
+    le problème et continuer à permettre une connexion manuelle, jamais
+    interrompre l'authentification."""
+    return _windows_only_vault(
+        _LOGIN_KEYRING_SERVICE_NAME,
+        "Le coffre d'identifiants sécurisé n'est disponible que sous Windows — "
+        "l'option « Se souvenir de moi » ne peut pas être utilisée sur ce poste.",
+    )

@@ -1,6 +1,9 @@
+import threading
+
 import pytest
 from PySide6.QtWidgets import QMessageBox
 
+from app.utils.exceptions import AppError
 from app.views.pages.backups_page import BackupsPage
 
 
@@ -259,3 +262,180 @@ def test_run_reset_business_data_shows_error_on_backup_failure(qtbot, login_as, 
     result = page._run_reset_business_data()
 
     assert result is False
+
+
+# -- indicateur de chargement (phase amélioration UX, point 4) --------------------
+#
+# Correctif revue finale (Point 3) : ``_on_backup_now_clicked``/``_on_restore_clicked``
+# exécutent désormais l'appel au service dans un thread d'arrière-plan (voir
+# ``BackgroundTask``) — l'affichage du voile et la désactivation du bouton
+# restent synchrones (vérifiables immédiatement après l'appel), mais la
+# disparition du voile et le résultat n'arrivent qu'après la fin du thread,
+# d'où l'usage de ``qtbot.waitUntil`` ci-dessous plutôt qu'une assertion
+# immédiate.
+
+
+def test_backup_now_shows_overlay_immediately_then_hides_it_after_completion(qtbot, login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    stack.backups.update_config(auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(tmp_path / "backups"), retention=10)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    calls = []
+    page._loading_overlay.show_with_message = lambda message: calls.append(("show", message))
+    page._loading_overlay.hide_overlay = lambda: calls.append(("hide",))
+
+    page._on_backup_now_clicked()
+
+    # Le voile et la désactivation du bouton sont immédiats, avant même que
+    # le thread d'arrière-plan ait eu l'occasion de s'exécuter.
+    assert calls == [("show", "Sauvegarde en cours…")]
+    assert page.backup_now_button.isEnabled() is False
+
+    qtbot.waitUntil(lambda: ("hide",) in calls, timeout=5000)
+
+    assert calls == [("show", "Sauvegarde en cours…"), ("hide",)]
+    assert page.backup_now_button.isEnabled() is True
+    assert page.history_table.rowCount() == 1
+
+
+def test_backup_now_overlay_is_hidden_and_button_reenabled_even_on_failure(qtbot, login_as, monkeypatch) -> None:
+    """Le voile ne doit jamais masquer un échec, même levé depuis le thread
+    d'arrière-plan : il disparaît et le bouton redevient utilisable."""
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    monkeypatch.setattr(stack.backups, "create_manual_backup", lambda: (_ for _ in ()).throw(AppError("échec simulé")))
+
+    calls = []
+    page._loading_overlay.show_with_message = lambda message: calls.append(("show", message))
+    page._loading_overlay.hide_overlay = lambda: calls.append(("hide",))
+
+    page._on_backup_now_clicked()
+    qtbot.waitUntil(lambda: ("hide",) in calls, timeout=5000)
+
+    assert calls == [("show", "Sauvegarde en cours…"), ("hide",)]
+    assert page.backup_now_button.isEnabled() is True
+
+
+def test_backup_now_overlay_is_hidden_on_unexpected_non_app_error(qtbot, login_as, monkeypatch) -> None:
+    """Une exception inattendue (pas une ``AppError``) levée dans le thread
+    d'arrière-plan doit, elle aussi, toujours refermer le voile et
+    réactiver le bouton — jamais un voile bloqué indéfiniment."""
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    monkeypatch.setattr(stack.backups, "create_manual_backup", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    calls = []
+    page._loading_overlay.show_with_message = lambda message: calls.append(("show", message))
+    page._loading_overlay.hide_overlay = lambda: calls.append(("hide",))
+
+    page._on_backup_now_clicked()
+    qtbot.waitUntil(lambda: ("hide",) in calls, timeout=5000)
+
+    assert calls == [("show", "Sauvegarde en cours…"), ("hide",)]
+    assert page.backup_now_button.isEnabled() is True
+
+
+def test_backup_now_second_click_while_in_progress_is_ignored(qtbot, login_as, tmp_path, monkeypatch) -> None:
+    """Empêche un double lancement : un second clic pendant qu'une
+    sauvegarde est déjà en cours dans le thread d'arrière-plan ne doit
+    jamais démarrer une seconde opération."""
+    stack, _ = login_as("Administrateur")
+    stack.backups.update_config(auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(tmp_path / "backups"), retention=10)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    calls = []
+    page._loading_overlay.show_with_message = lambda message: calls.append(("show", message))
+    page._loading_overlay.hide_overlay = lambda: calls.append(("hide",))
+
+    release = threading.Event()
+    call_count = {"n": 0}
+    original_create_backup = stack.backups.create_manual_backup
+
+    def _slow_backup():
+        call_count["n"] += 1
+        release.wait(timeout=5)
+        return original_create_backup()
+
+    monkeypatch.setattr(stack.backups, "create_manual_backup", _slow_backup)
+
+    page._on_backup_now_clicked()
+    assert page.backup_now_button.isEnabled() is False
+
+    page._on_backup_now_clicked()  # second clic pendant l'opération en cours : doit être un no-op.
+
+    release.set()
+    qtbot.waitUntil(lambda: ("hide",) in calls, timeout=5000)
+
+    assert call_count["n"] == 1
+    assert page.backup_now_button.isEnabled() is True
+
+
+def test_restore_shows_overlay_immediately_then_hides_it_after_completion(qtbot, login_as, tmp_path, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    stack.backups.update_config(auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(tmp_path / "backups"), retention=10)
+    stack.backups.create_manual_backup()
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page.history_table.selectRow(0)
+
+    monkeypatch.setattr(
+        "app.views.common.QMessageBox.question", lambda *a, **k: QMessageBox.StandardButton.Yes
+    )
+    calls = []
+    page._loading_overlay.show_with_message = lambda message: calls.append(("show", message))
+    page._loading_overlay.hide_overlay = lambda: calls.append(("hide",))
+
+    page._on_restore_clicked()
+
+    assert calls == [("show", "Restauration en cours…")]
+    assert page.restore_button.isEnabled() is False
+
+    qtbot.waitUntil(lambda: ("hide",) in calls, timeout=5000)
+
+    assert calls == [("show", "Restauration en cours…"), ("hide",)]
+    assert page.restore_button.isEnabled() is True
+
+
+def test_restore_second_click_while_in_progress_is_ignored(qtbot, login_as, tmp_path, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    stack.backups.update_config(auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(tmp_path / "backups"), retention=10)
+    stack.backups.create_manual_backup()
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page.history_table.selectRow(0)
+
+    monkeypatch.setattr(
+        "app.views.common.QMessageBox.question", lambda *a, **k: QMessageBox.StandardButton.Yes
+    )
+    calls = []
+    page._loading_overlay.show_with_message = lambda message: calls.append(("show", message))
+    page._loading_overlay.hide_overlay = lambda: calls.append(("hide",))
+
+    release = threading.Event()
+    call_count = {"n": 0}
+    original_restore = stack.backups.restore_backup
+
+    def _slow_restore(path):
+        call_count["n"] += 1
+        release.wait(timeout=5)
+        return original_restore(path)
+
+    monkeypatch.setattr(stack.backups, "restore_backup", _slow_restore)
+
+    page._on_restore_clicked()
+    assert page.restore_button.isEnabled() is False
+
+    page._on_restore_clicked()  # second clic pendant l'opération en cours : doit être un no-op.
+
+    release.set()
+    qtbot.waitUntil(lambda: ("hide",) in calls, timeout=5000)
+
+    assert call_count["n"] == 1

@@ -25,6 +25,7 @@ from app.security.credential_vault import (
     CredentialVault,
     WindowsCredentialVault,
     get_credential_vault,
+    get_login_credential_vault,
 )
 from app.utils.exceptions import AppError, ConfigurationError, CredentialVaultUnavailableError
 
@@ -132,3 +133,49 @@ def test_resolve_password_still_uses_env_var_when_credential_key_is_none(
     config = PostgreSQLConnectionConfig(host="h", port=5432, database="d", username="u")
     assert config.credential_key is None
     assert config.resolve_password() == "s3cret-env"
+
+
+# -- coffre dédié à la connexion utilisateur (point 1, « Se souvenir de
+# moi ») — jamais le même coffre que PostgreSQL, voir la docstring de
+# module de app.security.credential_vault. Mêmes principes de test que
+# ci-dessus (aucune machine Windows disponible dans ce sandbox).
+
+
+def test_login_vault_unavailable_outside_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "platform", "linux")
+    with pytest.raises(CredentialVaultUnavailableError):
+        get_login_credential_vault()
+
+
+def test_get_login_credential_vault_returns_windows_vault_when_platform_is_windows(pretend_windows) -> None:
+    vault = get_login_credential_vault()
+    assert isinstance(vault, WindowsCredentialVault)
+    assert isinstance(vault, CredentialVault)
+
+
+def test_login_vault_rejects_non_windows_backend_never_stores_anything(pretend_windows) -> None:
+    vault = get_login_credential_vault()
+    with pytest.raises(CredentialVaultUnavailableError):
+        vault.set_password("utilisateur-1", "mot-de-passe-applicatif")
+
+
+def test_login_vault_rejection_message_never_contains_the_attempted_password(pretend_windows) -> None:
+    vault = get_login_credential_vault()
+    with pytest.raises(CredentialVaultUnavailableError) as exc_info:
+        vault.set_password("utilisateur-1", "mot-de-passe-tres-secret")
+    assert "mot-de-passe-tres-secret" not in str(exc_info.value)
+
+
+def test_login_vault_and_postgresql_vault_use_distinct_keyring_service_names(pretend_windows) -> None:
+    """Preuve directe de l'isolation (§ mandat : « ne jamais mémoriser un
+    mot de passe PostgreSQL ou un secret administrateur dans le cadre de
+    cette option ») : les deux coffres, même pour le même ``profile_id``,
+    s'adressent à des noms de service ``keyring`` différents — jamais le
+    même espace d'entrées."""
+    postgresql_vault = get_credential_vault()
+    login_vault = get_login_credential_vault()
+    assert isinstance(postgresql_vault, WindowsCredentialVault)
+    assert isinstance(login_vault, WindowsCredentialVault)
+    assert postgresql_vault._service_name != login_vault._service_name
+    assert "PostgreSQL" in postgresql_vault._service_name
+    assert "PostgreSQL" not in login_vault._service_name

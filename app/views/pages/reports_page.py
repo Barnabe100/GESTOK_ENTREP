@@ -34,6 +34,7 @@ from typing import Optional
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -59,6 +60,7 @@ from app.services.settings.company_settings_service import get_effective_currenc
 from app.utils.exceptions import AppError, ValidationError
 from app.utils.money import format_money, money_decimal_places
 from app.utils.quantity import format_quantity
+from app.views.loading_overlay import LoadingOverlay
 from app.views.optional_date_edit import OptionalDateEdit
 
 _REPORTS = [
@@ -158,6 +160,11 @@ class ReportsPage(QWidget):
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         layout.addWidget(self.table)
 
+        # Phase amélioration UX, point 3 : voile pendant la génération d'un
+        # rapport (déclenchée uniquement par un clic explicite — voir
+        # ``refresh``, jamais à chaque frappe dans un champ de filtre).
+        self._loading_overlay = LoadingOverlay(self)
+
         self.report_combo.currentIndexChanged.connect(self._on_report_changed)
         self.refresh_button.clicked.connect(self.refresh)
         self.reset_button.clicked.connect(self._on_reset_filters_clicked)
@@ -167,7 +174,11 @@ class ReportsPage(QWidget):
         self._reload_category_combo()
         self._reload_article_combo()
         self._reload_motif_combo()
-        self._on_report_changed(0)
+        # Correctif revue finale (Point 3) : ``show_loading=False`` — voir
+        # la docstring de ``refresh`` pour la justification (page pas
+        # encore visible, éventuellement construite par MainWindow pendant
+        # son propre démarrage).
+        self._on_report_changed(0, show_loading=False)
 
     def select_report_type(self, report_name: str) -> None:
         """Présélectionne un type de rapport — utilisé par le Dashboard pour
@@ -268,7 +279,7 @@ class ReportsPage(QWidget):
             for statut in StatutOperation:
                 self.statut_combo.addItem(_STATUT_OPERATION_LABELS.get(statut, statut.value), statut)
 
-    def _on_report_changed(self, _index: int) -> None:
+    def _on_report_changed(self, _index: int, *, show_loading: bool = True) -> None:
         report_name = self.report_combo.currentText()
         self._reload_statut_combo(report_name)
 
@@ -293,7 +304,7 @@ class ReportsPage(QWidget):
         ):
             widget.setVisible(visible)
 
-        self.refresh()
+        self.refresh(show_loading=show_loading)
 
     def _on_reset_filters_clicked(self) -> None:
         self.search_edit.clear()
@@ -314,9 +325,39 @@ class ReportsPage(QWidget):
 
     # -- rafraîchissement -------------------------------------------------------
 
-    def refresh(self) -> None:
+    def refresh(self, *, show_loading: bool = True) -> None:
+        """``show_loading=False`` uniquement pour l'appel automatique fait
+        par ``__init__`` (voir plus bas) : à ce moment, la page n'est pas
+        encore visible (elle peut même être construite par ``MainWindow``
+        pendant son propre démarrage, voir ``main_window.py``) — afficher
+        un voile et purger les évènements en attente n'y servirait à rien
+        et ajouterait, pendant cette construction déjà sensible, un appel
+        ``processEvents()`` de plus qu'il n'en faut (risque de réentrance
+        évité par défense en profondeur, voir la revue de ce lot).
+
+        Limite documentée (correctif revue finale, Point 3) : cette
+        méthode reste synchrone, jamais threadée — contrairement à
+        ``BackupsPage`` (voir ``BackgroundTask``), un rapport mélange
+        systématiquement une requête de service et le remplissage direct
+        du tableau (``_set_table``, un ``QWidget``) dans la même méthode
+        ``_refresh_*`` ; les séparer proprement toucherait les neuf types
+        de rapport pour un gain incertain (une requête de rapport reste du
+        même ordre de grandeur que n'importe quel autre rafraîchissement
+        de liste déjà synchrone dans l'application — Locations, Ventes,
+        etc.). Le voile affiché ci-dessous lors d'un rafraîchissement
+        explicite (clic sur « Actualiser », changement de filtre) reste
+        donc un message utile mais, comme avant ce correctif, ne garantit
+        une animation réellement continue que pour une requête courte ;
+        sur un très gros jeu de données, seul un correctif identique à
+        celui de ``BackupsPage`` (service exécuté dans un ``BackgroundTask``,
+        résultat déjà calculé transmis à ``_set_table`` sur le thread
+        graphique) lèverait cette limite — à faire si un besoin réel
+        apparaît, pas par anticipation."""
         report_name = self.report_combo.currentText()
         self.summary_label.setText("")
+        if show_loading:
+            self._loading_overlay.show_with_message("Génération du rapport…")
+            QApplication.processEvents()
         try:
             dispatch = {
                 "État du stock": self._refresh_stock_state,
@@ -335,6 +376,9 @@ class ReportsPage(QWidget):
             self.table.setColumnCount(0)
             self._current_headers, self._current_rows_as_text = [], []
             QMessageBox.warning(self, "Rapport indisponible", str(exc))
+        finally:
+            if show_loading:
+                self._loading_overlay.hide_overlay()
 
     def _set_table(
         self,

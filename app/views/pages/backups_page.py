@@ -37,8 +37,10 @@ from app.services.auth.permission_service import PermissionService
 from app.services.backups.backup_service import BackupConfig, BackupService, FREQUENCY_DAILY, FREQUENCY_WEEKLY
 from app.services.system.data_reset_service import DataResetService
 from app.utils.exceptions import AppError
+from app.views.background_task import BackgroundTask
 from app.views.common import confirm_action
 from app.views.data_reset_confirm_dialog import DataResetConfirmDialog
+from app.views.loading_overlay import LoadingOverlay
 
 _FREQUENCY_LABELS = {FREQUENCY_DAILY: "Quotidienne", FREQUENCY_WEEKLY: "Hebdomadaire"}
 _FREQUENCY_BY_LABEL = {label: value for value, label in _FREQUENCY_LABELS.items()}
@@ -77,6 +79,12 @@ class BackupsPage(QWidget):
         self._permissions = permission_service
         self._data_reset_service = data_reset_service
         self._history_entries: list = []
+        # Correctif revue finale (Point 3) : référence à l'opération
+        # d'arrière-plan en cours (voir BackgroundTask) — None hors
+        # opération, utilisée pour empêcher un second lancement pendant
+        # qu'une sauvegarde/restauration est déjà en cours.
+        self._backup_task: Optional[BackgroundTask] = None
+        self._restore_task: Optional[BackgroundTask] = None
 
         try:
             self._active_engine = backup_service.active_engine()
@@ -99,6 +107,12 @@ class BackupsPage(QWidget):
         layout.addWidget(QLabel("Historique des sauvegardes", self))
         layout.addWidget(self._build_history_table())
         layout.addWidget(self._build_danger_zone_group())
+
+        # Phase amélioration UX, point 4 : voile de chargement pendant une
+        # sauvegarde/restauration manuelle (opérations potentiellement
+        # longues côté pg_dump/pg_restore) — créé après le reste de la mise
+        # en page pour recouvrir tout l'écran, y compris les boutons.
+        self._loading_overlay = LoadingOverlay(self)
 
         self._load_config_into_form()
         self.refresh_history()
@@ -231,22 +245,63 @@ class BackupsPage(QWidget):
         return row
 
     def _on_backup_now_clicked(self) -> None:
-        if self._run_manual_backup():
-            self.refresh_history()
+        # Correctif revue finale (Point 3) : l'appel au service s'exécute
+        # désormais dans un thread d'arrière-plan (voir BackgroundTask et
+        # sa docstring pour la justification de sécurité — aucune session
+        # SQLAlchemy existante n'est déplacée, BackupService.create_manual_backup
+        # ouvre et referme la sienne à l'intérieur de l'appel), afin que
+        # la boucle d'évènements Qt continue de tourner pendant
+        # pg_dump/pg_restore : le voile reste réellement animé, et la
+        # fenêtre ne risque plus d'être signalée « Ne répond pas » par
+        # Windows sur une sauvegarde longue. Garde contre un second
+        # lancement : ``self._backup_task`` n'est jamais ``None`` pendant
+        # qu'une opération est déjà en cours.
+        if self._backup_task is not None:
+            return
+        self.backup_now_button.setEnabled(False)
+        self._loading_overlay.show_with_message("Sauvegarde en cours…")
 
-    def _run_manual_backup(self) -> bool:
-        """Isolé de ``_on_backup_now_clicked`` pour rester testable sans
-        dialogue modal."""
-        try:
-            result = self._backup_service.create_manual_backup()
-        except AppError as exc:
-            QMessageBox.warning(self, "Sauvegarde refusée", str(exc))
-            return False
+        def _on_success(result) -> None:
+            self._finish_backup_task()
+            if self._show_backup_result(result):
+                self.refresh_history()
+
+        def _on_failure(exc: Exception) -> None:
+            self._finish_backup_task()
+            message = str(exc) if isinstance(exc, AppError) else f"Erreur inattendue lors de la sauvegarde : {exc}"
+            QMessageBox.warning(self, "Sauvegarde refusée", message)
+
+        self._backup_task = BackgroundTask(self._backup_service.create_manual_backup)
+        self._backup_task.start(_on_success, _on_failure)
+
+    def _finish_backup_task(self) -> None:
+        self._backup_task = None
+        self._loading_overlay.hide_overlay()
+        self.backup_now_button.setEnabled(self._permissions.has_permission("BACKUP_CREATE"))
+
+    def _show_backup_result(self, result) -> bool:
+        """Partagé entre ``_run_manual_backup`` (appel direct, synchrone,
+        conservé pour les tests existants) et le callback de succès de
+        ``_on_backup_now_clicked`` (appel asynchrone) — un seul endroit
+        pour le texte affiché à l'utilisateur, jamais dupliqué."""
         if result.success:
             QMessageBox.information(self, "Sauvegarde réussie", result.message)
         else:
             QMessageBox.warning(self, "Échec de la sauvegarde", result.message)
         return result.success
+
+    def _run_manual_backup(self) -> bool:
+        """Appel direct et synchrone, isolé de ``_on_backup_now_clicked``
+        pour rester testable sans dialogue modal ni thread — ``_on_backup_now_clicked``
+        utilise désormais un thread d'arrière-plan (voir ``BackgroundTask``)
+        mais appelle le même service et affiche le même résultat via
+        ``_show_backup_result``."""
+        try:
+            result = self._backup_service.create_manual_backup()
+        except AppError as exc:
+            QMessageBox.warning(self, "Sauvegarde refusée", str(exc))
+            return False
+        return self._show_backup_result(result)
 
     # -- historique ---------------------------------------------------------------
 
@@ -336,16 +391,37 @@ class BackupsPage(QWidget):
             "sauvegarde de sécurité.",
         ):
             return
-        self._restore_selected(str(entry.info.path))
+        # Correctif revue finale (Point 3) : même principe que pour la
+        # sauvegarde manuelle (voir ``_on_backup_now_clicked``) — exécution
+        # dans un thread d'arrière-plan pour que le voile reste réellement
+        # animé et l'interface réactive pendant un ``pg_restore`` long.
+        if self._restore_task is not None:
+            return
+        self.restore_button.setEnabled(False)
+        self._loading_overlay.show_with_message("Restauration en cours…")
+        backup_path = str(entry.info.path)
 
-    def _restore_selected(self, backup_path: str) -> bool:
-        """Isolé de ``_on_restore_clicked`` pour rester testable sans boîte
-        de dialogue modale."""
-        try:
-            result = self._backup_service.restore_backup(backup_path)
-        except AppError as exc:
-            QMessageBox.warning(self, "Restauration refusée", str(exc))
-            return False
+        def _on_success(result) -> None:
+            self._finish_restore_task()
+            self._show_restore_result(result)
+
+        def _on_failure(exc: Exception) -> None:
+            self._finish_restore_task()
+            message = str(exc) if isinstance(exc, AppError) else f"Erreur inattendue lors de la restauration : {exc}"
+            QMessageBox.warning(self, "Restauration refusée", message)
+
+        self._restore_task = BackgroundTask(lambda: self._backup_service.restore_backup(backup_path))
+        self._restore_task.start(_on_success, _on_failure)
+
+    def _finish_restore_task(self) -> None:
+        self._restore_task = None
+        self._loading_overlay.hide_overlay()
+        self._update_restore_button()
+
+    def _show_restore_result(self, result) -> bool:
+        """Partagé entre ``_restore_selected`` (appel direct, synchrone,
+        conservé pour les tests existants) et le callback de succès de
+        ``_on_restore_clicked`` (appel asynchrone)."""
         if result.success:
             QMessageBox.information(
                 self, "Restauration réussie",
@@ -354,6 +430,19 @@ class BackupsPage(QWidget):
         else:
             QMessageBox.critical(self, "Échec de la restauration", result.message)
         return result.success
+
+    def _restore_selected(self, backup_path: str) -> bool:
+        """Appel direct et synchrone, isolé de ``_on_restore_clicked`` pour
+        rester testable sans boîte de dialogue modale ni thread —
+        ``_on_restore_clicked`` utilise désormais un thread d'arrière-plan
+        (voir ``BackgroundTask``) mais appelle le même service et affiche
+        le même résultat via ``_show_restore_result``."""
+        try:
+            result = self._backup_service.restore_backup(backup_path)
+        except AppError as exc:
+            QMessageBox.warning(self, "Restauration refusée", str(exc))
+            return False
+        return self._show_restore_result(result)
 
     # -- réinitialisation des données métier (§3 du lot) -----------------------------
 

@@ -616,3 +616,31 @@ def test_window_cannot_be_resized_below_minimum_via_module_switch(qtbot, login_a
         window.navigation_list.setCurrentRow(index)
         assert window.size().width() >= 1200
         assert window.size().height() >= 750
+
+
+# -- correctif revue finale (Point 3) : réactivité pendant la construction --
+#
+# La construction de toutes les pages (plusieurs secondes, voir la revue de
+# ce lot) est désormais entrecoupée d'appels à ``QApplication.processEvents()``
+# plutôt qu'un seul appel avant toute la boucle — c'est ce qui permet au
+# voile de transition (``StartupSplash``, voir app/main.py) de réellement
+# s'animer pendant cette construction, et réduit le risque qu'un délai sans
+# traitement de message dépasse le seuil « Ne répond pas » de Windows.
+
+
+def test_page_construction_pumps_the_event_loop_between_each_page(qtbot, login_as, monkeypatch) -> None:
+    call_count = {"n": 0}
+
+    def _counting_process_events(*args, **kwargs) -> None:
+        call_count["n"] += 1
+
+    monkeypatch.setattr("app.views.main_window.QApplication.processEvents", _counting_process_events)
+
+    stack, _ = login_as("Administrateur")
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+
+    # Au moins un appel par page construite — jamais un seul appel global
+    # avant toute la boucle (ce qui laisserait le spinner figé pendant
+    # toute la construction, voir la revue de ce lot).
+    assert call_count["n"] >= len(window.visible_modules)

@@ -15,6 +15,7 @@ from typing import Optional
 from PySide6.QtCore import QSize, QTimer, Signal
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QHBoxLayout,
     QLabel,
@@ -302,6 +303,23 @@ class MainWindow(QMainWindow):
         self.page_stack.setObjectName("pageContainer")
         for module_name in self.visible_modules:
             self.page_stack.addWidget(self._build_page(module_name))
+            # Correctif revue finale (Point 3) : la construction de toutes
+            # les pages (chacune avec son propre chargement de données) est
+            # l'opération de 2 à 5 s à l'origine du gel signalé — purger les
+            # évènements en attente après chaque page, plutôt qu'une seule
+            # fois avant toute la boucle (voir app/main.py:run_session, qui
+            # affiche un StartupSplash pendant cet appel), permet au spinner
+            # de ce voile de réellement s'animer (son QTimer ne peut se
+            # déclencher que si la boucle d'évènements tourne) et réduit le
+            # risque qu'un délai sans traitement de message dépasse le
+            # seuil « Ne répond pas » de Windows. Sûr à cet instant précis :
+            # cette fenêtre n'est pas encore affichée (``show()`` n'intervient
+            # qu'après le retour de ce constructeur), self.navigation_list
+            # n'est pas encore connecté à _on_navigation_changed (connecté
+            # plus bas, après ce bloc) et aucun minuteur de cette fenêtre
+            # n'est encore démarré — aucun évènement ne peut donc retomber
+            # sur un widget pas encore construit pendant cette purge.
+            QApplication.processEvents()
         layout.addWidget(self.page_stack, stretch=1)
 
         return container

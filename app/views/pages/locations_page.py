@@ -11,20 +11,47 @@ suppression de brouillon et consultation restent ici.
 
 Seuls les articles en mode Location (voir ``Article.mode_gestion``) sont
 proposés dans le formulaire — jamais un article géré en mode Vente, qui
-serait rejeté par ``LocationService`` de toute façon."""
+serait rejeté par ``LocationService`` de toute façon.
+
+Phase amélioration UX (point 2) : cette page est, comme ``SalesPage``, un
+conteneur à deux sous-vues internes (``self._view_stack``, un
+``QStackedWidget``) — la liste des locations (index 0, inchangée) et un
+écran de saisie plein format (index 1, voir ``_build_caisse_view``) qui
+remplace ``LocationFormDialog`` comme point d'entrée de création/
+modification depuis cette page. ``LocationFormDialog``/``LocationLineFormDialog``
+ne sont ni supprimés ni modifiés : ils restent disponibles et testés
+indépendamment, simplement plus appelés d'ici — même principe que
+``SalesPage``/``SaleFormDialog``.
+
+Différence volontaire avec ``SalesPage`` : le montant réellement facturé
+d'une location n'est connu qu'au retour (``LocationRetour.montant_facture``,
+calculé sur la durée réelle écoulée — voir ``LocationService``) ; cette
+page n'affiche donc jamais de « total » à la création ou à la
+modification, seulement une estimation par ligne (tarif journalier ×
+quantité), explicitement libellée comme telle. Aucune règle métier de
+tarification, de caution, de départ ou de retour n'est ajoutée ici : ces
+étapes restent exclusivement pilotées depuis ``LocationDetailDialog``."""
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 from typing import Optional
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import (
     QComboBox,
+    QDateEdit,
     QDialog,
+    QFormLayout,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QSplitter,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -38,12 +65,12 @@ from app.services.clients.client_service import ClientService
 from app.services.documents.receipt_service import ReceiptService
 from app.services.rentals.location_service import LocationLigneInput, LocationService
 from app.services.settings.company_settings_service import get_effective_currency
-from app.utils.exceptions import AppError
+from app.utils.exceptions import AppError, ValidationError
 from app.utils.money import format_money
+from app.utils.quantity import format_quantity
 from app.views.client_form_dialog import ClientFormDialog
-from app.views.common import confirm_action, format_decimal_for_input, run_modal_form
+from app.views.common import confirm_action, date_to_qdate, format_decimal_for_input, parse_decimal, required_label
 from app.views.location_detail_dialog import LocationDetailDialog
-from app.views.location_form_dialog import LocationFormDialog
 
 _COLUMNS = ["Numéro", "Date", "Client", "Créée par", "Total facturé", "Statut"]
 
@@ -65,6 +92,11 @@ _STATUS_FILTERS = [
 ]
 
 _ALL_CLIENTS_LABEL = "(Tous les clients)"
+_NO_CLIENT_LABEL = "(Aucun client)"
+
+_CAISSE_LINE_COLUMNS = ["Article", "Quantité", "Tarif / jour", "Estimation (tarif × quantité)"]
+_CAISSE_QUANTITY_COLUMN = 1
+_CAISSE_TARIF_COLUMN = 2
 
 
 class LocationsPage(QWidget):
@@ -97,6 +129,12 @@ class LocationsPage(QWidget):
 
         layout = QVBoxLayout(self)
 
+        self._view_stack = QStackedWidget(self)
+        layout.addWidget(self._view_stack)
+
+        list_view = QWidget(self)
+        list_layout = QVBoxLayout(list_view)
+
         toolbar = QHBoxLayout()
         self.search_edit = QLineEdit(self)
         self.search_edit.setPlaceholderText("Rechercher (numéro)…")
@@ -128,7 +166,7 @@ class LocationsPage(QWidget):
         self.detail_button = QPushButton("Détails", self)
         toolbar.addWidget(self.detail_button)
 
-        layout.addLayout(toolbar)
+        list_layout.addLayout(toolbar)
 
         self.table = QTableWidget(0, len(_COLUMNS), self)
         self.table.setHorizontalHeaderLabels(_COLUMNS)
@@ -136,7 +174,7 @@ class LocationsPage(QWidget):
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        layout.addWidget(self.table)
+        list_layout.addWidget(self.table)
 
         self.search_edit.textChanged.connect(self.refresh)
         self.status_filter_combo.currentIndexChanged.connect(self.refresh)
@@ -147,7 +185,156 @@ class LocationsPage(QWidget):
         self.detail_button.clicked.connect(self._on_detail_clicked)
         self.table.itemSelectionChanged.connect(self._update_action_buttons)
 
+        # État de la saisie en cours dans la caisse (voir ``_open_caisse``/
+        # ``_close_caisse``) — ``None`` hors caisse, utilisé par
+        # ``_caisse_has_unsaved_changes``/``confirm_can_leave``. Initialisé
+        # avant ``_build_caisse_view`` : ``_build_caisse_right_panel``
+        # appelle ``_update_caisse_recap`` dès sa construction.
+        self._caisse_location_id: Optional[int] = None
+        self._caisse_lines: list[dict] = []
+        self._caisse_articles_cache: list[tuple[int, str, str]] = []
+        self._caisse_clients: list[tuple[int, str]] = []
+        self._caisse_initial_snapshot: Optional[tuple] = None
+
+        self._view_stack.addWidget(list_view)
+        self._view_stack.addWidget(self._build_caisse_view())
+
         self.refresh()
+
+    # -- écran de saisie plein format (remplace l'ancien formulaire modal) --
+
+    def _build_caisse_view(self) -> QWidget:
+        container = QWidget(self)
+        outer_layout = QVBoxLayout(container)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal, container)
+        outer_layout.addWidget(splitter)
+
+        splitter.addWidget(self._build_caisse_left_panel(splitter))
+        splitter.addWidget(self._build_caisse_right_panel(splitter))
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 1)
+
+        return container
+
+    def _build_caisse_left_panel(self, parent: QWidget) -> QWidget:
+        panel = QWidget(parent)
+        layout = QVBoxLayout(panel)
+
+        header_form = QFormLayout()
+
+        self.caisse_date_edit = QDateEdit(panel)
+        self.caisse_date_edit.setCalendarPopup(True)
+        self.caisse_date_edit.setDisplayFormat("yyyy-MM-dd")
+        self.caisse_date_edit.setMaximumDate(QDate.currentDate())
+        header_form.addRow(required_label("Date"), self.caisse_date_edit)
+
+        client_row = QHBoxLayout()
+        self.caisse_client_combo = QComboBox(panel)
+        client_row.addWidget(self.caisse_client_combo)
+        self.caisse_new_client_button = QPushButton("Nouveau client…", panel)
+        client_row.addWidget(self.caisse_new_client_button)
+        header_form.addRow("Client", client_row)
+
+        self.caisse_commentaire_edit = QLineEdit(panel)
+        header_form.addRow("Commentaire", self.caisse_commentaire_edit)
+
+        layout.addLayout(header_form)
+
+        search_row = QHBoxLayout()
+        search_row.addWidget(QLabel("Rechercher un article", panel))
+        self.caisse_search_edit = QLineEdit(panel)
+        self.caisse_search_edit.setPlaceholderText("Référence ou désignation…")
+        search_row.addWidget(self.caisse_search_edit)
+        layout.addLayout(search_row)
+
+        self.caisse_search_results = QListWidget(panel)
+        self.caisse_search_results.setMaximumHeight(120)
+        layout.addWidget(self.caisse_search_results)
+
+        scan_row = QHBoxLayout()
+        scan_row.addWidget(QLabel("Scanner / code-barres", panel))
+        self.caisse_scan_edit = QLineEdit(panel)
+        self.caisse_scan_edit.setPlaceholderText("Scanner un article ou saisir son code-barres puis Entrée…")
+        scan_row.addWidget(self.caisse_scan_edit)
+        layout.addLayout(scan_row)
+
+        layout.addWidget(QLabel("Lignes", panel))
+
+        self.caisse_lines_table = QTableWidget(0, len(_CAISSE_LINE_COLUMNS), panel)
+        self.caisse_lines_table.setHorizontalHeaderLabels(_CAISSE_LINE_COLUMNS)
+        self.caisse_lines_table.horizontalHeader().setStretchLastSection(True)
+        self.caisse_lines_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.caisse_lines_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.caisse_lines_table.setEditTriggers(
+            QTableWidget.EditTrigger.DoubleClicked | QTableWidget.EditTrigger.EditKeyPressed
+        )
+        layout.addWidget(self.caisse_lines_table)
+
+        remove_row = QHBoxLayout()
+        self.caisse_remove_line_button = QPushButton("Supprimer la ligne", panel)
+        remove_row.addWidget(self.caisse_remove_line_button)
+        remove_row.addStretch(1)
+        layout.addLayout(remove_row)
+
+        self.caisse_error_label = QLabel("", panel)
+        self.caisse_error_label.setStyleSheet("color: #DC2626;")
+        self.caisse_error_label.setWordWrap(True)
+        layout.addWidget(self.caisse_error_label)
+
+        self.caisse_new_client_button.clicked.connect(self._on_caisse_new_client_clicked)
+        self.caisse_search_edit.textChanged.connect(self._on_caisse_search_text_changed)
+        self.caisse_search_results.itemDoubleClicked.connect(self._on_caisse_search_result_activated)
+        self.caisse_scan_edit.returnPressed.connect(self._on_caisse_scan_entered)
+        self.caisse_lines_table.itemChanged.connect(self._on_caisse_line_item_changed)
+        self.caisse_remove_line_button.clicked.connect(self._on_caisse_remove_line_clicked)
+
+        return panel
+
+    def _build_caisse_right_panel(self, parent: QWidget) -> QWidget:
+        panel = QWidget(parent)
+        layout = QVBoxLayout(panel)
+
+        recap_form = QFormLayout()
+        self.caisse_client_recap_label = QLabel("—", panel)
+        recap_form.addRow("Client", self.caisse_client_recap_label)
+        self.caisse_lines_count_label = QLabel("0", panel)
+        recap_form.addRow("Nombre de lignes", self.caisse_lines_count_label)
+        self.caisse_estimate_label = QLabel("", panel)
+        self.caisse_estimate_label.setStyleSheet("font-weight: 600; font-size: 16px;")
+        recap_form.addRow("Estimation (tarif × quantité)", self.caisse_estimate_label)
+        layout.addLayout(recap_form)
+
+        estimate_caveat = QLabel(
+            "Cette estimation ne tient pas compte de la durée réelle de "
+            "location : le montant réellement facturé n'est calculé qu'au "
+            "retour de la location.",
+            panel,
+        )
+        estimate_caveat.setWordWrap(True)
+        estimate_caveat.setStyleSheet("color: #6B7280; font-style: italic;")
+        layout.addWidget(estimate_caveat)
+
+        layout.addStretch(1)
+
+        self.caisse_save_draft_button = QPushButton("Enregistrer en brouillon", panel)
+        layout.addWidget(self.caisse_save_draft_button)
+
+        self.caisse_validate_button = QPushButton("Valider", panel)
+        self.caisse_validate_button.setDefault(True)
+        self.caisse_validate_button.setStyleSheet("font-weight: 600;")
+        layout.addWidget(self.caisse_validate_button)
+
+        self.caisse_back_button = QPushButton("Retour à la liste", panel)
+        layout.addWidget(self.caisse_back_button)
+
+        self.caisse_save_draft_button.clicked.connect(self._on_caisse_save_draft_clicked)
+        self.caisse_validate_button.clicked.connect(self._on_caisse_validate_clicked)
+        self.caisse_back_button.clicked.connect(self._on_caisse_back_clicked)
+
+        self._update_caisse_recap()
+
+        return panel
 
     # -- affichage ---------------------------------------------------------
 
@@ -264,10 +451,7 @@ class LocationsPage(QWidget):
     # -- création / modification --------------------------------------------
 
     def _on_add_clicked(self) -> None:
-        articles = self._load_articles_for_form()
-        clients = self._load_clients_for_form()
-        initial = {"date": date.today()}
-        self._open_form(location_id=None, articles=articles, clients=clients, initial=initial)
+        self._open_caisse(location_id=None, initial={"date": date.today()})
 
     def _on_edit_clicked(self) -> None:
         location_id = self._selected_location_id()
@@ -276,9 +460,7 @@ class LocationsPage(QWidget):
         initial = self._load_edit_initial(location_id)
         if initial is None:
             return
-        articles = self._load_articles_for_form()
-        clients = self._load_clients_for_form()
-        self._open_form(location_id=location_id, articles=articles, clients=clients, initial=initial)
+        self._open_caisse(location_id=location_id, initial=initial)
 
     def _load_edit_initial(self, location_id: int) -> Optional[dict]:
         """Isolé de ``_on_edit_clicked`` pour rester testable sans dialogue modal."""
@@ -302,45 +484,324 @@ class LocationsPage(QWidget):
             ],
         }
 
-    def _open_form(
-        self,
-        location_id: Optional[int],
-        articles: list[tuple[int, str, str]],
-        clients: list[tuple[int, str]],
-        initial: dict,
-    ) -> None:
-        state = {"values": initial}
+    def _open_caisse(self, location_id: Optional[int], initial: dict) -> None:
+        self._caisse_location_id = location_id
+        self._caisse_lines = [dict(line) for line in initial.get("lignes", [])]
+        self._caisse_articles_cache = self._load_articles_for_form()
+        self._caisse_clients = self._load_clients_for_form()
 
-        def factory() -> LocationFormDialog:
-            return LocationFormDialog(
-                articles, clients, state["values"],
-                on_create_client=self._create_client_from_location_form,
-                parent=self,
-            )
+        self.caisse_date_edit.setDate(date_to_qdate(initial.get("date") or date.today()))
+        self._refresh_caisse_client_combo(selected_id=initial.get("client_id"))
+        self.caisse_commentaire_edit.setText(initial.get("commentaire", "") or "")
+        self.caisse_search_edit.clear()
+        # Appel explicite (même principe que SalesPage._open_caisse) : la
+        # liste des articles louables doit être visible dès l'ouverture,
+        # sans attendre une saisie dans le champ de recherche.
+        self._refresh_caisse_search_results()
+        self.caisse_scan_edit.clear()
+        self.caisse_error_label.setText("")
+        self.caisse_save_draft_button.setEnabled(True)
+        self.caisse_validate_button.setEnabled(True)
 
-        def submit(dialog: LocationFormDialog) -> bool:
-            state["values"] = dialog.values()
-            return self._submit_form(location_id, state["values"], dialog.requested_action())
+        self._refresh_caisse_lines_table()
+        self._caisse_initial_snapshot = self._caisse_snapshot()
+        self._view_stack.setCurrentIndex(1)
 
-        run_modal_form(factory, submit)
+    def _close_caisse(self) -> None:
+        self._caisse_location_id = None
+        self._caisse_lines = []
+        self._caisse_initial_snapshot = None
+        self._view_stack.setCurrentIndex(0)
         self._reload_client_filter_combo()
         self.refresh()
 
-    def _create_client_from_location_form(self) -> Optional[tuple[int, str]]:
-        """Callback transmis à ``LocationFormDialog`` pour la création de
-        client « à la volée » : ouvre ``ClientFormDialog`` par-dessus le
-        formulaire de location déjà ouvert, sans jamais le fermer ni
-        réinitialiser son état — la date et les lignes déjà saisies restent
-        intactes pendant toute l'opération. Patron identique à
-        ``SalesPage._create_client_from_sale_form``."""
+    # -- client (sélection + création rapide) --------------------------------
+
+    def _refresh_caisse_client_combo(self, selected_id: Optional[int] = None) -> None:
+        self.caisse_client_combo.blockSignals(True)
+        self.caisse_client_combo.clear()
+        self.caisse_client_combo.addItem(_NO_CLIENT_LABEL, None)
+        for client_id, nom in self._caisse_clients:
+            self.caisse_client_combo.addItem(nom, client_id)
+        self.caisse_client_combo.blockSignals(False)
+        if selected_id is not None:
+            index = self.caisse_client_combo.findData(selected_id)
+            if index != -1:
+                self.caisse_client_combo.setCurrentIndex(index)
+        self._update_caisse_recap()
+
+    def _on_caisse_new_client_clicked(self) -> None:
+        """Création de client « à la volée » depuis la caisse : la saisie en
+        cours (date, lignes) n'est jamais réinitialisée — ``ClientFormDialog``
+        s'ouvre par-dessus sans toucher à ``self._caisse_lines``. Patron
+        identique à ``SalesPage._on_caisse_new_client_clicked``."""
         dialog = ClientFormDialog(parent=self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        result = self._create_client_from_values(dialog.values())
+        if result is None:
+            return
+        client_id, client_nom = result
+        self._caisse_clients.append((client_id, client_nom))
+        self._refresh_caisse_client_combo(selected_id=client_id)
+
+    # -- recherche d'articles -------------------------------------------------
+
+    def _on_caisse_search_text_changed(self, _text: str) -> None:
+        self._refresh_caisse_search_results()
+
+    def _refresh_caisse_search_results(self) -> None:
+        """Repeuple la liste à partir du texte courant du champ de
+        recherche — même principe que ``SalesPage._refresh_caisse_search_results`` :
+        texte vide -> tous les articles louables (``_caisse_articles_cache``,
+        déjà filtré sur le mode Location), texte non vide -> filtrage
+        insensible à la casse sur le libellé référence+désignation déjà
+        concaténé."""
+        self.caisse_search_results.clear()
+        normalized = self.caisse_search_edit.text().strip().lower()
+        candidates = self._caisse_articles_cache
+        if normalized:
+            candidates = [
+                (article_id, label, tarif_jour)
+                for article_id, label, tarif_jour in candidates
+                if normalized in label.lower()
+            ]
+        if not candidates and normalized:
+            empty_item = QListWidgetItem("Aucun article ne correspond à la recherche.", self.caisse_search_results)
+            empty_item.setFlags(empty_item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+            return
+        for article_id, label, tarif_jour in candidates:
+            display = f"{label}  —  {format_money(Decimal(str(tarif_jour)), self._currency_code)} / jour"
+            item = QListWidgetItem(display, self.caisse_search_results)
+            item.setData(Qt.ItemDataRole.UserRole, (article_id, label, tarif_jour))
+
+    def _on_caisse_search_result_activated(self, item: QListWidgetItem) -> None:
+        data = item.data(Qt.ItemDataRole.UserRole)
+        if data is None:
+            return
+        article_id, label, tarif_jour = data
+        self._add_caisse_line(article_id, label, Decimal("1"), Decimal(str(tarif_jour)))
+        self.caisse_search_edit.clear()
+
+    # -- scan code-barres (lecteur USB « keyboard wedge ») -------------------
+
+    def _on_caisse_scan_entered(self) -> None:
+        """Même principe que ``SalesPage._on_caisse_scan_entered`` : article
+        actif en mode Location trouvé -> ajout immédiat (quantité 1, tarif
+        catalogue), sans dialogue. Introuvable ou en mode Vente -> message
+        clair, aucune ligne ajoutée."""
+        code = self.caisse_scan_edit.text().strip()
+        self.caisse_scan_edit.clear()
+        if not code:
+            return
+        result = self._lookup_article_by_barcode(code)
+        if result is None:
+            self._show_scan_rejection_message(code)
+            return
+        article_id, label, tarif_jour = result
+        self._add_caisse_line(article_id, label, Decimal("1"), Decimal(str(tarif_jour)))
+
+    def _lookup_article_by_barcode(self, code: str) -> Optional[tuple[int, str, str]]:
+        """Ne renvoie qu'un article actif ET en mode Location — même
+        principe que ``SalesPage._lookup_article_by_barcode`` (filtré sur
+        VENTE)."""
+        try:
+            article = self._article_service.find_by_barcode(code)
+        except AppError:
             return None
-        return self._create_client_from_values(dialog.values())
+        if article is None or article.mode_gestion != ModeGestionArticle.LOCATION:
+            return None
+        tarif_text = (
+            format_decimal_for_input(article.tarif_location_jour)
+            if article.tarif_location_jour is not None else "0"
+        )
+        return article.id, f"{article.reference} — {article.designation}", tarif_text
+
+    def _show_scan_rejection_message(self, code: str) -> None:
+        try:
+            article = self._article_service.find_by_barcode(code)
+        except AppError:
+            article = None
+        if article is not None and article.mode_gestion == ModeGestionArticle.VENTE:
+            QMessageBox.warning(
+                self, "Article non louable",
+                f"L'article « {article.reference} — {article.designation} » est configuré pour "
+                "la vente : il ne peut pas être ajouté à une location.",
+            )
+            return
+        QMessageBox.warning(
+            self, "Article introuvable",
+            f"Aucun article actif ne correspond au code-barres « {code} ».",
+        )
+
+    # -- gestion centralisée des lignes --------------------------------------
+
+    def _add_caisse_line(self, article_id: int, article_label: str, quantite: Decimal, tarif_jour: Decimal) -> None:
+        """Point d'entrée unique pour ajouter une ligne à la location en
+        cours de saisie, quelle que soit son origine (recherche ou scan) —
+        n'appelle jamais de service métier : une ligne de brouillon n'a
+        d'existence qu'en mémoire jusqu'à l'enregistrement."""
+        self.caisse_error_label.setText("")
+        self._caisse_lines.append(
+            {"article_id": article_id, "article_label": article_label, "quantite": quantite, "tarif_jour": tarif_jour}
+        )
+        self._refresh_caisse_lines_table()
+
+    def _on_caisse_remove_line_clicked(self) -> None:
+        selected = self.caisse_lines_table.selectionModel().selectedRows()
+        if not selected:
+            return
+        row = selected[0].row()
+        del self._caisse_lines[row]
+        self._refresh_caisse_lines_table()
+
+    def _on_caisse_line_item_changed(self, item: QTableWidgetItem) -> None:
+        """Quantité ET tarif journalier sont tous deux éditables en place
+        (contrairement à ``SalesPage``, où seul le prix de vente n'est pas
+        modifiable après ajout) : le tarif catalogue n'est qu'un préremplissage,
+        c'est le tarif réellement appliqué qui doit être conservé — même
+        règle que l'ancien ``LocationLineFormDialog``, jamais recalculé
+        automatiquement si le tarif catalogue change ensuite."""
+        row = item.row()
+        if row >= len(self._caisse_lines):
+            return
+        column = item.column()
+        if column == _CAISSE_QUANTITY_COLUMN:
+            field, label = "quantite", "quantité"
+        elif column == _CAISSE_TARIF_COLUMN:
+            field, label = "tarif_jour", "tarif journalier"
+        else:
+            return
+        try:
+            value = parse_decimal(item.text(), label)
+            if field == "quantite" and value <= 0:
+                raise ValidationError("La quantité doit être strictement positive.")
+            if field == "tarif_jour" and value < 0:
+                raise ValidationError("Le tarif journalier ne peut pas être négatif.")
+        except ValidationError as exc:
+            self.caisse_error_label.setText(str(exc))
+            self._refresh_caisse_lines_table()
+            return
+        self.caisse_error_label.setText("")
+        self._caisse_lines[row][field] = value
+        self._refresh_caisse_lines_table()
+
+    def _refresh_caisse_lines_table(self) -> None:
+        self.caisse_lines_table.blockSignals(True)
+        self.caisse_lines_table.setRowCount(len(self._caisse_lines))
+        for row, line in enumerate(self._caisse_lines):
+            article_item = QTableWidgetItem(line["article_label"])
+            article_item.setFlags(article_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.caisse_lines_table.setItem(row, 0, article_item)
+
+            quantite_item = QTableWidgetItem(format_quantity(line["quantite"]))
+            quantite_item.setFlags(quantite_item.flags() | Qt.ItemFlag.ItemIsEditable)
+            self.caisse_lines_table.setItem(row, _CAISSE_QUANTITY_COLUMN, quantite_item)
+
+            tarif_item = QTableWidgetItem(format_decimal_for_input(line["tarif_jour"]))
+            tarif_item.setFlags(tarif_item.flags() | Qt.ItemFlag.ItemIsEditable)
+            self.caisse_lines_table.setItem(row, _CAISSE_TARIF_COLUMN, tarif_item)
+
+            estimation = line["quantite"] * line["tarif_jour"]
+            estimation_item = QTableWidgetItem(format_money(estimation, self._currency_code))
+            estimation_item.setFlags(estimation_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.caisse_lines_table.setItem(row, 3, estimation_item)
+        self.caisse_lines_table.blockSignals(False)
+        self._update_caisse_recap()
+
+    def _caisse_estimate_total(self) -> Decimal:
+        """Somme des estimations par ligne (tarif journalier × quantité) —
+        jamais le montant réellement facturé, qui n'existe qu'au retour
+        (voir le docstring de module) : cette valeur n'est montrée qu'avec
+        la mention explicite « Estimation », jamais sous le libellé
+        « Total » utilisé par ``SalesPage``."""
+        total = Decimal("0")
+        for line in self._caisse_lines:
+            total += line["quantite"] * line["tarif_jour"]
+        return total
+
+    def _update_caisse_recap(self) -> None:
+        total = self._caisse_estimate_total()
+        self.caisse_estimate_label.setText(format_money(total, self._currency_code))
+        self.caisse_lines_count_label.setText(str(len(self._caisse_lines)))
+        client_id = self.caisse_client_combo.currentData() if hasattr(self, "caisse_client_combo") else None
+        if client_id is None:
+            self.caisse_client_recap_label.setText(_NO_CLIENT_LABEL)
+        else:
+            self.caisse_client_recap_label.setText(self.caisse_client_combo.currentText())
+
+    # -- enregistrement / validation ------------------------------------------
+
+    def _caisse_values(self) -> dict:
+        return {
+            "date": self.caisse_date_edit.date().toPython(),
+            "client_id": self.caisse_client_combo.currentData(),
+            "commentaire": self.caisse_commentaire_edit.text(),
+            "lignes": list(self._caisse_lines),
+        }
+
+    def _caisse_snapshot(self) -> tuple:
+        """Instantané normalisé et comparable de l'état courant de la
+        caisse — même principe que ``SalesPage._caisse_snapshot``."""
+        values = self._caisse_values()
+        lignes = tuple(
+            (line["article_id"], line["quantite"], line["tarif_jour"]) for line in values["lignes"]
+        )
+        return (values["date"], values["client_id"], values["commentaire"], lignes)
+
+    def _on_caisse_save_draft_clicked(self) -> None:
+        if self._submit_caisse("draft"):
+            self._close_caisse()
+
+    def _on_caisse_validate_clicked(self) -> None:
+        if self._submit_caisse("validate"):
+            self._close_caisse()
+
+    def _submit_caisse(self, action: str) -> bool:
+        """Isolé de ``_on_caisse_save_draft_clicked``/``_on_caisse_validate_clicked``
+        pour rester testable sans écran modal — même principe que
+        ``SalesPage._submit_caisse`` : désactive les deux boutons d'action
+        pendant l'appel (protection contre une double soumission), puis les
+        réactive si l'opération échoue pour permettre une nouvelle tentative
+        sans perdre la saisie."""
+        self.caisse_save_draft_button.setEnabled(False)
+        self.caisse_validate_button.setEnabled(False)
+        try:
+            return self._submit_form(self._caisse_location_id, self._caisse_values(), action)
+        finally:
+            self.caisse_save_draft_button.setEnabled(True)
+            self.caisse_validate_button.setEnabled(True)
+
+    def _on_caisse_back_clicked(self) -> None:
+        if not self._confirm_discard_caisse_if_needed():
+            return
+        self._close_caisse()
+
+    # -- confirmation d'abandon d'une saisie non enregistrée -----------------
+
+    def _caisse_has_unsaved_changes(self) -> bool:
+        if self._view_stack.currentIndex() != 1 or self._caisse_initial_snapshot is None:
+            return False
+        return self._caisse_snapshot() != self._caisse_initial_snapshot
+
+    def _confirm_discard_caisse_if_needed(self) -> bool:
+        if not self._caisse_has_unsaved_changes():
+            return True
+        return confirm_action(
+            self, "Modifications non enregistrées",
+            "Cette location contient des modifications non enregistrées. "
+            "Voulez-vous vraiment quitter sans les enregistrer ?",
+        )
+
+    def confirm_can_leave(self) -> bool:
+        """Hook optionnel reconnu par ``MainWindow`` (voir
+        ``_on_navigation_changed``) — même principe que
+        ``SalesPage.confirm_can_leave``."""
+        return self._confirm_discard_caisse_if_needed()
 
     def _create_client_from_values(self, values: dict) -> Optional[tuple[int, str]]:
-        """Isolé de ``_create_client_from_location_form`` pour rester
-        testable sans dialogue modal."""
+        """Isolé de ``_on_caisse_new_client_clicked`` pour rester testable
+        sans dialogue modal."""
         try:
             created = self._client_service.create_client(
                 values["nom"],
@@ -357,9 +818,10 @@ class LocationsPage(QWidget):
 
     def _submit_form(self, location_id: Optional[int], values: dict, action: str = "draft") -> bool:
         """Convertit la saisie, appelle le service et affiche le résultat.
-        Isolé de ``_open_form`` pour rester testable sans dialogue modal.
+        Isolé de ``_open_caisse``/``_submit_caisse`` pour rester testable
+        sans écran modal.
 
-        ``action`` ('draft' ou 'validate', voir ``LocationFormDialog.requested_action``) :
+        ``action`` ('draft' ou 'validate') :
         si 'validate', seul ``LocationService.confirm_location`` est appelé
         dans la foulée (BROUILLON -> CONFIRMEE, sans effet stock) — jamais
         ``depart_location``, qui exige une date de départ absente de ce
