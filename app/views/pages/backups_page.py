@@ -117,6 +117,21 @@ class BackupsPage(QWidget):
         self._load_config_into_form()
         self.refresh_history()
 
+    # -- coordination avec MainWindow (correctif revue finale) ---------------
+
+    def has_active_background_task(self) -> bool:
+        """Hook reconnu par ``MainWindow`` (voir
+        ``_pages_with_active_background_task``, consulté avant toute
+        déconnexion ou fermeture) : ``True`` tant qu'une sauvegarde ou une
+        restauration tourne encore dans un ``BackgroundTask`` — y compris
+        si cette page n'est plus celle actuellement affichée (changer
+        d'écran ne détruit jamais une page, voir ``QStackedWidget`` : la
+        page et son opération continuent d'exister en arrière-plan).
+        Détruire cette page ou la fenêtre tant que ceci renvoie ``True``
+        reproduirait le défaut corrigé par ce lot (``QThread: Destroyed
+        while thread is still running``)."""
+        return self._backup_task is not None or self._restore_task is not None
+
     # -- moteur actif (Lot E, §E.4) ------------------------------------------------
 
     def _build_engine_group(self) -> QGroupBox:

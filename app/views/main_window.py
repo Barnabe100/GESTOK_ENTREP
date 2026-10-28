@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QStackedWidget,
     QVBoxLayout,
@@ -236,6 +237,23 @@ class MainWindow(QMainWindow):
         self._maybe_show_onboarding_dialog()
 
     def closeEvent(self, event) -> None:  # noqa: N802 - signature imposée par Qt
+        # Correctif revue finale — défaut critique de cycle de vie : fermer
+        # (croix de la fenêtre, Alt+F4, etc.) pendant qu'une sauvegarde ou
+        # une restauration PostgreSQL tourne encore dans un BackgroundTask
+        # détruirait cette fenêtre et, en cascade, ce BackgroundTask et son
+        # QThread encore actif — reproduit et confirmé lors de la revue de
+        # ce lot (« QThread: Destroyed while thread is still running »,
+        # abandon du processus). Refusée explicitement ici, avant tout
+        # autre traitement de fermeture, jamais une interruption brutale du
+        # thread ni de l'opération en cours (pg_restore notamment, qui ne
+        # doit jamais être coupée en plein milieu).
+        if self._warn_if_background_task_active(
+            "Une sauvegarde ou une restauration est en cours. "
+            "Veuillez patienter avant de fermer l'application."
+        ):
+            event.ignore()
+            return
+
         # Correctif (suite de non-régression) : ``close()`` masque la
         # fenêtre mais ne détruit pas immédiatement les ``QTimer`` qui lui
         # sont parentés (seule la destruction effective de l'objet C++ les
@@ -251,6 +269,37 @@ class MainWindow(QMainWindow):
             self._change_reconciliation_timer.stop()
             self._change_listener.close()
         super().closeEvent(event)
+
+    def _pages_with_active_background_task(self) -> list[QWidget]:
+        """Pages du ``page_stack`` dont une opération d'arrière-plan
+        (``BackgroundTask``, voir ``BackupsPage``) est encore en cours —
+        **toutes** les pages construites, jamais seulement celle
+        actuellement affichée : changer d'écran ne détruit jamais une
+        page (``QStackedWidget`` ne fait que la masquer), une sauvegarde
+        lancée depuis l'écran Sauvegardes continue donc même si
+        l'utilisateur navigue ensuite ailleurs. Hook optionnel, reconnu
+        par simple ``hasattr`` — toute page qui expose
+        ``has_active_background_task()`` y participe automatiquement,
+        aucune liste figée de pages à maintenir ici."""
+        active = []
+        for index in range(self.page_stack.count()):
+            page = self.page_stack.widget(index)
+            if hasattr(page, "has_active_background_task") and page.has_active_background_task():
+                active.append(page)
+        return active
+
+    def _warn_if_background_task_active(self, message: str) -> bool:
+        """Factorisé entre ``closeEvent`` (croix de la fenêtre, Alt+F4) et
+        ``_on_logout_clicked`` (bouton Déconnexion) — les deux seuls
+        chemins de cette fenêtre qui détruiraient autrement la page et son
+        opération en cours. Affiche ``message`` et renvoie ``True`` s'il
+        faut refuser l'action ; ne renvoie jamais ``True`` silencieusement,
+        l'utilisateur doit toujours comprendre pourquoi rien ne s'est
+        passé."""
+        if not self._pages_with_active_background_task():
+            return False
+        QMessageBox.warning(self, "Opération en cours", message)
+        return True
 
     def _refresh_current_page(self) -> None:
         """Rafraîchit l'écran actuellement affiché — jamais un autre écran
@@ -546,6 +595,15 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def _on_logout_clicked(self) -> None:
+        # Correctif revue finale — même principe que ``closeEvent`` :
+        # jamais déconnecter (donc détruire cette fenêtre, voir
+        # app/main.py:run_session) tant qu'une sauvegarde ou une
+        # restauration tourne encore dans un BackgroundTask.
+        if self._warn_if_background_task_active(
+            "Une sauvegarde ou une restauration est en cours. "
+            "Veuillez patienter avant de vous déconnecter."
+        ):
+            return
         self._backup_scheduler_timer.stop()
         self._services.auth.logout()
         self.logout_requested.emit()

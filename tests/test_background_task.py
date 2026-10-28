@@ -7,11 +7,12 @@ simple ``QApplication.processEvents()`` appelé une fois avant un appel
 bloquant."""
 from __future__ import annotations
 
+import gc
 import threading
 
 import pytest
 
-from app.views.background_task import BackgroundTask
+from app.views.background_task import _ACTIVE_TASKS, BackgroundTask
 
 
 def test_successful_function_result_is_delivered_on_success_callback(qtbot) -> None:
@@ -88,3 +89,52 @@ def test_main_thread_event_loop_keeps_running_during_the_background_call(qtbot) 
     timer.stop()
 
     assert received["value"] == "done"
+
+
+# -- correctif revue finale — défaut critique de cycle de vie ----------------
+#
+# Protection de second niveau, indépendante de la discipline de l'appelant
+# (la protection principale est dans MainWindow/BackupsPage, voir
+# tests/test_main_window.py) : une tâche démarrée reste référencée par le
+# registre du module tant qu'elle n'a pas réellement terminé, même si
+# l'objet qui l'a créée disparaissait entre-temps.
+
+
+def test_running_task_is_kept_alive_by_the_module_registry_even_without_a_caller_reference(qtbot) -> None:
+    release = threading.Event()
+    received = {}
+
+    task = BackgroundTask(lambda: (release.wait(timeout=5), "done")[1])
+    task.start(on_success=lambda result: received.update(value=result), on_failure=lambda exc: pytest.fail(str(exc)))
+
+    assert task in _ACTIVE_TASKS
+
+    # L'appelant abandonne sa seule référence Python à la tâche — sans le
+    # registre du module, rien d'autre ne la maintiendrait en vie.
+    del task
+    gc.collect()
+
+    assert len(_ACTIVE_TASKS) == 1, "la tâche encore active a disparu du registre alors qu'elle tourne toujours."
+    surviving_task = next(iter(_ACTIVE_TASKS))
+    assert surviving_task.is_running() is True
+
+    release.set()
+    qtbot.waitUntil(lambda: "value" in received, timeout=2000)
+    assert received["value"] == "done"
+    assert len(_ACTIVE_TASKS) == 0, "la tâche terminée aurait dû être retirée du registre."
+
+
+def test_invoking_a_callback_whose_target_is_already_destroyed_never_raises(qtbot) -> None:
+    """Filet de sécurité de :meth:`BackgroundTask._invoke` : si le rappel
+    fourni lève ``RuntimeError`` (ex. widget Qt déjà détruit), l'exception
+    est absorbée et journalisée, jamais laissée se propager."""
+
+    class _DeadTarget:
+        def __call__(self, _value) -> None:
+            raise RuntimeError("Internal C++ object already deleted.")
+
+    task = BackgroundTask(lambda: "ok")
+    task.start(on_success=_DeadTarget(), on_failure=lambda exc: pytest.fail(str(exc)))
+
+    # Ne doit jamais lever, même si le callback échoue en interne.
+    qtbot.waitUntil(lambda: task not in _ACTIVE_TASKS, timeout=2000)

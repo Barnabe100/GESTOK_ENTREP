@@ -1,3 +1,4 @@
+import threading
 from datetime import date
 from decimal import Decimal
 
@@ -6,8 +7,10 @@ import pytest
 from app.db.seed import INITIAL_ADMIN_USERNAME
 from app.services.sales.sale_service import VenteLigneInput
 from app.views.about_dialog import AboutDialog
+from app.views.background_task import _ACTIVE_TASKS
 from app.views.main_window import MainWindow
 from app.views.onboarding_dialog import OnboardingDialog
+from app.views.pages.backups_page import BackupsPage
 from app.views.pages.dashboard_page import DashboardPage
 from app.views.pages.locations_page import LocationsPage
 from app.views.pages.placeholder_page import PlaceholderPage
@@ -16,6 +19,11 @@ from app.views.pages.reports_page import ReportsPage
 
 def _build_window(stack) -> MainWindow:
     return MainWindow(stack)
+
+
+def _backups_page(window: MainWindow) -> BackupsPage:
+    index = window.visible_modules.index("Sauvegardes")
+    return window.page_stack.widget(index)
 
 
 def test_main_window_administrateur_sees_all_modules(qtbot, login_as) -> None:
@@ -644,3 +652,249 @@ def test_page_construction_pumps_the_event_loop_between_each_page(qtbot, login_a
     # avant toute la boucle (ce qui laisserait le spinner figé pendant
     # toute la construction, voir la revue de ce lot).
     assert call_count["n"] >= len(window.visible_modules)
+
+
+# -- correctif revue finale — défaut critique de cycle de vie ---------------
+#
+# Défaut confirmé lors de la revue précédente : se déconnecter ou fermer la
+# fenêtre (croix) pendant qu'une sauvegarde/restauration PostgreSQL tourne
+# encore dans un BackgroundTask détruisait BackupsPage et son QThread actif
+# -> « QThread: Destroyed while thread is still running » -> abandon du
+# processus (code de sortie 134). Les tests ci-dessous reproduisent
+# exactement ce scénario (même séquence d'actions) et démontrent qu'il
+# n'aboutit plus à une fermeture/destruction : avec l'ancienne
+# implémentation de ``_on_logout_clicked``/``closeEvent`` (sans l'appel à
+# ``_warn_if_background_task_active``), ``test_reproduces_the_crash_scenario_*``
+# échouerait (la fenêtre se fermerait, ``auth.is_authenticated`` passerait
+# à ``False`` et la tâche serait détruite en cours d'exécution) ; avec le
+# correctif, la fermeture est refusée et la tâche continue jusqu'à son
+# terme normal.
+
+
+@pytest.fixture(autouse=True)
+def _no_blocking_dialogs_on_backups_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.views.pages.backups_page.QMessageBox.information", lambda *a, **k: None)
+    monkeypatch.setattr("app.views.pages.backups_page.QMessageBox.warning", lambda *a, **k: None)
+    monkeypatch.setattr("app.views.pages.backups_page.QMessageBox.critical", lambda *a, **k: None)
+
+
+def _capture_main_window_warnings(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
+    captured: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "app.views.main_window.QMessageBox.warning",
+        lambda parent, title, message: captured.append((title, message)),
+    )
+    return captured
+
+
+def test_reproduces_the_crash_scenario_logout_during_backup_no_longer_closes_the_window(
+    qtbot, login_as, tmp_path, monkeypatch
+) -> None:
+    stack, _ = login_as("Administrateur")
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00",
+        destination=str(tmp_path / "backups"), retention=10,
+    )
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+    page = _backups_page(window)
+    warnings = _capture_main_window_warnings(monkeypatch)
+
+    release = threading.Event()
+    original_create_backup = stack.backups.create_manual_backup
+
+    def _slow_backup():
+        release.wait(timeout=5)
+        return original_create_backup()
+
+    monkeypatch.setattr(stack.backups, "create_manual_backup", _slow_backup)
+
+    # Séquence exacte du scénario qui provoquait le plantage : une
+    # sauvegarde est lancée, puis l'utilisateur clique « Déconnexion »
+    # avant qu'elle ne se termine.
+    page._on_backup_now_clicked()
+    assert page.has_active_background_task() is True
+
+    window._on_logout_clicked()
+
+    # Avec l'ancienne implémentation, ceci aurait déconnecté l'utilisateur,
+    # fermé la fenêtre et détruit la page/le BackgroundTask en plein milieu
+    # de l'exécution du thread. Ici : refusé, rien n'a changé.
+    assert any("en cours" in message for _title, message in warnings)
+    assert stack.auth.is_authenticated is True
+    assert page.has_active_background_task() is True
+    assert page._backup_task.is_running() is True
+    # La fenêtre et la page existent toujours comme de vrais objets Qt
+    # (jamais détruits) : un objet C++ détruit lèverait RuntimeError au
+    # premier accès, jamais une valeur simplement « fausse ».
+    assert window.page_stack.count() == len(window.visible_modules)
+    assert page.parent() is not None
+
+    release.set()
+    qtbot.waitUntil(lambda: page.has_active_background_task() is False, timeout=5000)
+
+    # Une fois l'opération réellement terminée, la déconnexion fonctionne normalement.
+    window._on_logout_clicked()
+    assert stack.auth.is_authenticated is False
+
+
+def test_reproduces_the_crash_scenario_logout_during_restore_no_longer_closes_the_window(
+    qtbot, login_as, tmp_path, monkeypatch
+) -> None:
+    from PySide6.QtWidgets import QMessageBox
+
+    stack, _ = login_as("Administrateur")
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00",
+        destination=str(tmp_path / "backups"), retention=10,
+    )
+    stack.backups.create_manual_backup()
+
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+    page = _backups_page(window)
+    page.refresh_history()
+    page.history_table.selectRow(0)
+    warnings = _capture_main_window_warnings(monkeypatch)
+
+    monkeypatch.setattr("app.views.common.QMessageBox.question", lambda *a, **k: QMessageBox.StandardButton.Yes)
+
+    release = threading.Event()
+    original_restore = stack.backups.restore_backup
+
+    def _slow_restore(path):
+        release.wait(timeout=5)
+        return original_restore(path)
+
+    monkeypatch.setattr(stack.backups, "restore_backup", _slow_restore)
+
+    page._on_restore_clicked()
+    assert page.has_active_background_task() is True
+
+    window._on_logout_clicked()
+
+    assert any("en cours" in message for _title, message in warnings)
+    assert stack.auth.is_authenticated is True
+    assert page._restore_task.is_running() is True
+
+    release.set()
+    qtbot.waitUntil(lambda: page.has_active_background_task() is False, timeout=5000)
+
+    window._on_logout_clicked()
+    assert stack.auth.is_authenticated is False
+
+
+def test_window_close_via_title_bar_is_blocked_while_a_task_is_in_progress(
+    qtbot, login_as, tmp_path, monkeypatch
+) -> None:
+    """Même protection pour la fermeture par la croix de la fenêtre
+    (``closeEvent``, déclenché aussi par Alt+F4) — chemin distinct de
+    « Déconnexion », vérifié séparément."""
+    stack, _ = login_as("Administrateur")
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00",
+        destination=str(tmp_path / "backups"), retention=10,
+    )
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+    page = _backups_page(window)
+    _capture_main_window_warnings(monkeypatch)
+
+    release = threading.Event()
+    original_create_backup = stack.backups.create_manual_backup
+
+    def _slow_backup():
+        release.wait(timeout=5)
+        return original_create_backup()
+
+    monkeypatch.setattr(stack.backups, "create_manual_backup", _slow_backup)
+
+    page._on_backup_now_clicked()
+    assert page.has_active_background_task() is True
+
+    closed = window.close()
+
+    assert closed is False, "QWidget.close() doit retourner False : le closeEvent a été ignoré."
+    assert page._backup_task.is_running() is True
+
+    release.set()
+    qtbot.waitUntil(lambda: page.has_active_background_task() is False, timeout=5000)
+
+    closed_after_completion = window.close()
+    assert closed_after_completion is True
+
+
+def test_thread_is_never_destroyed_while_running_through_the_guarded_paths(
+    qtbot, login_as, tmp_path, monkeypatch
+) -> None:
+    """Garantie demandée explicitement : le ``QThread`` sous-jacent ne
+    passe jamais à l'état arrêté/détruit pendant qu'il exécute encore
+    ``func`` — ni via la déconnexion, ni via la fermeture par la croix."""
+    stack, _ = login_as("Administrateur")
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00",
+        destination=str(tmp_path / "backups"), retention=10,
+    )
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+    page = _backups_page(window)
+    _capture_main_window_warnings(monkeypatch)
+
+    release = threading.Event()
+    original_create_backup = stack.backups.create_manual_backup
+
+    def _slow_backup():
+        release.wait(timeout=5)
+        return original_create_backup()
+
+    monkeypatch.setattr(stack.backups, "create_manual_backup", _slow_backup)
+
+    page._on_backup_now_clicked()
+    task = page._backup_task
+    assert task in _ACTIVE_TASKS
+
+    window._on_logout_clicked()
+    window.close()
+
+    assert task.is_running() is True, "le thread a été arrêté alors qu'il tournait encore."
+    assert task in _ACTIVE_TASKS
+
+    release.set()
+    qtbot.waitUntil(lambda: task.is_running() is False, timeout=5000)
+    assert task not in _ACTIVE_TASKS
+
+
+def test_operation_result_is_still_correctly_processed_after_a_blocked_close_attempt(
+    qtbot, login_as, tmp_path, monkeypatch
+) -> None:
+    """Non-régression : une fois l'opération terminée après une tentative
+    de fermeture refusée, le résultat (historique mis à jour, bouton
+    réactivé, voile masqué) reste traité exactement comme sans cette
+    tentative."""
+    stack, _ = login_as("Administrateur")
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00",
+        destination=str(tmp_path / "backups"), retention=10,
+    )
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+    page = _backups_page(window)
+    _capture_main_window_warnings(monkeypatch)
+
+    release = threading.Event()
+    original_create_backup = stack.backups.create_manual_backup
+
+    def _slow_backup():
+        release.wait(timeout=5)
+        return original_create_backup()
+
+    monkeypatch.setattr(stack.backups, "create_manual_backup", _slow_backup)
+
+    page._on_backup_now_clicked()
+    window._on_logout_clicked()  # tentative refusée, voir les tests précédents.
+    release.set()
+
+    qtbot.waitUntil(lambda: page.has_active_background_task() is False, timeout=5000)
+
+    assert page.backup_now_button.isEnabled() is True
+    assert page.history_table.rowCount() == 1

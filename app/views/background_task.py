@@ -42,12 +42,44 @@ volumineuse peut prendre plusieurs minutes). Volontairement **pas**
 utilisé pour la construction de ``MainWindow`` (qui doit créer des
 ``QWidget``, impossible hors du thread graphique) ni pour la génération de
 rapports (voir la docstring de ``ReportsPage.refresh`` pour la limite
-documentée et le choix délibéré de ne pas la threader)."""
+documentée et le choix délibéré de ne pas la threader).
+
+Correctif revue finale — défaut critique de cycle de vie : détruire un
+``QThread`` encore actif est un arrêt brutal (``QThread: Destroyed while
+thread is still running``, abandon du processus — reproduit et confirmé
+lors de la revue de ce lot en fermant/en déconnectant pendant une
+sauvegarde ou une restauration). La protection principale est côté
+appelant (``MainWindow``/``BackupsPage`` refusent toute fermeture tant
+qu'une opération est en cours — voir ``BackupsPage.has_active_background_task``
+et ``MainWindow._on_logout_clicked``/``closeEvent``) : ce module ne peut
+pas, lui, empêcher qu'on détruise la page qui le possède. Il ajoute
+cependant une seconde protection, indépendante de la discipline de
+l'appelant : chaque instance démarrée s'enregistre dans
+:data:`_ACTIVE_TASKS` (un registre au niveau du module, jamais une
+référence circulaire — l'instance ne référence jamais ce registre en
+retour) tant qu'elle n'a pas reçu ``finished``/``failed`` ; même si
+l'objet qui l'a créée (ex. ``BackupsPage``) disparaissait malgré tout, le
+``QThread`` resterait référencé et donc vivant jusqu'à sa fin réelle,
+jamais détruit en cours d'exécution. ``on_success``/``on_failure`` restent
+néanmoins des fermetures sur l'appelant d'origine : si ce dernier a été
+détruit entre-temps (ce que la protection principale ci-dessus doit
+rendre impossible en pratique), l'appel est entouré d'un filet de
+sécurité qui journalise l'incident sans jamais faire planter le
+processus — voir :meth:`_invoke`."""
 from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
 from PySide6.QtCore import QObject, QThread, Signal
+
+from app.utils.logging_config import get_logger
+
+logger = get_logger("views.background_task")
+
+# Garde les instances en cours vivantes indépendamment de toute référence
+# détenue par leur appelant (voir la docstring de module) — jamais une
+# référence circulaire : BackgroundTask ne connaît pas ce registre.
+_ACTIVE_TASKS: set["BackgroundTask"] = set()
 
 
 class _Worker(QObject):
@@ -100,18 +132,45 @@ class BackgroundTask(QObject):
         de construire ou d'afficher le moindre widget Qt."""
         self._on_success = on_success
         self._on_failure = on_failure
+        # Enregistré avant de démarrer le thread (jamais après : le signal
+        # de fin pourrait théoriquement être traité avant que l'ajout au
+        # registre ne soit visible) — voir la docstring de module.
+        _ACTIVE_TASKS.add(self)
         self._thread.start()
+
+    def is_running(self) -> bool:
+        return self._thread.isRunning()
 
     def _on_finished(self, result: Any) -> None:
         self._cleanup()
-        if self._on_success is not None:
-            self._on_success(result)
+        self._invoke(self._on_success, result)
 
     def _on_failed(self, exc: Exception) -> None:
         self._cleanup()
-        if self._on_failure is not None:
-            self._on_failure(exc)
+        self._invoke(self._on_failure, exc)
+
+    def _invoke(self, callback: Optional[Callable[[Any], None]], value: Any) -> None:
+        """Filet de sécurité (voir la docstring de module) : si l'objet
+        appelant d'origine a malgré tout été détruit entre le démarrage de
+        cette tâche et sa fin, ``callback`` (une méthode liée à cet objet,
+        ex. ``self._finish_backup_task``) lève ``RuntimeError`` dès son
+        premier accès à un widget Qt détruit — jamais un arrêt brutal du
+        processus pour autant, seulement cette conséquence journalisée.
+        Ne doit normalement jamais se produire : c'est la protection
+        principale (``MainWindow``/``BackupsPage`` refusent toute
+        fermeture tant qu'une opération est en cours) qui empêche cette
+        situation en amont."""
+        if callback is None:
+            return
+        try:
+            callback(value)
+        except RuntimeError as exc:
+            logger.warning(
+                "Résultat d'une opération d'arrière-plan ignoré : l'objet appelant d'origine "
+                "semble avoir été détruit entre-temps (%s).", exc,
+            )
 
     def _cleanup(self) -> None:
         self._thread.quit()
         self._thread.wait()
+        _ACTIVE_TASKS.discard(self)
