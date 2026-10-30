@@ -129,6 +129,7 @@ class SettingsPage(QWidget):
             widget.setEnabled(can_update)
 
         self.save_profile_button = QPushButton("Enregistrer", self)
+        self.save_profile_button.setProperty("variant", "primary")
         self.save_profile_button.setEnabled(can_update)
         form.addRow(self.save_profile_button)
 
@@ -199,6 +200,7 @@ class SettingsPage(QWidget):
         buttons_row.addWidget(self.choose_logo_button)
 
         self.clear_logo_button = QPushButton("Supprimer le logo", self)
+        self.clear_logo_button.setProperty("variant", "danger")
         self.clear_logo_button.setEnabled(can_update)
         buttons_row.addWidget(self.clear_logo_button)
         buttons_row.addStretch(1)
@@ -263,6 +265,7 @@ class SettingsPage(QWidget):
         self.receipt_footer_edit.setEnabled(can_update)
 
         self.save_receipt_footer_button = QPushButton("Enregistrer", self)
+        self.save_receipt_footer_button.setProperty("variant", "primary")
         self.save_receipt_footer_button.setEnabled(can_update)
         form.addRow(self.save_receipt_footer_button)
 
@@ -303,6 +306,7 @@ class SettingsPage(QWidget):
         self.locations_module_checkbox.setEnabled(can_update)
 
         self.save_modules_button = QPushButton("Enregistrer", self)
+        self.save_modules_button.setProperty("variant", "primary")
         self.save_modules_button.setEnabled(can_update)
         layout.addWidget(self.save_modules_button)
 

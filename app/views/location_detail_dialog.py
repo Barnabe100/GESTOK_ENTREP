@@ -130,6 +130,7 @@ class LocationDetailDialog(QDialog):
 
         layout.addWidget(QLabel("Lignes", self))
         self.lines_table = QTableWidget(0, len(_LINE_COLUMNS), self)
+        self.lines_table.setAlternatingRowColors(True)
         self.lines_table.setHorizontalHeaderLabels(_LINE_COLUMNS)
         self.lines_table.horizontalHeader().setStretchLastSection(True)
         self.lines_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -137,6 +138,7 @@ class LocationDetailDialog(QDialog):
 
         layout.addWidget(QLabel("Historique des retours", self))
         self.retours_table = QTableWidget(0, len(_RETOUR_COLUMNS), self)
+        self.retours_table.setAlternatingRowColors(True)
         self.retours_table.setHorizontalHeaderLabels(_RETOUR_COLUMNS)
         self.retours_table.horizontalHeader().setStretchLastSection(True)
         self.retours_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -147,6 +149,7 @@ class LocationDetailDialog(QDialog):
 
         layout.addWidget(QLabel("Historique des paiements", self))
         self.payments_table = QTableWidget(0, len(_PAYMENT_COLUMNS), self)
+        self.payments_table.setAlternatingRowColors(True)
         self.payments_table.setHorizontalHeaderLabels(_PAYMENT_COLUMNS)
         self.payments_table.horizontalHeader().setStretchLastSection(True)
         self.payments_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -180,9 +183,13 @@ class LocationDetailDialog(QDialog):
 
         action_row = QHBoxLayout()
         self.confirm_button = QPushButton("Confirmer", self)
+        self.confirm_button.setProperty("variant", "success")
         self.depart_button = QPushButton("Enregistrer le départ", self)
+        self.depart_button.setProperty("variant", "primary")
         self.return_button = QPushButton("Enregistrer un retour", self)
+        self.return_button.setProperty("variant", "primary")
         self.cancel_location_button = QPushButton("Annuler la location", self)
+        self.cancel_location_button.setProperty("variant", "danger")
         self.caution_button = QPushButton("Caution…", self)
         self.payment_button = QPushButton("Paiement…", self)
         for button in (

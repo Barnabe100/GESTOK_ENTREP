@@ -152,6 +152,7 @@ class LocationsPage(QWidget):
         toolbar.addStretch(1)
 
         self.add_button = QPushButton("Nouvelle location", self)
+        self.add_button.setProperty("variant", "primary")
         self.add_button.setEnabled(not self._read_only and self._permissions.has_permission("LOCATION_CREATE"))
         toolbar.addWidget(self.add_button)
 
@@ -160,6 +161,7 @@ class LocationsPage(QWidget):
         toolbar.addWidget(self.edit_button)
 
         self.delete_button = QPushButton("Supprimer", self)
+        self.delete_button.setProperty("variant", "danger")
         self.delete_button.setEnabled(not self._read_only and self._permissions.has_permission("LOCATION_UPDATE"))
         toolbar.addWidget(self.delete_button)
 
@@ -169,6 +171,7 @@ class LocationsPage(QWidget):
         list_layout.addLayout(toolbar)
 
         self.table = QTableWidget(0, len(_COLUMNS), self)
+        self.table.setAlternatingRowColors(True)
         self.table.setHorizontalHeaderLabels(_COLUMNS)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -262,6 +265,7 @@ class LocationsPage(QWidget):
         layout.addWidget(QLabel("Lignes", panel))
 
         self.caisse_lines_table = QTableWidget(0, len(_CAISSE_LINE_COLUMNS), panel)
+        self.caisse_lines_table.setAlternatingRowColors(True)
         self.caisse_lines_table.setHorizontalHeaderLabels(_CAISSE_LINE_COLUMNS)
         self.caisse_lines_table.horizontalHeader().setStretchLastSection(True)
         self.caisse_lines_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -273,6 +277,7 @@ class LocationsPage(QWidget):
 
         remove_row = QHBoxLayout()
         self.caisse_remove_line_button = QPushButton("Supprimer la ligne", panel)
+        self.caisse_remove_line_button.setProperty("variant", "danger")
         remove_row.addWidget(self.caisse_remove_line_button)
         remove_row.addStretch(1)
         layout.addLayout(remove_row)
@@ -318,9 +323,11 @@ class LocationsPage(QWidget):
         layout.addStretch(1)
 
         self.caisse_save_draft_button = QPushButton("Enregistrer en brouillon", panel)
+        self.caisse_save_draft_button.setProperty("variant", "primary")
         layout.addWidget(self.caisse_save_draft_button)
 
         self.caisse_validate_button = QPushButton("Valider", panel)
+        self.caisse_validate_button.setProperty("variant", "success")
         self.caisse_validate_button.setDefault(True)
         self.caisse_validate_button.setStyleSheet("font-weight: 600;")
         layout.addWidget(self.caisse_validate_button)

@@ -68,6 +68,7 @@ class ExitDetailDialog(QDialog):
 
         layout.addWidget(QLabel("Lignes", self))
         lines_table = QTableWidget(len(exit_.lignes), len(_LINE_COLUMNS), self)
+        lines_table.setAlternatingRowColors(True)
         lines_table.setHorizontalHeaderLabels(_LINE_COLUMNS)
         lines_table.horizontalHeader().setStretchLastSection(True)
         lines_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -84,6 +85,7 @@ class ExitDetailDialog(QDialog):
 
         layout.addWidget(QLabel("Mouvements de stock générés", self))
         movements_table = QTableWidget(len(movements), len(_MOVEMENT_COLUMNS), self)
+        movements_table.setAlternatingRowColors(True)
         movements_table.setHorizontalHeaderLabels(_MOVEMENT_COLUMNS)
         movements_table.horizontalHeader().setStretchLastSection(True)
         movements_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)

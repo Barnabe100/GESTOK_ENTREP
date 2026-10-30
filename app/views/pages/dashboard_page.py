@@ -12,6 +12,15 @@ Les accès rapides (§12) réutilisent le mécanisme de navigation de
 ``MainWindow`` (callback ``on_navigate``) et respectent individuellement la
 permission du module cible : un bouton n'est jamais affiché vers un module
 que l'utilisateur ne peut pas utiliser.
+
+Refonte visuelle globale (identité graphique StockManager Desktop) :
+réorganisation complète de la présentation (grille de cartes KPI avec
+accent coloré par nature d'indicateur, graphiques en cartes homogènes,
+accès rapides en disposition en flux pour ne jamais déborder
+horizontalement) — aucune donnée ni aucun calcul métier n'est modifié par
+cette refonte, uniquement sa présentation. Voir ``app/views/design_system.py``
+pour les composants réutilisables (``KpiCard``, ``FlowLayout``) et
+``app/resources/styles/app.qss`` pour la feuille de style globale.
 """
 from __future__ import annotations
 
@@ -26,12 +35,13 @@ from PySide6.QtCharts import (
 from PySide6.QtGui import QCursor, QPainter
 from PySide6.QtWidgets import (
     QDateEdit,
+    QFrame,
     QGridLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QToolTip,
@@ -47,6 +57,18 @@ from app.utils.exceptions import AppError
 from app.utils.money import format_money
 from app.utils.quantity import format_quantity
 from app.views.common import date_to_qdate
+from app.views.design_system import (
+    COLOR_DANGER,
+    COLOR_INDIGO,
+    COLOR_PRIMARY,
+    COLOR_SUCCESS,
+    COLOR_TEXT_SECONDARY,
+    COLOR_VIOLET,
+    COLOR_WARNING,
+    FlowLayout,
+    KpiCard,
+    qcolor,
+)
 
 # Message affiché à la place d'un graphique/tableau lorsque la section est
 # vide parce que la permission source manque — jamais confondu avec
@@ -65,6 +87,23 @@ _NAVIGATION_TARGETS: list[tuple[str, str, str, Optional[str]]] = [
     ("Voir les mouvements", "Mouvements", "STOCK_MOVEMENT_VIEW", None),
 ]
 
+# Couleur associée à chaque type de mouvement dans le tableau « Activité
+# récente » (§4.6) — purement cosmétique, jamais une donnée recalculée :
+# la valeur affichée reste strictement ``movement.type.value`` tel que
+# fourni par le service.
+_MOVEMENT_TYPE_COLORS: dict[TypeMouvement, str] = {
+    TypeMouvement.ENTREE: COLOR_SUCCESS,
+    TypeMouvement.SORTIE: COLOR_WARNING,
+    TypeMouvement.VENTE: COLOR_PRIMARY,
+    TypeMouvement.ANNULATION: COLOR_DANGER,
+}
+
+# Nombre de catégories sur l'axe X au-delà duquel les étiquettes sont
+# inclinées pour rester lisibles sans se chevaucher — purement une
+# question de rendu, jamais un filtrage des données réellement tracées
+# (toutes les catégories fournies par le service restent sur le graphique).
+_AXIS_LABEL_ROTATION_THRESHOLD = 10
+
 
 def _decimal_to_float(value: Decimal) -> float:
     """Conversion strictement pour l'affichage graphique (géométrie des
@@ -72,6 +111,22 @@ def _decimal_to_float(value: Decimal) -> float:
     montants affichés en texte restent formatés depuis le ``Decimal``
     d'origine via ``format_money``."""
     return float(value)
+
+
+def _section_title(text: str, parent: QWidget) -> QLabel:
+    label = QLabel(text, parent)
+    label.setProperty("role", "sectionTitle")
+    return label
+
+
+def _card_frame(parent: QWidget) -> QFrame:
+    """Carte blanche homogène (§4.4 : « graphiques dans des cartes
+    homogènes ») — même composant pour les trois graphiques et le tableau
+    des articles en stock faible, pour une présentation strictement
+    identique entre ces quatre sections."""
+    frame = QFrame(parent)
+    frame.setObjectName("card")
+    return frame
 
 
 class DashboardPage(QWidget):
@@ -109,24 +164,27 @@ class DashboardPage(QWidget):
         scroll_area = QScrollArea(self)
         scroll_area.setWidgetResizable(True)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         outer_layout.addWidget(scroll_area)
 
         content = QWidget(scroll_area)
+        content.setObjectName("pageContainer")
         scroll_area.setWidget(content)
         layout = QVBoxLayout(content)
+        layout.setContentsMargins(20, 16, 20, 20)
+        layout.setSpacing(18)
 
-        layout.addLayout(self._build_period_row())
-        layout.addLayout(self._build_kpi_row())
-        layout.addLayout(self._build_secondary_kpi_row())
+        layout.addWidget(self._build_period_card())
+        layout.addLayout(self._build_kpi_grid())
 
         self.status_label = QLabel("", self)
-        self.status_label.setStyleSheet("color: #b00020; font-weight: 600;")
+        self.status_label.setProperty("status", "danger")
         self.status_label.setVisible(False)
         layout.addWidget(self.status_label)
 
         layout.addLayout(self._build_charts_grid())
         layout.addLayout(self._build_alerts_row())
-        layout.addWidget(QLabel("Activité récente", self))
+        layout.addWidget(_section_title("Activité récente", self))
         layout.addLayout(self._build_recent_activity_box())
 
         period_from, period_to = default_period()
@@ -139,12 +197,25 @@ class DashboardPage(QWidget):
 
     # -- construction ---------------------------------------------------------------
 
-    def _build_period_row(self) -> QHBoxLayout:
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Période — du", self))
+    def _build_period_card(self) -> QFrame:
+        """Zone de sélection de période (§4.2) : regroupée dans une carte
+        dédiée, pour se distinguer clairement du contenu qu'elle filtre —
+        fonctionnement du filtrage et du bouton Actualiser strictement
+        inchangé."""
+        card = _card_frame(self)
+        row = QHBoxLayout(card)
+        row.setContentsMargins(16, 12, 16, 12)
+        row.setSpacing(10)
+
+        period_label = QLabel("Période", self)
+        period_label.setProperty("role", "secondary")
+        row.addWidget(period_label)
+
+        row.addWidget(QLabel("du", self))
         self.date_from_edit = QDateEdit(self)
         self.date_from_edit.setCalendarPopup(True)
         self.date_from_edit.setDisplayFormat("yyyy-MM-dd")
+        self.date_from_edit.setMinimumWidth(118)
         # Quand la date de début change, la date de fin ne doit jamais
         # pouvoir devenir antérieure (§ lot dates) — QDateEdit ajuste
         # automatiquement sa valeur courante si elle tombe sous le nouveau
@@ -155,11 +226,13 @@ class DashboardPage(QWidget):
         self.date_to_edit = QDateEdit(self)
         self.date_to_edit.setCalendarPopup(True)
         self.date_to_edit.setDisplayFormat("yyyy-MM-dd")
+        self.date_to_edit.setMinimumWidth(118)
         row.addWidget(self.date_to_edit)
-        self.refresh_button = QPushButton("Actualiser", self)
-        row.addWidget(self.refresh_button)
         row.addStretch(1)
-        return row
+        self.refresh_button = QPushButton("Actualiser", self)
+        self.refresh_button.setProperty("variant", "primary")
+        row.addWidget(self.refresh_button)
+        return card
 
     def _on_date_from_changed(self, new_date) -> None:
         self.date_to_edit.setMinimumDate(new_date)
@@ -175,46 +248,45 @@ class DashboardPage(QWidget):
         self.date_to_edit.setMaximumDate(today_qdate)
         self.date_to_edit.setMinimumDate(self.date_from_edit.date())
 
-    def _build_kpi_card(self, title: str) -> tuple[QGroupBox, QLabel]:
-        card = QGroupBox(title, self)
-        card_layout = QVBoxLayout(card)
-        value_label = QLabel("—", card)
-        value_label.setStyleSheet("font-size: 20px; font-weight: 700;")
-        value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        card_layout.addWidget(value_label)
-        return card, value_label
+    def _build_kpi_grid(self) -> FlowLayout:
+        """Grille équilibrée des 10 indicateurs (§4.3), en disposition en
+        flux (``FlowLayout``) : s'adapte à la largeur de fenêtre disponible
+        (1366 comme 1920) en répartissant naturellement les cartes sur
+        plusieurs lignes, sans jamais déborder horizontalement."""
+        flow = FlowLayout(spacing=14)
 
-    def _build_kpi_row(self) -> QHBoxLayout:
-        row = QHBoxLayout()
-        self.kpi_articles_card, self.kpi_articles_label = self._build_kpi_card("Articles actifs")
-        self.kpi_stock_value_card, self.kpi_stock_value_label = self._build_kpi_card("Valeur du stock")
-        self.kpi_low_stock_card, self.kpi_low_stock_label = self._build_kpi_card("Stock faible")
-        self.kpi_out_of_stock_card, self.kpi_out_of_stock_label = self._build_kpi_card("Ruptures")
-        self.kpi_sales_card, self.kpi_sales_label = self._build_kpi_card("Chiffre d'affaires (période)")
+        self.kpi_articles_card = KpiCard("Articles actifs", "📦", "blue", self)
+        self.kpi_articles_label = self.kpi_articles_card.value_label
+        self.kpi_stock_value_card = KpiCard("Valeur du stock", "💰", "indigo", self)
+        self.kpi_stock_value_label = self.kpi_stock_value_card.value_label
+        self.kpi_low_stock_card = KpiCard("Stock faible", "⚠", "orange", self)
+        self.kpi_low_stock_label = self.kpi_low_stock_card.value_label
+        self.kpi_out_of_stock_card = KpiCard("Ruptures", "⛔", "red", self)
+        self.kpi_out_of_stock_label = self.kpi_out_of_stock_card.value_label
+        self.kpi_sales_card = KpiCard("Chiffre d'affaires (période)", "📈", "green", self)
+        self.kpi_sales_label = self.kpi_sales_card.value_label
+        self.kpi_stock_quantity_card = KpiCard("Quantité en stock", "📊", "blue", self)
+        self.kpi_stock_quantity_label = self.kpi_stock_quantity_card.value_label
+        self.kpi_entries_card = KpiCard("Entrées (période)", "⬇", "green", self)
+        self.kpi_entries_label = self.kpi_entries_card.value_label
+        self.kpi_exits_card = KpiCard("Sorties (période)", "⬆", "orange", self)
+        self.kpi_exits_label = self.kpi_exits_card.value_label
+        self.kpi_sales_count_card = KpiCard("Ventes (période)", "🛒", "blue", self)
+        self.kpi_sales_count_label = self.kpi_sales_count_card.value_label
+        self.kpi_inventories_card = KpiCard("Inventaires (période)", "📋", "violet", self)
+        self.kpi_inventories_label = self.kpi_inventories_card.value_label
+
         for card in (
             self.kpi_articles_card, self.kpi_stock_value_card, self.kpi_low_stock_card,
-            self.kpi_out_of_stock_card, self.kpi_sales_card,
+            self.kpi_out_of_stock_card, self.kpi_sales_card, self.kpi_stock_quantity_card,
+            self.kpi_entries_card, self.kpi_exits_card, self.kpi_sales_count_card,
+            self.kpi_inventories_card,
         ):
-            row.addWidget(card)
-        return row
+            card.setMinimumWidth(190)
+            card.setMinimumHeight(84)
+            flow.addWidget(card)
 
-    def _build_secondary_kpi_row(self) -> QHBoxLayout:
-        """Seconde ligne, sobre, pour les indicateurs déjà calculés par
-        ``DashboardService`` (§Lot D.1) mais jusqu'ici non affichés — même
-        composant ``_build_kpi_card`` que la première ligne, aucun nouveau
-        calcul métier introduit ici."""
-        row = QHBoxLayout()
-        self.kpi_stock_quantity_card, self.kpi_stock_quantity_label = self._build_kpi_card("Quantité en stock")
-        self.kpi_entries_card, self.kpi_entries_label = self._build_kpi_card("Entrées (période)")
-        self.kpi_exits_card, self.kpi_exits_label = self._build_kpi_card("Sorties (période)")
-        self.kpi_sales_count_card, self.kpi_sales_count_label = self._build_kpi_card("Ventes (période)")
-        self.kpi_inventories_card, self.kpi_inventories_label = self._build_kpi_card("Inventaires (période)")
-        for card in (
-            self.kpi_stock_quantity_card, self.kpi_entries_card, self.kpi_exits_card,
-            self.kpi_sales_count_card, self.kpi_inventories_card,
-        ):
-            row.addWidget(card)
-        return row
+        return flow
 
     def _build_empty_state_label(self, message: str) -> QLabel:
         """Message affiché à la place d'un graphique/tableau sans donnée —
@@ -225,18 +297,19 @@ class DashboardPage(QWidget):
         label = QLabel(message, self)
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         label.setWordWrap(True)
-        label.setStyleSheet("color: #666666;")
+        label.setProperty("role", "secondary")
         label.setVisible(False)
         return label
 
-    def _build_chart_cell(self, chart_view: QChartView, empty_message: str) -> tuple[QWidget, QLabel]:
+    def _build_chart_cell(self, title: str, chart_view: QChartView, empty_message: str) -> tuple[QFrame, QLabel]:
         """Un graphique et son message « aucune donnée » partagent la même
-        cellule de la grille : seul l'un des deux est visible à la fois, le
-        conteneur garde donc la hauteur minimale du graphique (§1 : ne pas
-        changer les tailles minimales) que l'un ou l'autre soit affiché."""
-        container = QWidget(self)
+        carte : seul l'un des deux est visible à la fois, la carte garde
+        donc la hauteur minimale du graphique (§1 : ne pas changer les
+        tailles minimales) que l'un ou l'autre soit affiché."""
+        container = _card_frame(self)
         container_layout = QVBoxLayout(container)
-        container_layout.setContentsMargins(0, 0, 0, 0)
+        container_layout.setContentsMargins(16, 14, 16, 14)
+        container_layout.addWidget(_section_title(title, self))
         empty_label = self._build_empty_state_label(empty_message)
         empty_label.setMinimumHeight(chart_view.minimumHeight())
         container_layout.addWidget(chart_view)
@@ -245,12 +318,15 @@ class DashboardPage(QWidget):
 
     def _build_charts_grid(self) -> QGridLayout:
         grid = QGridLayout()
+        grid.setSpacing(14)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
 
         self.sales_chart_view = QChartView(self)
         self.sales_chart_view.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.sales_chart_view.setMinimumHeight(260)
         sales_cell, self.sales_empty_label = self._build_chart_cell(
-            self.sales_chart_view, "Aucune vente sur cette période."
+            "Évolution des ventes", self.sales_chart_view, "Aucune vente sur cette période."
         )
         grid.addWidget(sales_cell, 0, 0)
 
@@ -258,7 +334,7 @@ class DashboardPage(QWidget):
         self.movement_chart_view.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.movement_chart_view.setMinimumHeight(260)
         movement_cell, self.movement_empty_label = self._build_chart_cell(
-            self.movement_chart_view, "Aucun mouvement sur cette période."
+            "Répartition des mouvements", self.movement_chart_view, "Aucun mouvement sur cette période."
         )
         grid.addWidget(movement_cell, 0, 1)
 
@@ -266,39 +342,49 @@ class DashboardPage(QWidget):
         self.category_value_chart_view.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.category_value_chart_view.setMinimumHeight(260)
         category_cell, self.category_value_empty_label = self._build_chart_cell(
-            self.category_value_chart_view, "Aucune donnée de stock par catégorie."
+            "Valeur du stock par catégorie", self.category_value_chart_view, "Aucune donnée de stock par catégorie."
         )
         grid.addWidget(category_cell, 1, 0)
 
-        low_stock_box = QVBoxLayout()
-        low_stock_box.addWidget(QLabel("Articles en stock faible", self))
+        low_stock_card = _card_frame(self)
+        low_stock_box = QVBoxLayout(low_stock_card)
+        low_stock_box.setContentsMargins(16, 14, 16, 14)
+        low_stock_box.addWidget(_section_title("Articles en stock faible", self))
         self.low_stock_table = QTableWidget(0, 3, self)
         self.low_stock_table.setHorizontalHeaderLabels(["Référence", "Désignation", "Stock actuel / min"])
         self.low_stock_table.horizontalHeader().setStretchLastSection(True)
         self.low_stock_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.low_stock_table.setAlternatingRowColors(True)
+        self.low_stock_table.setMinimumHeight(260)
         low_stock_box.addWidget(self.low_stock_table)
         self.low_stock_empty_label = self._build_empty_state_label("Aucun article en stock faible.")
         low_stock_box.addWidget(self.low_stock_empty_label)
-        grid.addLayout(low_stock_box, 1, 1)
+        grid.addWidget(low_stock_card, 1, 1)
 
         return grid
 
-    def _build_alerts_row(self) -> QHBoxLayout:
-        row = QHBoxLayout()
+    def _build_alerts_row(self) -> FlowLayout:
+        """Accès rapides (§4.7 / §12) : disposition en flux plutôt qu'une
+        ligne horizontale unique — corrige le débordement constaté quand
+        tous les boutons ne tiennent pas dans la largeur disponible,
+        jamais un changement du mécanisme de navigation lui-même."""
+        row = FlowLayout(spacing=10)
 
         self.low_stock_alert_label = QLabel("", self)
+        self.low_stock_alert_label.setProperty("role", "secondary")
         row.addWidget(self.low_stock_alert_label)
         self.low_stock_alert_button = QPushButton("Voir le rapport Stock faible", self)
+        self.low_stock_alert_button.setProperty("variant", "warning")
         self.low_stock_alert_button.clicked.connect(lambda: self._navigate("Rapports", "Stock faible"))
         row.addWidget(self.low_stock_alert_button)
 
         self.out_of_stock_alert_label = QLabel("", self)
+        self.out_of_stock_alert_label.setProperty("role", "secondary")
         row.addWidget(self.out_of_stock_alert_label)
         self.out_of_stock_alert_button = QPushButton("Voir le rapport Ruptures", self)
+        self.out_of_stock_alert_button.setProperty("variant", "danger")
         self.out_of_stock_alert_button.clicked.connect(lambda: self._navigate("Rapports", "Ruptures"))
         row.addWidget(self.out_of_stock_alert_button)
-
-        row.addStretch(1)
 
         self.navigation_buttons: dict[str, QPushButton] = {}
         for label, target_module, _permission_code, preset in _NAVIGATION_TARGETS:
@@ -317,15 +403,20 @@ class DashboardPage(QWidget):
 
     def _build_recent_activity_box(self) -> QVBoxLayout:
         box = QVBoxLayout()
+        card = _card_frame(self)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(16, 14, 16, 14)
         self.recent_activity_table = QTableWidget(0, 5, self)
         self.recent_activity_table.setHorizontalHeaderLabels(
             ["Date/heure", "Type", "Article", "Utilisateur", "Quantité"]
         )
         self.recent_activity_table.horizontalHeader().setStretchLastSection(True)
         self.recent_activity_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        box.addWidget(self.recent_activity_table)
+        self.recent_activity_table.setAlternatingRowColors(True)
+        card_layout.addWidget(self.recent_activity_table)
         self.recent_activity_empty_label = self._build_empty_state_label("Aucune activité récente.")
-        box.addWidget(self.recent_activity_empty_label)
+        card_layout.addWidget(self.recent_activity_empty_label)
+        box.addWidget(card)
         return box
 
     # -- navigation -------------------------------------------------------------------
@@ -421,6 +512,29 @@ class DashboardPage(QWidget):
         self._apply_low_stock_table(overview.low_stock_top)
         self._apply_recent_activity_table(overview.recent_activity)
 
+    def _make_chart_background_blend_with_card(self, chart: QChart) -> None:
+        """Fond du graphique et de sa zone de tracé strictement blancs,
+        pour se fondre dans la carte qui l'entoure (§4.4) — par défaut,
+        ``QtCharts`` peint la zone de tracé dans une teinte grise qui
+        tranche avec la carte blanche environnante."""
+        chart.setBackgroundVisible(False)
+        chart.setPlotAreaBackgroundVisible(True)
+        chart.setPlotAreaBackgroundBrush(qcolor("#FFFFFF"))
+
+    def _style_bar_axes(self, chart: QChart, axis_x: QBarCategoryAxis, axis_y: QValueAxis, category_count: int) -> None:
+        """Présentation cohérente des deux graphiques à barres — jamais une
+        donnée recalculée : uniquement la lisibilité des axes (§4.4). L'axe
+        des valeurs démarre toujours à 0 (jamais de base tronquée qui
+        exagérerait visuellement les écarts), et les étiquettes de l'axe
+        des catégories s'inclinent au-delà d'un certain nombre pour ne
+        jamais se chevaucher ni donner une impression de graphique
+        incomplet lorsque la période couvre de nombreux jours."""
+        axis_y.setMin(0)
+        if category_count > _AXIS_LABEL_ROTATION_THRESHOLD:
+            axis_x.setLabelsAngle(-60)
+        chart.legend().setVisible(False)
+        self._make_chart_background_blend_with_card(chart)
+
     def _apply_sales_chart(self, points: Optional[list]) -> None:
         has_data = bool(points)
         self.sales_chart_view.setVisible(has_data)
@@ -437,8 +551,8 @@ class DashboardPage(QWidget):
         self._sales_chart_points = points
 
         chart = QChart()
-        chart.setTitle("Évolution des ventes")
         bar_set = QBarSet("Montant des ventes")
+        bar_set.setColor(qcolor(COLOR_PRIMARY))
         categories = []
         for point in points:
             bar_set.append(_decimal_to_float(point.amount))
@@ -457,7 +571,7 @@ class DashboardPage(QWidget):
         chart.addAxis(axis_y, Qt.AlignmentFlag.AlignLeft)
         series.attachAxis(axis_y)
 
-        chart.legend().setVisible(False)
+        self._style_bar_axes(chart, axis_x, axis_y, len(categories))
         self.sales_chart_view.setChart(chart)
 
     def _on_sales_bar_hovered(self, status: bool, index: int, _barset: QBarSet | None = None) -> None:
@@ -482,12 +596,17 @@ class DashboardPage(QWidget):
             return
 
         chart = QChart()
-        chart.setTitle("Répartition des mouvements")
         series = QPieSeries()
         for type_mouvement, count in sorted(breakdown.items(), key=lambda kv: kv[0].value):
-            series.append(f"{type_mouvement.value} ({count})", count)
+            slice_ = series.append(f"{type_mouvement.value} ({count})", count)
+            color = _MOVEMENT_TYPE_COLORS.get(type_mouvement)
+            if color is not None:
+                slice_.setBrush(qcolor(color))
         series.hovered.connect(self._on_movement_slice_hovered)
         chart.addSeries(series)
+        chart.legend().setVisible(True)
+        chart.legend().setAlignment(Qt.AlignmentFlag.AlignBottom)
+        self._make_chart_background_blend_with_card(chart)
         self.movement_chart_view.setChart(chart)
 
     def _on_movement_slice_hovered(self, slice_: QPieSlice, state: bool) -> None:
@@ -513,8 +632,8 @@ class DashboardPage(QWidget):
         self._category_chart_rows = category_values
 
         chart = QChart()
-        chart.setTitle("Valeur du stock par catégorie")
         bar_set = QBarSet("Valeur du stock")
+        bar_set.setColor(qcolor(COLOR_INDIGO))
         categories = []
         for row in category_values:
             bar_set.append(_decimal_to_float(row.valeur_stock))
@@ -533,7 +652,7 @@ class DashboardPage(QWidget):
         chart.addAxis(axis_y, Qt.AlignmentFlag.AlignLeft)
         series.attachAxis(axis_y)
 
-        chart.legend().setVisible(False)
+        self._style_bar_axes(chart, axis_x, axis_y, len(categories))
         self.category_value_chart_view.setChart(chart)
 
     def _on_category_bar_hovered(self, status: bool, index: int, _barset: QBarSet | None = None) -> None:
@@ -558,10 +677,15 @@ class DashboardPage(QWidget):
         for row_index, row in enumerate(rows):
             self.low_stock_table.setItem(row_index, 0, QTableWidgetItem(row.reference))
             self.low_stock_table.setItem(row_index, 1, QTableWidgetItem(row.designation))
-            self.low_stock_table.setItem(
-                row_index, 2,
-                QTableWidgetItem(f"{format_quantity(row.stock_actuel)} / {format_quantity(row.stock_min)}"),
-            )
+            quantity_item = QTableWidgetItem(f"{format_quantity(row.stock_actuel)} / {format_quantity(row.stock_min)}")
+            quantity_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            # Situation critique (§4.5) : rupture effective (stock à 0),
+            # distinguée visuellement d'un stock simplement sous le seuil —
+            # purement cosmétique, la donnée ``stock_actuel`` elle-même
+            # n'est jamais modifiée.
+            if row.stock_actuel <= Decimal("0"):
+                quantity_item.setForeground(qcolor(COLOR_DANGER))
+            self.low_stock_table.setItem(row_index, 2, quantity_item)
 
     def _apply_recent_activity_table(self, rows: Optional[list]) -> None:
         has_data = bool(rows)
@@ -578,7 +702,13 @@ class DashboardPage(QWidget):
             self.recent_activity_table.setItem(
                 row_index, 0, QTableWidgetItem(movement.date_heure.strftime("%Y-%m-%d %H:%M"))
             )
-            self.recent_activity_table.setItem(row_index, 1, QTableWidgetItem(movement.type.value))
+            type_item = QTableWidgetItem(movement.type.value)
+            color = _MOVEMENT_TYPE_COLORS.get(movement.type)
+            if color is not None:
+                type_item.setForeground(qcolor(color))
+            self.recent_activity_table.setItem(row_index, 1, type_item)
             self.recent_activity_table.setItem(row_index, 2, QTableWidgetItem(movement.article_reference))
             self.recent_activity_table.setItem(row_index, 3, QTableWidgetItem(movement.username))
-            self.recent_activity_table.setItem(row_index, 4, QTableWidgetItem(format_quantity(movement.quantite)))
+            quantity_item = QTableWidgetItem(format_quantity(movement.quantite))
+            quantity_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self.recent_activity_table.setItem(row_index, 4, quantity_item)

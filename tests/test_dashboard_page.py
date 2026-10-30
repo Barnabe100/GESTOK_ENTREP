@@ -324,11 +324,19 @@ def test_recent_activity_message_disappears_when_movement_exists(qtbot, login_as
 
 
 def test_kpi_sales_card_title_renamed_to_chiffre_affaires(qtbot, login_as) -> None:
+    """Refonte visuelle globale : les cartes KPI ne sont plus des
+    QGroupBox (sans .title()) mais des KpiCard dédiées (voir
+    app/views/design_system.py) — l'intitulé est désormais porté par le
+    QLabel#kpiTitle interne, le fait vérifié reste identique."""
+    from PySide6.QtWidgets import QLabel
+
     stack, _ = login_as("Administrateur")
     page = _build_page(stack)
     qtbot.addWidget(page)
 
-    assert page.kpi_sales_card.title() == "Chiffre d'affaires (période)"
+    title_label = page.kpi_sales_card.findChild(QLabel, "kpiTitle")
+    assert title_label is not None
+    assert title_label.text() == "Chiffre d'affaires (période)"
 
 
 def test_kpi_sales_value_unchanged_after_rename(qtbot, login_as) -> None:

@@ -50,6 +50,7 @@ class CategoriesPage(QWidget):
         toolbar.addStretch(1)
 
         self.add_button = QPushButton("Ajouter", self)
+        self.add_button.setProperty("variant", "primary")
         self.add_button.setEnabled(self._permissions.has_permission("CATEGORY_CREATE"))
         toolbar.addWidget(self.add_button)
 
@@ -67,6 +68,7 @@ class CategoriesPage(QWidget):
         layout.addLayout(toolbar)
 
         self.table = QTableWidget(0, len(_COLUMNS), self)
+        self.table.setAlternatingRowColors(True)
         self.table.setHorizontalHeaderLabels(_COLUMNS)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)

@@ -195,6 +195,7 @@ class BackupsPage(QWidget):
             widget.setEnabled(can_configure)
 
         self.save_config_button = QPushButton("Enregistrer", self)
+        self.save_config_button.setProperty("variant", "primary")
         self.save_config_button.setEnabled(can_configure)
         form.addRow(self.save_config_button)
 
@@ -251,6 +252,7 @@ class BackupsPage(QWidget):
         row.addWidget(self.backup_now_button)
 
         self.restore_button = QPushButton("Restaurer la sauvegarde sélectionnée", self)
+        self.restore_button.setProperty("variant", "danger")
         self.restore_button.setEnabled(False)
         row.addWidget(self.restore_button)
         row.addStretch(1)
@@ -322,6 +324,7 @@ class BackupsPage(QWidget):
 
     def _build_history_table(self) -> QTableWidget:
         self.history_table = QTableWidget(0, len(_HISTORY_COLUMNS), self)
+        self.history_table.setAlternatingRowColors(True)
         self.history_table.setHorizontalHeaderLabels(_HISTORY_COLUMNS)
         self.history_table.horizontalHeader().setStretchLastSection(True)
         self.history_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -476,6 +479,7 @@ class BackupsPage(QWidget):
         layout.addWidget(description)
 
         self.reset_business_data_button = QPushButton("Réinitialiser les données métier…", self)
+        self.reset_business_data_button.setProperty("variant", "danger")
         can_reset = (
             self._data_reset_service is not None
             and self._permissions.has_permission("SYSTEM_RESET_BUSINESS_DATA")

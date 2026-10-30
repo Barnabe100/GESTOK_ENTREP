@@ -266,6 +266,13 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(__version__)
+    # Refonte visuelle globale : le style Fusion est le seul rendu de façon
+    # fiable et identique par la feuille de style ci-dessous (app.qss) sur
+    # Windows/Linux/macOS — un style natif (ex. « windowsvista ») ignore ou
+    # rend de façon incohérente certains sélecteurs (QGroupBox::title,
+    # indicateurs QCheckBox/QRadioButton, QPushButton[variant=...]).
+    # Purement visuel : aucune incidence sur le comportement applicatif.
+    app.setStyle("Fusion")
 
     try:
         apply_pending_db_config_if_any()

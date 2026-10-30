@@ -57,6 +57,7 @@ class DataResetConfirmDialog(QDialog):
         button_row.addStretch(1)
         self.cancel_button = QPushButton("Annuler", self)
         self.confirm_button = QPushButton("Réinitialiser définitivement", self)
+        self.confirm_button.setProperty("variant", "danger")
         self.confirm_button.setEnabled(False)
         button_row.addWidget(self.cancel_button)
         button_row.addWidget(self.confirm_button)

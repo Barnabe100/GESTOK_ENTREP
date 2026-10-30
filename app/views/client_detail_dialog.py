@@ -63,6 +63,7 @@ class ClientDetailDialog(QDialog):
 
         layout.addWidget(QLabel("Historique des ventes", self))
         self.sales_table = QTableWidget(len(sales), len(_SALE_COLUMNS), self)
+        self.sales_table.setAlternatingRowColors(True)
         self.sales_table.setHorizontalHeaderLabels(_SALE_COLUMNS)
         self.sales_table.horizontalHeader().setStretchLastSection(True)
         self.sales_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)

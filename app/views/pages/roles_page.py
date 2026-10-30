@@ -69,6 +69,7 @@ class RolesPage(QWidget):
 
         left = QVBoxLayout()
         self.table = QTableWidget(0, len(_COLUMNS), self)
+        self.table.setAlternatingRowColors(True)
         self.table.setHorizontalHeaderLabels(_COLUMNS)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)

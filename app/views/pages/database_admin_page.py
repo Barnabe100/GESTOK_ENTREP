@@ -146,6 +146,7 @@ class DatabaseAdminPage(QWidget):
         layout.addWidget(self.test_connection_button)
 
         self.save_pending_button = QPushButton("Enregistrer comme configuration en attente", group)
+        self.save_pending_button.setProperty("variant", "primary")
         self.save_pending_button.clicked.connect(self._on_save_pending_clicked)
         layout.addWidget(self.save_pending_button)
 

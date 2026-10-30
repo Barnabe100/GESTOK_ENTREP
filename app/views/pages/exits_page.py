@@ -87,6 +87,7 @@ class ExitsPage(QWidget):
         toolbar.addStretch(1)
 
         self.add_button = QPushButton("Ajouter", self)
+        self.add_button.setProperty("variant", "primary")
         self.add_button.setEnabled(self._permissions.has_permission("STOCK_EXIT_CREATE"))
         toolbar.addWidget(self.add_button)
 
@@ -97,14 +98,17 @@ class ExitsPage(QWidget):
         toolbar.addWidget(self.detail_button)
 
         self.validate_button = QPushButton("Valider", self)
+        self.validate_button.setProperty("variant", "success")
         toolbar.addWidget(self.validate_button)
 
         self.cancel_button = QPushButton("Annuler", self)
+        self.cancel_button.setProperty("variant", "danger")
         toolbar.addWidget(self.cancel_button)
 
         layout.addLayout(toolbar)
 
         self.table = QTableWidget(0, len(_COLUMNS), self)
+        self.table.setAlternatingRowColors(True)
         self.table.setHorizontalHeaderLabels(_COLUMNS)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)

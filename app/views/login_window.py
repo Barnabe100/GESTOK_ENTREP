@@ -100,6 +100,7 @@ class LoginWindow(QDialog):
         button_row.addWidget(self.forgot_password_button)
         button_row.addStretch(1)
         self.login_button = QPushButton("Se connecter", self)
+        self.login_button.setProperty("variant", "primary")
         self.login_button.setDefault(True)
         button_row.addWidget(self.login_button)
         layout.addLayout(button_row)

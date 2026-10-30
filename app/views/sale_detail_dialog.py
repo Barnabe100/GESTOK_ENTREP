@@ -133,6 +133,7 @@ class SaleDetailDialog(QDialog):
         # SalesPage._on_cancel_clicked/_cancel_selected — aucune règle de
         # permission/propriété réimplémentée (voir can_manage_sale ci-dessous).
         self.cancel_sale_button = QPushButton("Annuler la vente", header_group)
+        self.cancel_sale_button.setProperty("variant", "danger")
         self.cancel_sale_button.setEnabled(False)
         form.addRow(self.cancel_sale_button)
         self.cancel_sale_button.clicked.connect(self._on_cancel_sale_clicked)
@@ -143,6 +144,7 @@ class SaleDetailDialog(QDialog):
         lines_group = QGroupBox("Articles et montants", content)
         lines_layout = QVBoxLayout(lines_group)
         lines_table = QTableWidget(len(sale.lignes), len(_LINE_COLUMNS), lines_group)
+        lines_table.setAlternatingRowColors(True)
         lines_table.setHorizontalHeaderLabels(_LINE_COLUMNS)
         lines_table.horizontalHeader().setStretchLastSection(True)
         lines_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -174,6 +176,7 @@ class SaleDetailDialog(QDialog):
 
         payment_group_layout.addWidget(QLabel("Historique des paiements", payment_group))
         self.payments_table = QTableWidget(0, len(_PAYMENT_COLUMNS), payment_group)
+        self.payments_table.setAlternatingRowColors(True)
         self.payments_table.setHorizontalHeaderLabels(_PAYMENT_COLUMNS)
         self.payments_table.horizontalHeader().setStretchLastSection(True)
         self.payments_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -469,6 +472,7 @@ class SaleDetailDialog(QDialog):
         movements_group = QGroupBox("Mouvements de stock générés", self._content)
         movements_layout = QVBoxLayout(movements_group)
         movements_table = QTableWidget(0, len(_MOVEMENT_COLUMNS), movements_group)
+        movements_table.setAlternatingRowColors(True)
         movements_table.setHorizontalHeaderLabels(_MOVEMENT_COLUMNS)
         movements_table.horizontalHeader().setStretchLastSection(True)
         movements_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)

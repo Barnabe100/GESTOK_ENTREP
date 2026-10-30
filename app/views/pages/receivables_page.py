@@ -107,6 +107,7 @@ class ReceivablesPage(QWidget):
         layout.addWidget(self.client_total_label)
 
         self.table = QTableWidget(0, len(_COLUMNS), self)
+        self.table.setAlternatingRowColors(True)
         self.table.setHorizontalHeaderLabels(_COLUMNS)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)

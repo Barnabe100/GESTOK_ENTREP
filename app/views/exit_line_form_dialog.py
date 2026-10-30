@@ -74,6 +74,7 @@ class ExitLineFormDialog(QDialog):
         button_row.addStretch(1)
         self.cancel_button = QPushButton("Annuler", self)
         self.save_button = QPushButton("Ajouter", self)
+        self.save_button.setProperty("variant", "primary")
         self.save_button.setDefault(True)
         button_row.addWidget(self.cancel_button)
         button_row.addWidget(self.save_button)

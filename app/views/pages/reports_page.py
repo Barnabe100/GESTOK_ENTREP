@@ -155,6 +155,7 @@ class ReportsPage(QWidget):
         layout.addWidget(self.summary_label)
 
         self.table = QTableWidget(0, 0, self)
+        self.table.setAlternatingRowColors(True)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)

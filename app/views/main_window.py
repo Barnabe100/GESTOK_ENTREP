@@ -459,7 +459,8 @@ class MainWindow(QMainWindow):
         top_bar = QWidget(parent)
         top_bar.setObjectName("topBar")
         top_bar_layout = QHBoxLayout(top_bar)
-        top_bar_layout.setContentsMargins(20, 14, 20, 14)
+        top_bar_layout.setContentsMargins(24, 14, 24, 14)
+        top_bar_layout.setSpacing(10)
 
         initial_title = self.visible_modules[0] if self.visible_modules else ""
         self.page_title_label = QLabel(initial_title, top_bar)
@@ -472,7 +473,9 @@ class MainWindow(QMainWindow):
             f"{current_user.username} ({', '.join(current_user.role_names)})" if current_user else ""
         )
         self.user_label = QLabel(user_text, top_bar)
+        self.user_label.setObjectName("userLabel")
         top_bar_layout.addWidget(self.user_label)
+        top_bar_layout.addSpacing(12)
 
         # Lot 16 : chemin de consultation explicite des locations existantes
         # quand le module est désactivé — visible seulement dans ce cas (si

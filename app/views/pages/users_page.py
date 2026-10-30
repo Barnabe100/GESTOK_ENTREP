@@ -45,6 +45,7 @@ class UsersPage(QWidget):
         layout = QVBoxLayout(self)
 
         self.table = QTableWidget(0, len(_COLUMNS), self)
+        self.table.setAlternatingRowColors(True)
         self.table.setHorizontalHeaderLabels(_COLUMNS)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -54,6 +55,7 @@ class UsersPage(QWidget):
 
         button_row = QHBoxLayout()
         self.add_button = QPushButton("Ajouter un utilisateur", self)
+        self.add_button.setProperty("variant", "primary")
         self.add_button.setEnabled(self._permissions.has_permission("USER_CREATE"))
         button_row.addWidget(self.add_button)
 

@@ -66,6 +66,7 @@ class CancellationReasonDialog(QDialog):
         self.close_button.clicked.connect(self.reject)
         button_row.addWidget(self.close_button)
         self.confirm_button = QPushButton("Confirmer l'annulation", self)
+        self.confirm_button.setProperty("variant", "danger")
         self.confirm_button.setDefault(True)
         button_row.addWidget(self.confirm_button)
         layout.addLayout(button_row)

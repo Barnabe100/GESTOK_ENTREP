@@ -49,6 +49,7 @@ class ResetPasswordDialog(QDialog):
         layout.addWidget(self.error_label)
 
         self.submit_button = QPushButton("Réinitialiser", self)
+        self.submit_button.setProperty("variant", "primary")
         self.submit_button.setDefault(True)
         layout.addWidget(self.submit_button)
 

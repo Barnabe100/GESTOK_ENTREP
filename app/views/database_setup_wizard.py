@@ -105,6 +105,7 @@ class DatabaseSetupWizard(QDialog):
         buttons_layout.addWidget(self.later_button)
         buttons_layout.addStretch(1)
         self.finish_button = QPushButton("Terminer", self)
+        self.finish_button.setProperty("variant", "primary")
         self.finish_button.setDefault(True)
         self.finish_button.clicked.connect(self._on_finish_clicked)
         buttons_layout.addWidget(self.finish_button)
