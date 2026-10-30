@@ -74,7 +74,7 @@ def test_dialog_uses_qdateedit_with_calendar_popup(qtbot) -> None:
 
     assert isinstance(dialog.date_edit, QDateEdit)
     assert dialog.date_edit.calendarPopup() is True
-    assert dialog.date_edit.displayFormat() == "yyyy-MM-dd"
+    assert dialog.date_edit.displayFormat() == "dd/MM/yyyy"
 
 
 def test_dialog_defaults_date_to_today_on_creation(qtbot) -> None:

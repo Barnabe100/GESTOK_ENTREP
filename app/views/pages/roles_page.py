@@ -91,6 +91,7 @@ class RolesPage(QWidget):
         right.addWidget(self.permissions_scroll, stretch=1)
 
         self.edit_button = QPushButton("Modifier les permissions", self)
+        self.edit_button.setProperty("variant", "indigo")
         self.edit_button.setEnabled(False)
         right.addWidget(self.edit_button)
 

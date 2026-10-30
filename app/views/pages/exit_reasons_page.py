@@ -58,6 +58,7 @@ class ExitReasonsPage(QWidget):
         toolbar.addWidget(self.add_button)
 
         self.edit_button = QPushButton("Modifier", self)
+        self.edit_button.setProperty("variant", "indigo")
         self.edit_button.setEnabled(self._permissions.has_permission("STOCK_REASON_UPDATE"))
         toolbar.addWidget(self.edit_button)
 

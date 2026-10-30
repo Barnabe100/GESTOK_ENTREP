@@ -83,7 +83,7 @@ class LocationFormDialog(QDialog):
 
         self.date_edit = QDateEdit(self)
         self.date_edit.setCalendarPopup(True)
-        self.date_edit.setDisplayFormat("yyyy-MM-dd")
+        self.date_edit.setDisplayFormat("dd/MM/yyyy")
         self.date_edit.setMaximumDate(QDate.currentDate())
         self.date_edit.setDate(date_to_qdate(initial.get("date") or date.today()))
         form.addRow(required_label("Date"), self.date_edit)

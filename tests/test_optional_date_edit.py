@@ -64,7 +64,7 @@ def test_display_format_is_yyyy_mm_dd(qtbot) -> None:
     widget = OptionalDateEdit()
     qtbot.addWidget(widget)
 
-    assert widget.date_edit.displayFormat() == "yyyy-MM-dd"
+    assert widget.date_edit.displayFormat() == "dd/MM/yyyy"
 
 
 def test_calendar_popup_is_enabled(qtbot) -> None:

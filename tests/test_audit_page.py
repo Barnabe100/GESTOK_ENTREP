@@ -109,7 +109,7 @@ def test_date_fields_use_calendar_popup_and_yyyy_mm_dd_format(qtbot, login_as) -
 
     for widget in (page.date_from_edit, page.date_to_edit):
         assert widget.date_edit.calendarPopup() is True
-        assert widget.date_edit.displayFormat() == "yyyy-MM-dd"
+        assert widget.date_edit.displayFormat() == "dd/MM/yyyy"
 
 
 def test_date_edit_is_enabled_when_checked_by_default(qtbot, login_as) -> None:

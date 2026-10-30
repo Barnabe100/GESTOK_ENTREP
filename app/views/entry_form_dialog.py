@@ -76,7 +76,7 @@ class EntryFormDialog(QDialog):
 
         self.date_edit = QDateEdit(self)
         self.date_edit.setCalendarPopup(True)
-        self.date_edit.setDisplayFormat("yyyy-MM-dd")
+        self.date_edit.setDisplayFormat("dd/MM/yyyy")
         # Confort d'interface uniquement (§ dates futures) : le calendrier
         # ne propose pas de date future, mais la garantie réelle est
         # appliquée côté service (EntryService.create_entry/update_entry).

@@ -157,6 +157,7 @@ class LocationsPage(QWidget):
         toolbar.addWidget(self.add_button)
 
         self.edit_button = QPushButton("Modifier", self)
+        self.edit_button.setProperty("variant", "indigo")
         self.edit_button.setEnabled(not self._read_only and self._permissions.has_permission("LOCATION_UPDATE"))
         toolbar.addWidget(self.edit_button)
 
@@ -228,7 +229,7 @@ class LocationsPage(QWidget):
 
         self.caisse_date_edit = QDateEdit(panel)
         self.caisse_date_edit.setCalendarPopup(True)
-        self.caisse_date_edit.setDisplayFormat("yyyy-MM-dd")
+        self.caisse_date_edit.setDisplayFormat("dd/MM/yyyy")
         self.caisse_date_edit.setMaximumDate(QDate.currentDate())
         header_form.addRow(required_label("Date"), self.caisse_date_edit)
 

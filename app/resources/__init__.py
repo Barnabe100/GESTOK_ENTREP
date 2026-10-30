@@ -6,6 +6,7 @@ from app.utils.runtime_paths import app_root
 RESOURCES_DIR = app_root() / "app" / "resources"
 STYLES_DIR = RESOURCES_DIR / "styles"
 BRANDING_DIR = RESOURCES_DIR / "branding"
+ICONS_DIR = RESOURCES_DIR / "icons"
 
 APP_STYLESHEET_PATH = STYLES_DIR / "app.qss"
 
@@ -27,5 +28,13 @@ APP_LOGO_OFFICIAL_SOURCE_PATH = BRANDING_DIR / "stockmanager_logo_official.webp"
 
 
 def load_stylesheet() -> str:
-    """Charge la feuille de style Qt principale de l'application."""
-    return APP_STYLESHEET_PATH.read_text(encoding="utf-8")
+    """Charge la feuille de style Qt principale de l'application.
+
+    ``app.qss`` référence les icônes (flèche de QComboBox, coche de
+    QCheckBox, calendrier de QDateEdit) via le jeton ``@ICONS_DIR@``,
+    remplacé ici par le chemin absolu réel (POSIX, requis par ``url()``
+    en QSS même sous Windows) — un chemin relatif codé en dur dans le
+    fichier ``.qss`` ne resterait pas valable une fois packagé par
+    PyInstaller (même raison que pour ``RESOURCES_DIR`` ci-dessus)."""
+    css = APP_STYLESHEET_PATH.read_text(encoding="utf-8")
+    return css.replace("@ICONS_DIR@", ICONS_DIR.as_posix())

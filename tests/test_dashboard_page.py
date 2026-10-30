@@ -366,7 +366,7 @@ def test_period_fields_are_qdateedit_with_calendar_popup_and_format(qtbot, login
     assert isinstance(page.date_to_edit, QDateEdit)
     for widget in (page.date_from_edit, page.date_to_edit):
         assert widget.calendarPopup() is True
-        assert widget.displayFormat() == "yyyy-MM-dd"
+        assert widget.displayFormat() == "dd/MM/yyyy"
 
 
 def test_period_defaults_to_first_day_of_month_and_today(qtbot, login_as) -> None:

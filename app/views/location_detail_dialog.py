@@ -72,7 +72,7 @@ class _DepartDateDialog(QDialog):
         form = QFormLayout()
         self.date_edit = QDateEdit(self)
         self.date_edit.setCalendarPopup(True)
-        self.date_edit.setDisplayFormat("yyyy-MM-dd")
+        self.date_edit.setDisplayFormat("dd/MM/yyyy")
         self.date_edit.setMaximumDate(QDate.currentDate())
         self.date_edit.setDate(QDate.currentDate())
         form.addRow(required_label("Date de départ"), self.date_edit)
@@ -166,8 +166,10 @@ class LocationDetailDialog(QDialog):
         documents_row = QHBoxLayout()
         self.print_voucher_button = QPushButton("Imprimer le justificatif de réservation", self)
         self.export_voucher_button = QPushButton("Exporter le justificatif en PDF", self)
+        self.export_voucher_button.setProperty("variant", "export")
         self.print_location_receipt_button = QPushButton("Imprimer le reçu de location", self)
         self.export_location_receipt_button = QPushButton("Exporter le reçu de location en PDF", self)
+        self.export_location_receipt_button.setProperty("variant", "export")
         for button in (
             self.print_voucher_button, self.export_voucher_button,
             self.print_location_receipt_button, self.export_location_receipt_button,

@@ -81,8 +81,8 @@ QListWidget#navigationList QScrollBar::sub-line:vertical {
 /* ============================= Barre supérieure ========================= */
 
 QWidget#topBar {
-    background-color: #FFFFFF;
-    border-bottom: 1px solid #E2E8F0;
+    background-color: #EAF0F8;
+    border-bottom: 1px solid #D6DFEA;
 }
 
 QLabel#pageTitle {
@@ -189,49 +189,183 @@ QPushButton[variant="warning"]:hover { background-color: #B45309; border-color: 
 QPushButton[variant="warning"]:pressed { background-color: #92400E; border-color: #92400E; }
 QPushButton[variant="warning"]:disabled { background-color: #FCD34D; border-color: #FCD34D; color: #FFFBEB; }
 
+/* Modification (§9) : distingue une action de modification d'une création
+   (primary) ou d'une suppression (danger) sans recourir au même bleu que
+   « Enregistrer » — indigo, cohérent avec l'accent déjà utilisé pour les
+   graphiques/cartes KPI de même nature. */
+QPushButton[variant="indigo"] {
+    background-color: #4F46E5;
+    color: #FFFFFF;
+    border: 1px solid #4F46E5;
+    font-weight: 600;
+}
+QPushButton[variant="indigo"]:hover { background-color: #4338CA; border-color: #4338CA; }
+QPushButton[variant="indigo"]:pressed { background-color: #3730A3; border-color: #3730A3; }
+QPushButton[variant="indigo"]:disabled { background-color: #C7D2FE; border-color: #C7D2FE; color: #EEF2FF; }
+
+/* Export (§9) : « couleur distincte mais discrète » — jamais le même vert
+   plein que la validation (success), pour ne pas laisser croire qu'exporter
+   un document équivaut à valider une opération métier. */
+QPushButton[variant="export"] {
+    background-color: #FFFFFF;
+    color: #16A34A;
+    border: 1px solid #86EFAC;
+    font-weight: 500;
+}
+QPushButton[variant="export"]:hover { background-color: #F0FDF4; border-color: #16A34A; }
+QPushButton[variant="export"]:pressed { background-color: #DCFCE7; }
+QPushButton[variant="export"]:disabled { background-color: #F4F6FA; color: #94A3B8; border-color: #E2E8F0; }
+
 /* ============================= Champs de saisie =========================== */
 
-QLineEdit, QDateEdit, QDateTimeEdit, QSpinBox, QDoubleSpinBox, QComboBox, QTextEdit, QPlainTextEdit {
+QLineEdit, QDateEdit, QDateTimeEdit, QTimeEdit, QSpinBox, QDoubleSpinBox, QComboBox, QTextEdit, QPlainTextEdit {
     background-color: #FFFFFF;
-    border: 1px solid #E2E8F0;
+    border: 1px solid #CBD5E1;
     border-radius: 6px;
     padding: 6px 10px;
     selection-background-color: #2563EB;
     selection-color: #FFFFFF;
 }
 
-QLineEdit:focus, QDateEdit:focus, QDateTimeEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus,
+QLineEdit:hover, QDateEdit:hover, QDateTimeEdit:hover, QTimeEdit:hover, QSpinBox:hover,
+QDoubleSpinBox:hover, QComboBox:hover, QTextEdit:hover, QPlainTextEdit:hover {
+    border-color: #94A3B8;
+}
+
+QLineEdit:focus, QDateEdit:focus, QDateTimeEdit:focus, QTimeEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus,
 QComboBox:focus, QTextEdit:focus, QPlainTextEdit:focus {
     border: 1px solid #2563EB;
 }
 
-QLineEdit:disabled, QDateEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled,
-QComboBox:disabled, QTextEdit:disabled {
+QLineEdit:disabled, QDateEdit:disabled, QDateTimeEdit:disabled, QTimeEdit:disabled, QSpinBox:disabled,
+QDoubleSpinBox:disabled, QComboBox:disabled, QTextEdit:disabled {
     background-color: #F4F6FA;
     color: #94A3B8;
+    border-color: #E2E8F0;
 }
 
 QLineEdit[valid="false"] {
     border: 1px solid #DC2626;
 }
 
+/* -- QComboBox : doit se reconnaître immédiatement comme une liste
+   déroulante (jamais comme un simple champ de saisie) -------------------- */
+
+QComboBox {
+    padding: 6px 34px 6px 10px;
+    min-height: 20px;
+}
+
+QComboBox:on {
+    border: 1px solid #2563EB;
+    background-color: #EFF6FF;
+}
+
 QComboBox::drop-down {
-    border: none;
-    width: 22px;
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 28px;
+    border-left: 1px solid #E2E8F0;
+    border-top-right-radius: 6px;
+    border-bottom-right-radius: 6px;
+    background-color: #F8FAFC;
+}
+
+QComboBox:hover::drop-down {
+    background-color: #F1F5F9;
+}
+
+QComboBox:disabled::drop-down {
+    background-color: #F4F6FA;
+    border-left-color: #E2E8F0;
+}
+
+QComboBox::down-arrow {
+    image: url(@ICONS_DIR@/chevron_down.svg);
+    width: 12px;
+    height: 12px;
+}
+
+QComboBox::down-arrow:disabled {
+    image: url(@ICONS_DIR@/chevron_down_disabled.svg);
 }
 
 QComboBox QAbstractItemView {
     background-color: #FFFFFF;
     border: 1px solid #E2E8F0;
     border-radius: 6px;
-    selection-background-color: #EFF6FF;
-    selection-color: #1E293B;
+    selection-background-color: #2563EB;
+    selection-color: #FFFFFF;
     padding: 4px;
+    outline: 0;
+}
+
+QComboBox QAbstractItemView::item {
+    padding: 6px 10px;
+    border-radius: 4px;
+    min-height: 22px;
+}
+
+QComboBox QAbstractItemView::item:hover {
+    background-color: #EFF6FF;
+    color: #1E293B;
+}
+
+/* -- QDateEdit / QDateTimeEdit : bouton calendrier clairement visible --- */
+
+QDateEdit, QDateTimeEdit {
+    padding: 6px 34px 6px 10px;
 }
 
 QDateEdit::drop-down, QDateTimeEdit::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 28px;
+    border-left: 1px solid #E2E8F0;
+    border-top-right-radius: 6px;
+    border-bottom-right-radius: 6px;
+    background-color: #F8FAFC;
+}
+
+QDateEdit:hover::drop-down, QDateTimeEdit:hover::drop-down {
+    background-color: #F1F5F9;
+}
+
+QDateEdit:disabled::drop-down, QDateTimeEdit:disabled::drop-down {
+    background-color: #F4F6FA;
+    border-left-color: #E2E8F0;
+}
+
+QDateEdit::down-arrow, QDateTimeEdit::down-arrow {
+    image: url(@ICONS_DIR@/calendar.svg);
+    width: 14px;
+    height: 14px;
+}
+
+QDateEdit::down-arrow:disabled, QDateTimeEdit::down-arrow:disabled {
+    image: url(@ICONS_DIR@/calendar_disabled.svg);
+}
+
+QCalendarWidget QWidget {
+    background-color: #FFFFFF;
+}
+
+QCalendarWidget QToolButton {
+    color: #1E293B;
+    background-color: transparent;
     border: none;
-    width: 22px;
+    border-radius: 6px;
+    padding: 4px 8px;
+}
+
+QCalendarWidget QToolButton:hover {
+    background-color: #EFF6FF;
+}
+
+QCalendarWidget QAbstractItemView:enabled {
+    selection-background-color: #2563EB;
+    selection-color: #FFFFFF;
+    color: #1E293B;
 }
 
 QSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {
@@ -239,15 +373,17 @@ QSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::up-button, QDoubleSp
     width: 16px;
 }
 
+/* -- QCheckBox / QRadioButton -------------------------------------------- */
+
 QCheckBox, QRadioButton {
     spacing: 8px;
     color: #1E293B;
 }
 
 QCheckBox::indicator, QRadioButton::indicator {
-    width: 16px;
-    height: 16px;
-    border: 1px solid #94A3B8;
+    width: 17px;
+    height: 17px;
+    border: 1.5px solid #94A3B8;
     background-color: #FFFFFF;
 }
 
@@ -256,17 +392,33 @@ QCheckBox::indicator {
 }
 
 QRadioButton::indicator {
-    border-radius: 8px;
+    border-radius: 9px;
+}
+
+QCheckBox::indicator:hover, QRadioButton::indicator:hover {
+    border-color: #64748B;
 }
 
 QCheckBox::indicator:checked, QRadioButton::indicator:checked {
     background-color: #2563EB;
-    border: 1px solid #2563EB;
+    border: 1.5px solid #2563EB;
+}
+
+/* Coche réelle (SVG, jamais un caractère Unicode dépendant d'une police
+   installée) — toujours visible, quelle que soit la résolution ou le
+   poste cible (§4 de la mission finition ergonomique). */
+QCheckBox::indicator:checked {
+    image: url(@ICONS_DIR@/check_white.svg);
 }
 
 QCheckBox::indicator:disabled, QRadioButton::indicator:disabled {
     background-color: #F4F6FA;
     border-color: #E2E8F0;
+}
+
+QCheckBox::indicator:checked:disabled, QRadioButton::indicator:checked:disabled {
+    background-color: #93C5FD;
+    border-color: #93C5FD;
 }
 
 /* ============================= Cartes / groupes ============================ */
@@ -288,6 +440,19 @@ QGroupBox::title {
     padding: 0 6px;
     background-color: #FFFFFF;
     color: #172B4D;
+}
+
+/* Zone sensible (ex. réinitialisation des données métier, §7.5) : accent
+   rouge discret, jamais une simple QGroupBox neutre — pour qu'une opération
+   destructive se distingue visuellement avant même de lire le texte. */
+QGroupBox[variant="danger"] {
+    background-color: #FEF2F2;
+    border: 1px solid #FCA5A5;
+}
+
+QGroupBox[variant="danger"]::title {
+    background-color: #FEF2F2;
+    color: #B91C1C;
 }
 
 QFrame#kpiCard, QFrame#card {

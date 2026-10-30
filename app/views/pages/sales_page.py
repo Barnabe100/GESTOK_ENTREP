@@ -192,6 +192,7 @@ class SalesPage(QWidget):
         toolbar.addWidget(self.add_button)
 
         self.edit_button = QPushButton("Modifier", self)
+        self.edit_button.setProperty("variant", "indigo")
         toolbar.addWidget(self.edit_button)
 
         self.delete_button = QPushButton("Supprimer", self)
@@ -762,7 +763,7 @@ class SalesPage(QWidget):
 
         self.caisse_date_edit = QDateEdit(panel)
         self.caisse_date_edit.setCalendarPopup(True)
-        self.caisse_date_edit.setDisplayFormat("yyyy-MM-dd")
+        self.caisse_date_edit.setDisplayFormat("dd/MM/yyyy")
         self.caisse_date_edit.setMaximumDate(QDate.currentDate())
         header_form.addRow(required_label("Date"), self.caisse_date_edit)
 

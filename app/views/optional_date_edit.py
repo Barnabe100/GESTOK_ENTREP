@@ -35,7 +35,7 @@ class OptionalDateEdit(QWidget):
 
         self.date_edit = QDateEdit(self)
         self.date_edit.setCalendarPopup(True)
-        self.date_edit.setDisplayFormat("yyyy-MM-dd")
+        self.date_edit.setDisplayFormat("dd/MM/yyyy")
         self.date_edit.setDate(QDate.currentDate())
         self.date_edit.setEnabled(False)
 

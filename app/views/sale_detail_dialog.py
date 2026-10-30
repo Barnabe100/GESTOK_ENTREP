@@ -216,6 +216,7 @@ class SaleDetailDialog(QDialog):
         # l'impression — voir ``_prompt_export_format``), plutôt que les
         # deux boutons distincts « Exporter en PDF (A4) »/« (Ticket 80 mm) ».
         self.export_pdf_button = QPushButton("Exporter en PDF", receipt_group)
+        self.export_pdf_button.setProperty("variant", "export")
         receipt_row.addWidget(self.export_pdf_button)
 
         receipt_row.addStretch(1)

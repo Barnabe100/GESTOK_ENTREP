@@ -214,8 +214,8 @@ class DashboardPage(QWidget):
         row.addWidget(QLabel("du", self))
         self.date_from_edit = QDateEdit(self)
         self.date_from_edit.setCalendarPopup(True)
-        self.date_from_edit.setDisplayFormat("yyyy-MM-dd")
-        self.date_from_edit.setMinimumWidth(118)
+        self.date_from_edit.setDisplayFormat("dd/MM/yyyy")
+        self.date_from_edit.setMinimumWidth(150)
         # Quand la date de début change, la date de fin ne doit jamais
         # pouvoir devenir antérieure (§ lot dates) — QDateEdit ajuste
         # automatiquement sa valeur courante si elle tombe sous le nouveau
@@ -225,8 +225,8 @@ class DashboardPage(QWidget):
         row.addWidget(QLabel("au", self))
         self.date_to_edit = QDateEdit(self)
         self.date_to_edit.setCalendarPopup(True)
-        self.date_to_edit.setDisplayFormat("yyyy-MM-dd")
-        self.date_to_edit.setMinimumWidth(118)
+        self.date_to_edit.setDisplayFormat("dd/MM/yyyy")
+        self.date_to_edit.setMinimumWidth(150)
         row.addWidget(self.date_to_edit)
         row.addStretch(1)
         self.refresh_button = QPushButton("Actualiser", self)

@@ -92,6 +92,7 @@ class ExitsPage(QWidget):
         toolbar.addWidget(self.add_button)
 
         self.edit_button = QPushButton("Modifier", self)
+        self.edit_button.setProperty("variant", "indigo")
         toolbar.addWidget(self.edit_button)
 
         self.detail_button = QPushButton("Détails", self)

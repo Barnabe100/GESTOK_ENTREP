@@ -78,31 +78,38 @@ class ArticleFormDialog(QDialog):
 
         self.setWindowTitle("Article")
         self.setModal(True)
-        self.setMinimumWidth(480)
+        # Formulaire en deux colonnes (§6 de la finition ergonomique) :
+        # réduit sensiblement la hauteur du dialogue par rapport à l'ancienne
+        # colonne unique, qui imposait beaucoup de défilement. 760px laisse
+        # assez de place aux libellés longs (« Tarif de location (par
+        # jour) ») sans écraser les champs — reste très confortable même à
+        # 1366×768 pour un dialogue modal, jamais une largeur fixe
+        # (redimensionnement plus étroit toujours possible).
+        self.setMinimumWidth(760)
 
         layout = QVBoxLayout(self)
-        form = QFormLayout()
+
+        columns_row = QHBoxLayout()
+        columns_row.setSpacing(28)
+        left_form = QFormLayout()
+        left_form.setSpacing(10)
+        right_form = QFormLayout()
+        right_form.setSpacing(10)
+        columns_row.addLayout(left_form, 1)
+        columns_row.addLayout(right_form, 1)
+
+        # -- Colonne gauche -----------------------------------------------
 
         self.reference_edit = QLineEdit(self)
         self.reference_edit.setText(initial.get("reference", ""))
-        form.addRow(required_label("Référence"), self.reference_edit)
-
-        self.designation_edit = QLineEdit(self)
-        self.designation_edit.setText(initial.get("designation", ""))
-        form.addRow(required_label("Désignation"), self.designation_edit)
+        self.reference_edit.setMinimumWidth(160)
+        left_form.addRow(required_label("Référence"), self.reference_edit)
 
         self.category_combo = QComboBox(self)
         for category_id, nom in categories:
             self.category_combo.addItem(nom, category_id)
         self._select_combo_data(self.category_combo, initial.get("category_id"))
-        form.addRow(required_label("Catégorie"), self.category_combo)
-
-        self.supplier_combo = QComboBox(self)
-        self.supplier_combo.addItem("(Aucun)", None)
-        for supplier_id, nom in suppliers:
-            self.supplier_combo.addItem(nom, supplier_id)
-        self._select_combo_data(self.supplier_combo, initial.get("fournisseur_principal_id"))
-        form.addRow("Fournisseur principal", self.supplier_combo)
+        left_form.addRow(required_label("Catégorie"), self.category_combo)
 
         self.unite_row = QHBoxLayout()
         self.unite_combo = QComboBox(self)
@@ -112,15 +119,11 @@ class ArticleFormDialog(QDialog):
         self.new_unite_button.setEnabled(on_create_unite is not None)
         self.new_unite_button.clicked.connect(self._on_new_unite_clicked)
         self.unite_row.addWidget(self.new_unite_button)
-        form.addRow(required_label("Unité"), self.unite_row)
+        left_form.addRow(required_label("Unité"), self.unite_row)
 
         self.prix_achat_edit = QLineEdit(self)
         self.prix_achat_edit.setText(_as_text(initial.get("prix_achat"), default="0"))
-        form.addRow(required_label("Prix d'achat"), self.prix_achat_edit)
-
-        self.prix_vente_edit = QLineEdit(self)
-        self.prix_vente_edit.setText(_as_text(initial.get("prix_vente"), default="0"))
-        form.addRow(required_label("Prix de vente"), self.prix_vente_edit)
+        left_form.addRow(required_label("Prix d'achat"), self.prix_achat_edit)
 
         # Module Locations (lot dédié) puis lot « Gestion du mode Vente /
         # Location » : le mode choisi ici ne modifie jamais directement
@@ -135,7 +138,7 @@ class ArticleFormDialog(QDialog):
         self._select_combo_data(
             self.mode_gestion_combo, initial.get("mode_gestion", ModeGestionArticle.VENTE)
         )
-        form.addRow("Mode de gestion", self.mode_gestion_combo)
+        left_form.addRow("Mode de gestion", self.mode_gestion_combo)
 
         # Tarif catalogue journalier de location — désactivé (mais jamais
         # effacé) en mode Vente, où il reste sans objet ; activé en mode
@@ -145,21 +148,38 @@ class ArticleFormDialog(QDialog):
         self.tarif_location_jour_edit.setText(
             _as_text(initial.get("tarif_location_jour")) if initial.get("tarif_location_jour") is not None else ""
         )
-        form.addRow("Tarif de location (par jour)", self.tarif_location_jour_edit)
+        left_form.addRow("Tarif de location (par jour)", self.tarif_location_jour_edit)
         self.mode_gestion_combo.currentIndexChanged.connect(self._update_price_fields_state)
-        self._update_price_fields_state()
 
         self.stock_min_edit = QLineEdit(self)
         self.stock_min_edit.setText(
             format_quantity(initial["stock_min"]) if initial.get("stock_min") is not None else "0"
         )
-        form.addRow(required_label("Stock minimum"), self.stock_min_edit)
+        left_form.addRow(required_label("Stock minimum"), self.stock_min_edit)
+
+        # -- Colonne droite -------------------------------------------------
+
+        self.designation_edit = QLineEdit(self)
+        self.designation_edit.setText(initial.get("designation", ""))
+        self.designation_edit.setMinimumWidth(160)
+        right_form.addRow(required_label("Désignation"), self.designation_edit)
+
+        self.supplier_combo = QComboBox(self)
+        self.supplier_combo.addItem("(Aucun)", None)
+        for supplier_id, nom in suppliers:
+            self.supplier_combo.addItem(nom, supplier_id)
+        self._select_combo_data(self.supplier_combo, initial.get("fournisseur_principal_id"))
+        right_form.addRow("Fournisseur principal", self.supplier_combo)
+
+        self.prix_vente_edit = QLineEdit(self)
+        self.prix_vente_edit.setText(_as_text(initial.get("prix_vente"), default="0"))
+        right_form.addRow(required_label("Prix de vente"), self.prix_vente_edit)
 
         self.stock_max_edit = QLineEdit(self)
         self.stock_max_edit.setText(
             format_quantity(initial["stock_max"]) if initial.get("stock_max") is not None else ""
         )
-        form.addRow("Stock maximum", self.stock_max_edit)
+        right_form.addRow("Stock maximum", self.stock_max_edit)
 
         self.stock_initial_edit: Optional[QLineEdit] = None
         self.stock_actuel_label: Optional[QLabel] = None
@@ -170,30 +190,42 @@ class ArticleFormDialog(QDialog):
                 format_quantity(initial["stock_actuel"]) if initial.get("stock_actuel") is not None else "0", self
             )
             self.stock_actuel_label.setStyleSheet("color: #6B7280;")
-            form.addRow("Stock actuel (piloté par le système)", self.stock_actuel_label)
+            right_form.addRow("Stock actuel (piloté par le système)", self.stock_actuel_label)
 
             self.cmup_label = QLabel(_as_text(initial.get("cout_moyen_pondere"), default="0"), self)
             self.cmup_label.setStyleSheet("color: #6B7280;")
-            form.addRow("CMUP (piloté par le système)", self.cmup_label)
+            right_form.addRow("CMUP (piloté par le système)", self.cmup_label)
         else:
             self.stock_initial_edit = QLineEdit(self)
             self.stock_initial_edit.setText("0")
-            form.addRow(required_label("Stock initial"), self.stock_initial_edit)
+            right_form.addRow(required_label("Stock initial"), self.stock_initial_edit)
 
         self.emplacement_edit = QLineEdit(self)
         self.emplacement_edit.setText(initial.get("emplacement", "") or "")
-        form.addRow("Emplacement", self.emplacement_edit)
+        right_form.addRow("Emplacement", self.emplacement_edit)
 
         self.code_barres_edit = QLineEdit(self)
         self.code_barres_edit.setText(initial.get("code_barres", "") or "")
-        form.addRow("Code-barres", self.code_barres_edit)
+        right_form.addRow("Code-barres", self.code_barres_edit)
 
+        # Appelé une fois les deux colonnes construites (lit à la fois
+        # tarif_location_jour_edit — colonne gauche — et prix_vente_edit —
+        # colonne droite).
+        self._update_price_fields_state()
+
+        layout.addLayout(columns_row)
+
+        # Description : occupe toute la largeur du dialogue, sous les deux
+        # colonnes (§6 : « zone suffisamment large en bas du formulaire »).
+        # Conservée dans son propre QFormLayout (plutôt qu'un simple QLabel
+        # à côté) pour garder un libellé réellement associé au champ, comme
+        # partout ailleurs dans ce dialogue.
+        description_form = QFormLayout()
         self.description_edit = QTextEdit(self)
         self.description_edit.setPlainText(initial.get("description", "") or "")
         self.description_edit.setFixedHeight(60)
-        form.addRow("Description", self.description_edit)
-
-        layout.addLayout(form)
+        description_form.addRow("Description", self.description_edit)
+        layout.addLayout(description_form)
 
         layout.addWidget(build_required_field_legend(self))
 

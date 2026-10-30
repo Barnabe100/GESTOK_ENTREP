@@ -60,6 +60,7 @@ class UsersPage(QWidget):
         button_row.addWidget(self.add_button)
 
         self.edit_button = QPushButton("Modifier", self)
+        self.edit_button.setProperty("variant", "indigo")
         self.edit_button.setEnabled(self._permissions.has_permission("USER_UPDATE"))
         button_row.addWidget(self.edit_button)
 

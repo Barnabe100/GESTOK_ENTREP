@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -100,11 +101,14 @@ class BackupsPage(QWidget):
             self._active_postgresql_target = None
 
         layout = QVBoxLayout(self)
+        layout.setSpacing(16)
 
         layout.addWidget(self._build_engine_group())
         layout.addWidget(self._build_config_group())
         layout.addLayout(self._build_actions_row())
-        layout.addWidget(QLabel("Historique des sauvegardes", self))
+        history_title = QLabel("Historique des sauvegardes", self)
+        history_title.setProperty("role", "sectionTitle")
+        layout.addWidget(history_title)
         layout.addWidget(self._build_history_table())
         layout.addWidget(self._build_danger_zone_group())
 
@@ -137,8 +141,10 @@ class BackupsPage(QWidget):
     def _build_engine_group(self) -> QGroupBox:
         group = QGroupBox("Moteur de base de données actif", self)
         layout = QVBoxLayout(group)
+        layout.setSpacing(8)
+
         self.active_engine_label = QLabel(_ENGINE_LABELS.get(self._active_engine, self._active_engine), self)
-        self.active_engine_label.setStyleSheet("font-weight: bold;")
+        self.active_engine_label.setStyleSheet("font-size: 16px; font-weight: 700; color: #172B4D;")
         layout.addWidget(self.active_engine_label)
 
         # Lot E.7, §E.7.2 : identifie la base précise (hôte/port/base),
@@ -148,6 +154,7 @@ class BackupsPage(QWidget):
         # BackupService.active_postgresql_target).
         self.active_target_label = QLabel("", self)
         self.active_target_label.setWordWrap(True)
+        self.active_target_label.setProperty("role", "secondary")
         if self._active_postgresql_target is not None:
             self.active_target_label.setText(self._active_postgresql_target.label())
             layout.addWidget(self.active_target_label)
@@ -156,6 +163,7 @@ class BackupsPage(QWidget):
             _ENGINE_DESCRIPTIONS.get(self._active_engine, ""), self,
         )
         description.setWordWrap(True)
+        description.setProperty("role", "secondary")
         layout.addWidget(description)
         return group
 
@@ -164,20 +172,27 @@ class BackupsPage(QWidget):
     def _build_config_group(self) -> QGroupBox:
         group = QGroupBox("Configuration de la sauvegarde automatique", self)
         form = QFormLayout(group)
+        form.setVerticalSpacing(14)
+        form.setHorizontalSpacing(16)
 
         self.auto_enabled_checkbox = QCheckBox("Activer la sauvegarde automatique", self)
         form.addRow(self.auto_enabled_checkbox)
 
         self.frequency_combo = QComboBox(self)
         self.frequency_combo.addItems([_FREQUENCY_LABELS[FREQUENCY_DAILY], _FREQUENCY_LABELS[FREQUENCY_WEEKLY]])
+        self.frequency_combo.setMinimumWidth(180)
         form.addRow("Fréquence", self.frequency_combo)
 
         self.time_edit = QLineEdit(self)
         self.time_edit.setPlaceholderText("HH:MM")
+        self.time_edit.setMinimumWidth(100)
+        self.time_edit.setMaximumWidth(140)
         form.addRow("Heure d'exécution", self.time_edit)
 
         destination_row = QHBoxLayout()
+        destination_row.setSpacing(10)
         self.destination_edit = QLineEdit(self)
+        self.destination_edit.setMinimumWidth(260)
         destination_row.addWidget(self.destination_edit)
         self.browse_button = QPushButton("Parcourir…", self)
         destination_row.addWidget(self.browse_button)
@@ -185,6 +200,7 @@ class BackupsPage(QWidget):
 
         self.retention_spin = QSpinBox(self)
         self.retention_spin.setRange(1, 999)
+        self.retention_spin.setMinimumWidth(100)
         form.addRow("Sauvegardes à conserver", self.retention_spin)
 
         can_configure = self._permissions.has_permission("BACKUP_CREATE")
@@ -247,12 +263,19 @@ class BackupsPage(QWidget):
 
     def _build_actions_row(self) -> QHBoxLayout:
         row = QHBoxLayout()
+        row.setSpacing(10)
         self.backup_now_button = QPushButton("Sauvegarder maintenant", self)
+        self.backup_now_button.setProperty("variant", "primary")
         self.backup_now_button.setEnabled(self._permissions.has_permission("BACKUP_CREATE"))
         row.addWidget(self.backup_now_button)
 
+        # Restauration : action sensible mais non destructive en soi (une
+        # sauvegarde de sécurité de l'état actuel est créée automatiquement
+        # avant tout remplacement, voir _on_restore_clicked) — orange, pas
+        # rouge (§7.3 : le rouge est réservé aux actions réellement
+        # destructives, ex. réinitialisation des données métier ci-dessous).
         self.restore_button = QPushButton("Restaurer la sauvegarde sélectionnée", self)
-        self.restore_button.setProperty("variant", "danger")
+        self.restore_button.setProperty("variant", "warning")
         self.restore_button.setEnabled(False)
         row.addWidget(self.restore_button)
         row.addStretch(1)
@@ -326,7 +349,17 @@ class BackupsPage(QWidget):
         self.history_table = QTableWidget(0, len(_HISTORY_COLUMNS), self)
         self.history_table.setAlternatingRowColors(True)
         self.history_table.setHorizontalHeaderLabels(_HISTORY_COLUMNS)
-        self.history_table.horizontalHeader().setStretchLastSection(True)
+        header = self.history_table.horizontalHeader()
+        header.setStretchLastSection(True)
+        # Largeurs adaptées au contenu réel de chaque colonne (§7.4) :
+        # Moteur/Date/Taille/Statut tiennent sur un contenu court et fixe,
+        # Nom (potentiellement long) est la seule à s'étirer.
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self.history_table.verticalHeader().setDefaultSectionSize(30)
         self.history_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.history_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.history_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -466,6 +499,10 @@ class BackupsPage(QWidget):
 
     def _build_danger_zone_group(self) -> QGroupBox:
         group = QGroupBox("Zone dangereuse — Réinitialisation des données métier", self)
+        # Accent rouge discret (§7.5) : la zone doit se distinguer visuellement
+        # du reste de l'écran avant même la lecture du texte, sans jamais
+        # modifier le mécanisme de réinitialisation lui-même.
+        group.setProperty("variant", "danger")
         layout = QVBoxLayout(group)
 
         description = QLabel(
