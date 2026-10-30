@@ -129,6 +129,13 @@ def test_update_client_denied_without_permission(login_as) -> None:
         stack.clients.update_client(1, "Nouveau nom")
 
 
+def test_create_client_denied_for_consultation(login_as) -> None:
+    stack, _ = login_as("Consultation")
+
+    with pytest.raises(PermissionDeniedError):
+        stack.clients.create_client("Nouveau client")
+
+
 def test_update_client_unknown_id_raises_not_found(login_as) -> None:
     stack, _ = login_as("Administrateur")
 
@@ -167,7 +174,22 @@ def test_search_clients_matches_telephone(login_as) -> None:
     assert {c.nom for c in results} == {"Client A"}
 
 
+def _strip_client_view_from_consultation(stack) -> None:
+    """Tous les rôles prédéfinis ont désormais CLIENT_VIEW (Consultation
+    l'a reçue à son tour, extension à tous les menus en lecture seule) :
+    retire ce code en base, le temps d'un test, pour vérifier que le refus
+    lui-même (``require_permission`` côté service, défense en profondeur)
+    fonctionne toujours bien — même principe que
+    tests/test_report_service.py::_strip_report_export_from_consultation."""
+    role_id = next(r.id for r in stack.roles.list_roles() if r.nom == "Consultation")
+    current_codes = stack.roles.get_role_permissions(role_id)
+    stack.roles.update_role_permissions(role_id, [c for c in current_codes if c != "CLIENT_VIEW"])
+
+
 def test_search_clients_denied_without_permission(login_as) -> None:
+    admin_stack, _ = login_as("Administrateur")
+    _strip_client_view_from_consultation(admin_stack)
+
     stack, _ = login_as("Consultation")
 
     with pytest.raises(PermissionDeniedError):
@@ -246,6 +268,9 @@ def test_toggle_client_status_unknown_id_raises_not_found(login_as) -> None:
 
 
 def test_get_client_denied_without_permission(login_as) -> None:
+    admin_stack, _ = login_as("Administrateur")
+    _strip_client_view_from_consultation(admin_stack)
+
     stack, _ = login_as("Consultation")
 
     with pytest.raises(PermissionDeniedError):
@@ -272,10 +297,13 @@ def test_gestionnaire_stock_has_all_client_permissions(login_as) -> None:
         assert stack.permissions.has_permission(code) is True
 
 
-def test_consultation_has_no_client_permissions(login_as) -> None:
+def test_consultation_has_view_only_client_permissions(login_as) -> None:
+    """Extension à tous les menus en lecture seule : Consultation reçoit
+    désormais CLIENT_VIEW, mais toujours aucun code d'écriture."""
     stack, _ = login_as("Consultation")
 
-    for code in ("CLIENT_VIEW", "CLIENT_CREATE", "CLIENT_UPDATE", "CLIENT_ACTIVATE", "CLIENT_DEACTIVATE"):
+    assert stack.permissions.has_permission("CLIENT_VIEW") is True
+    for code in ("CLIENT_CREATE", "CLIENT_UPDATE", "CLIENT_ACTIVATE", "CLIENT_DEACTIVATE"):
         assert stack.permissions.has_permission(code) is False
 
 

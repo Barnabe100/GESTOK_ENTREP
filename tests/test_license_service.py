@@ -137,13 +137,27 @@ def test_activate_license_requires_license_activate_permission(login_as, license
 
 
 def test_get_info_requires_license_view_permission(login_as) -> None:
-    """LICENSE_VIEW n'est accordée qu'à l'Administrateur (voir app/db/seed.py) ;
-    ce test vérifie que LicenseService la fait respecter, indépendamment de
-    ce que l'UI affiche ou masque."""
+    """LICENSE_VIEW n'est accordée qu'à l'Administrateur et à Consultation
+    (extension à tous les menus en lecture seule, voir app/db/seed.py) ;
+    ce test vérifie que LicenseService la fait respecter pour un rôle qui
+    n'en dispose toujours pas, indépendamment de ce que l'UI affiche ou
+    masque."""
     stack, _ = login_as("Vendeur")
 
     with pytest.raises(PermissionDeniedError):
         stack.licenses.get_info()
+
+
+def test_consultation_can_view_license_info_but_not_activate(login_as, license_envelope_factory) -> None:
+    """Extension à tous les menus en lecture seule : Consultation reçoit
+    désormais LICENSE_VIEW, mais toujours pas LICENSE_ACTIVATE."""
+    stack, _ = login_as("Consultation")
+
+    stack.licenses.get_info()  # ne doit pas lever.
+
+    envelope = license_envelope_factory()
+    with pytest.raises(PermissionDeniedError):
+        stack.licenses.activate_license(envelope)
 
 
 # -- activation : sécurité / falsification (§16) ----------------------------------------

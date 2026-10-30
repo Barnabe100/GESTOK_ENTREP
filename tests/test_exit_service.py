@@ -376,7 +376,10 @@ def test_vendeur_cannot_view_or_create_exits(login_as) -> None:
         stack.exits.create_exit(1, date(2026, 1, 1), [])
 
 
-def test_consultation_cannot_view_or_create_exits_but_can_view_movements(login_as) -> None:
+def test_consultation_can_view_exits_but_not_create(login_as) -> None:
+    """Extension à tous les menus en lecture seule : Consultation reçoit
+    désormais STOCK_EXIT_VIEW (en plus de STOCK_MOVEMENT_VIEW déjà
+    accordée), mais toujours aucun code d'écriture (voir app/db/seed.py)."""
     admin_stack, _ = login_as("Administrateur")
     motif = _make_motif(admin_stack)
     article = _make_article(admin_stack, stock_initial=Decimal("50"))
@@ -385,8 +388,8 @@ def test_consultation_cannot_view_or_create_exits_but_can_view_movements(login_a
 
     stack, _ = login_as("Consultation")
 
-    with pytest.raises(PermissionDeniedError):
-        stack.exits.list_exits()
+    assert stack.exits.list_exits() != []
+    assert stack.exits.get_exit(exit_.id) is not None
 
     with pytest.raises(PermissionDeniedError):
         stack.exits.create_exit(1, date(2026, 1, 1), [])

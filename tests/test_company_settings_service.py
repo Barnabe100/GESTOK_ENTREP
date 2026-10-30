@@ -21,12 +21,21 @@ def _make_test_image(path: Path, width: int = 20, height: int = 20) -> None:
 # -- permissions ---------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("role_name", ["Gestionnaire de stock", "Vendeur", "Consultation"])
+@pytest.mark.parametrize("role_name", ["Gestionnaire de stock", "Vendeur"])
 def test_non_admin_roles_are_denied_view(login_as, role_name) -> None:
     stack, _ = login_as(role_name)
 
     with pytest.raises(PermissionDeniedError):
         stack.parameters.get_config()
+
+
+def test_consultation_can_view_but_not_update(login_as) -> None:
+    """Extension à tous les menus en lecture seule : Consultation reçoit
+    désormais SETTINGS_VIEW, mais toujours pas SETTINGS_UPDATE (déjà
+    vérifié par test_non_admin_roles_are_denied_update, qui la conserve)."""
+    stack, _ = login_as("Consultation")
+
+    stack.parameters.get_config()  # ne doit pas lever.
 
 
 @pytest.mark.parametrize("role_name", ["Gestionnaire de stock", "Vendeur", "Consultation"])

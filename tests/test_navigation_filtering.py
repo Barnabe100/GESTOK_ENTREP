@@ -13,16 +13,14 @@ EXPECTED_MODULES_BY_ROLE = {
         "Clients", "Locations", "Mouvements", "Inventaires", "Rapports",
     },
     "Vendeur": {"Dashboard", "Articles", "Clients", "Ventes", "Créances", "Locations"},
-    # Extension lecture seule (phase accès réseau/déconnexion/permissions
-    # Consultant) : Ventes, Utilisateurs, Inventaires et Audit ajoutés aux
-    # modules déjà accessibles, en plus de ceux obtenus par ses permissions
-    # _VIEW d'origine.
+    # Extension à tous les menus en lecture seule (profil de supervision) :
+    # tous les modules sauf Rôles et Base de données, les deux seuls
+    # réservés à l'Administrateur (voir NAVIGATION_PERMISSIONS —
+    # ROLE_VIEW/DATABASE_CONFIG_VIEW jamais accordés à ce rôle).
     "Consultation": {
-        "Dashboard", "Articles", "Catégories", "Fournisseurs", "Locations", "Mouvements", "Rapports",
-        # Ventes et Créances partagent tous deux SALE_VIEW (Créances n'est
-        # qu'une vue filtrée de la même liste de ventes, voir
-        # NAVIGATION_PERMISSIONS) : les deux apparaissent ensemble.
-        "Ventes", "Créances", "Utilisateurs", "Inventaires", "Audit",
+        "Dashboard", "Articles", "Catégories", "Fournisseurs", "Motifs de sortie", "Entrées",
+        "Sorties", "Clients", "Ventes", "Créances", "Locations", "Mouvements", "Inventaires", "Rapports",
+        "Utilisateurs", "Paramètres", "Sauvegardes", "Audit", "Licences",
     },
 }
 
@@ -61,16 +59,16 @@ def test_vendeur_navigation_is_limited_to_dashboard_articles_clients_ventes(qtbo
 
 
 def test_consultation_navigation_is_read_only_modules(qtbot, login_as) -> None:
-    """Consultation voit désormais Ventes/Utilisateurs/Inventaires/Audit
-    (extension lecture seule, phase accès réseau) mais aucun module réservé
-    à la gestion (Rôles, Paramètres, Base de données, Sauvegardes,
-    Licences) ni aux opérations d'entrée/sortie de stock."""
+    """Profil de supervision (extension lecture seule) : Consultation voit
+    désormais les 19 menus autorisés, à l'exception stricte des deux seuls
+    menus totalement interdits — Rôles et Base de données (administration
+    du RBAC et de la configuration du moteur, jamais accordée à ce rôle)."""
     stack, _ = login_as("Consultation")
     window = _build_window(stack)
     qtbot.addWidget(window)
 
     assert set(window.visible_modules) == EXPECTED_MODULES_BY_ROLE["Consultation"]
-    for module in ("Rôles", "Paramètres", "Base de données", "Sauvegardes", "Licences", "Entrées", "Sorties"):
+    for module in ("Rôles", "Base de données"):
         assert module not in window.visible_modules
 
 
@@ -113,6 +111,21 @@ def test_only_administrateur_sees_roles_module(qtbot, login_as) -> None:
     window = _build_window(stack)
     qtbot.addWidget(window)
     assert "Rôles" in window.visible_modules
+
+
+def test_only_administrateur_sees_base_de_donnees_module(qtbot, login_as) -> None:
+    """Second (et dernier) menu totalement interdit à Consultation, avec
+    Rôles — DATABASE_CONFIG_VIEW n'est jamais accordée hors Administrateur."""
+    for role_name in ("Gestionnaire de stock", "Vendeur", "Consultation"):
+        stack, _ = login_as(role_name)
+        window = _build_window(stack)
+        qtbot.addWidget(window)
+        assert "Base de données" not in window.visible_modules
+
+    stack, _ = login_as("Administrateur")
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+    assert "Base de données" in window.visible_modules
 
 
 def test_vendeur_cannot_reach_backup_restore_or_license_pages(qtbot, login_as) -> None:

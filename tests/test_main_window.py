@@ -218,13 +218,23 @@ def test_onboarding_button_present_and_enabled_for_administrateur(qtbot, login_a
     assert window.onboarding_button.isEnabled() is True
 
 
-@pytest.mark.parametrize("role_name", ["Gestionnaire de stock", "Vendeur", "Consultation"])
+@pytest.mark.parametrize("role_name", ["Gestionnaire de stock", "Vendeur"])
 def test_onboarding_button_disabled_without_settings_view(qtbot, login_as, role_name: str) -> None:
     stack, _ = login_as(role_name)
     window = _build_window(stack)
     qtbot.addWidget(window)
 
     assert window.onboarding_button.isEnabled() is False
+
+
+def test_onboarding_button_enabled_for_consultation(qtbot, login_as) -> None:
+    """Extension à tous les menus en lecture seule : Consultation reçoit
+    désormais SETTINGS_VIEW (voir app/db/seed.py)."""
+    stack, _ = login_as("Consultation")
+    window = _build_window(stack)
+    qtbot.addWidget(window)
+
+    assert window.onboarding_button.isEnabled() is True
 
 
 def test_onboarding_button_click_opens_onboarding_dialog(qtbot, login_as, monkeypatch: pytest.MonkeyPatch) -> None:

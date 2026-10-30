@@ -144,9 +144,12 @@ def test_restore_button_disabled_without_permission(qtbot, login_as, tmp_path) -
     page = _build_page(stack)
     qtbot.addWidget(page)
 
-    # Consultation n'a pas BACKUP_VIEW : l'historique reste vide (AppError
-    # capturée par refresh_history), et le bouton Restaurer désactivé de toute façon.
-    assert page.history_table.rowCount() == 0
+    # Extension à tous les menus en lecture seule : Consultation a
+    # désormais BACKUP_VIEW, l'historique est donc visible — mais jamais
+    # BACKUP_RESTORE, le bouton Restaurer reste désactivé même une ligne
+    # sélectionnée.
+    assert page.history_table.rowCount() == 1
+    page.history_table.selectRow(0)
     assert page.restore_button.isEnabled() is False
 
 

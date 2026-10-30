@@ -169,6 +169,16 @@ _CONSULTATION_CODES = [
     # Consultant) : consultation des ventes, utilisateurs, inventaires et
     # journal d'audit, sans aucun code de création/modification/validation.
     "SALE_VIEW", "USER_VIEW", "INVENTORY_VIEW", "AUDIT_VIEW",
+    # Extension à tous les menus en lecture seule (profil de supervision) :
+    # 8 permissions de consultation supplémentaires — jamais ROLE_VIEW ni
+    # DATABASE_CONFIG_VIEW (Rôles et Base de données restent interdits,
+    # voir NAVIGATION_PERMISSIONS), jamais un code d'écriture (chaque page
+    # gate ses boutons par un code distinct : CLIENT_CREATE, STOCK_ENTRY_CREATE,
+    # SETTINGS_UPDATE, BACKUP_CREATE/BACKUP_RESTORE, LICENSE_ACTIVATE...).
+    # REPORT_EXPORT autorise l'export Excel/CSV des rapports, qui n'expose
+    # aucune donnée non déjà visible à l'écran via REPORT_VIEW.
+    "STOCK_REASON_VIEW", "STOCK_ENTRY_VIEW", "STOCK_EXIT_VIEW", "CLIENT_VIEW",
+    "SETTINGS_VIEW", "BACKUP_VIEW", "LICENSE_VIEW", "REPORT_EXPORT",
 ]
 
 # nom du rôle -> codes de permission (Administrateur = toutes, calculé)

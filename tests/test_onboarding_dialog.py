@@ -143,18 +143,26 @@ def test_no_step_shown_for_roles_without_the_relevant_permissions(qtbot, login_a
     assert step_buttons == []
 
 
-def test_only_the_users_step_is_shown_for_consultation(qtbot, login_as) -> None:
-    """Consultation a désormais USER_VIEW mais toujours ni SETTINGS_VIEW,
-    ni LICENSE_VIEW, ni BACKUP_VIEW : seule l'étape « Utilisateurs »
-    apparaît (en lecture — UsersPage masque déjà ses boutons d'écriture
-    pour ce rôle, voir tests/test_users_page.py)."""
+def test_all_steps_are_shown_for_consultation(qtbot, login_as) -> None:
+    """Extension à tous les menus en lecture seule (profil de supervision) :
+    Consultation a désormais SETTINGS_VIEW, USER_VIEW, LICENSE_VIEW et
+    BACKUP_VIEW — les 5 étapes apparaissent, en lecture (chaque page
+    masque déjà ses boutons d'écriture pour ce rôle, voir
+    tests/test_settings_page.py/test_users_page.py/test_licenses_page.py/
+    test_backups_page.py)."""
     stack, _ = login_as("Consultation")
     dialog = _build_dialog(stack)
     qtbot.addWidget(dialog)
 
+    text = _all_text(dialog)
+    assert "Informations de l'entreprise et devise" in text
+    assert "Logo de l'entreprise" in text
+    assert "Utilisateurs" in text
+    assert "Licence" in text
+    assert "sauvegarde" in text.lower()
+
     step_buttons = [b for b in dialog.findChildren(QPushButton) if b.text() != "Fermer"]
-    assert len(step_buttons) == 1
-    assert "Utilisateurs" in _all_text(dialog)
+    assert len(step_buttons) == 5
 
 
 @pytest.mark.parametrize(

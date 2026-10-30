@@ -43,6 +43,20 @@ def test_activate_button_enabled_for_administrateur(qtbot, login_as) -> None:
     assert page.activate_button.isEnabled() is True
 
 
+def test_consultation_can_view_license_info_but_not_activate(qtbot, login_as) -> None:
+    """Extension à tous les menus en lecture seule : Consultation reçoit
+    désormais LICENSE_VIEW, mais toujours pas LICENSE_ACTIVATE — consulte
+    l'état/l'édition/l'identifiant de licence sans pouvoir rien changer."""
+    stack, _ = login_as("Consultation")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.state_label.text() == "Valide"
+    assert page.edition_label.text() == "ENTREPRISE"
+    assert page.activate_button.isEnabled() is False
+    assert page.mode_combo.isEnabled() is False
+
+
 def test_activate_from_file_success_updates_status(qtbot, login_as, license_envelope_factory, tmp_path) -> None:
     stack, _ = login_as("Administrateur")
     page = _build_page(stack)

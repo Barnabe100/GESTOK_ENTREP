@@ -112,7 +112,7 @@ def test_license_section_shown_for_administrateur(qtbot, login_as) -> None:
     assert "Licence" in titles
 
 
-@pytest.mark.parametrize("role_name", ["Gestionnaire de stock", "Vendeur", "Consultation"])
+@pytest.mark.parametrize("role_name", ["Gestionnaire de stock", "Vendeur"])
 def test_license_section_hidden_for_roles_without_license_view(qtbot, login_as, role_name: str) -> None:
     from PySide6.QtWidgets import QGroupBox
 
@@ -124,7 +124,20 @@ def test_license_section_hidden_for_roles_without_license_view(qtbot, login_as, 
     assert "Licence" not in titles
 
 
-@pytest.mark.parametrize("role_name", ["Gestionnaire de stock", "Vendeur", "Consultation"])
+def test_license_section_shown_for_consultation(qtbot, login_as) -> None:
+    """Extension à tous les menus en lecture seule : Consultation reçoit
+    désormais LICENSE_VIEW (voir app/db/seed.py)."""
+    from PySide6.QtWidgets import QGroupBox
+
+    stack, _ = login_as("Consultation")
+    dialog = _build_dialog(stack)
+    qtbot.addWidget(dialog)
+
+    titles = [group.title() for group in dialog.findChildren(QGroupBox)]
+    assert "Licence" in titles
+
+
+@pytest.mark.parametrize("role_name", ["Gestionnaire de stock", "Vendeur"])
 def test_get_info_never_called_without_license_view(qtbot, login_as, monkeypatch, role_name: str) -> None:
     """Preuve directe que le dialogue n'appelle jamais une méthode gardée
     par une permission que l'utilisateur n'a pas (pas seulement que le

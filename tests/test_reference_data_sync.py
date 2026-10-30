@@ -155,7 +155,13 @@ def test_sync_grants_expected_permissions_to_vendeur(test_settings: Settings) ->
     assert "SYSTEM_RESET_BUSINESS_DATA" not in codes
 
 
-def test_sync_does_not_grant_recent_permissions_to_consultation(test_settings: Settings) -> None:
+def test_sync_grants_only_client_view_to_consultation(test_settings: Settings) -> None:
+    """Extension à tous les menus en lecture seule (voir app/db/seed.py) :
+    Consultation reçoit désormais CLIENT_VIEW dans sa matrice courante — la
+    synchronisation d'une base existante doit donc le lui accorder, exactement
+    comme pour les autres rôles ci-dessus, jamais les codes d'écriture
+    associés à ce même domaine (hors de sa matrice), ni SALE_PAYMENT_CREATE
+    ni SYSTEM_RESET_BUSINESS_DATA."""
     init_database(test_settings)
     _seed_stale_database(test_settings)
 
@@ -163,7 +169,8 @@ def test_sync_does_not_grant_recent_permissions_to_consultation(test_settings: S
         sync_reference_data(session)
 
     codes = _role_codes(test_settings, "Consultation")
-    assert codes.isdisjoint(_RECENT_CODES)
+    assert "CLIENT_VIEW" in codes
+    assert codes.isdisjoint(_RECENT_CODES - {"CLIENT_VIEW"})
 
 
 # -- synchronisation : ne détruit rien -------------------------------------------------

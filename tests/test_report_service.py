@@ -489,11 +489,34 @@ def test_consultation_can_view_reports(login_as) -> None:
     assert stack.reports.get_stock_state() == []
 
 
+def _strip_report_export_from_consultation(stack) -> None:
+    """Retire REPORT_EXPORT du rôle Consultation (qui l'a désormais par
+    défaut, voir seed.py — extension à tous les menus en lecture seule)
+    pour obtenir, le temps d'un test, un rôle avec REPORT_VIEW mais sans
+    REPORT_EXPORT — modification en base comme le ferait un administrateur
+    réel depuis l'écran Rôles, jamais du seed lui-même ni de la matrice de
+    référence."""
+    role_id = next(r.id for r in stack.roles.list_roles() if r.nom == "Consultation")
+    current_codes = stack.roles.get_role_permissions(role_id)
+    stack.roles.update_role_permissions(role_id, [c for c in current_codes if c != "REPORT_EXPORT"])
+
+
 def test_report_export_permission_enforced(login_as, tmp_path) -> None:
-    stack, _ = login_as("Consultation")  # REPORT_VIEW mais pas REPORT_EXPORT
+    admin_stack, _ = login_as("Administrateur")
+    _strip_report_export_from_consultation(admin_stack)
+
+    stack, _ = login_as("Consultation")  # REPORT_VIEW mais pas REPORT_EXPORT (retiré ci-dessus)
 
     with pytest.raises(PermissionDeniedError):
         stack.reports.export_to_csv(tmp_path / "out.csv", ["A"], [["1"]])
+
+
+def test_consultation_can_export_reports_to_csv_by_default(login_as, tmp_path) -> None:
+    """Extension à tous les menus en lecture seule : Consultation a
+    désormais REPORT_EXPORT par défaut (voir seed.py)."""
+    stack, _ = login_as("Consultation")
+
+    stack.reports.export_to_csv(tmp_path / "out.csv", ["A"], [["1"]])  # ne doit pas lever.
 
 
 def test_report_export_writes_csv(login_as, tmp_path) -> None:
@@ -511,10 +534,21 @@ def test_report_export_writes_csv(login_as, tmp_path) -> None:
 
 
 def test_report_export_xlsx_permission_enforced(login_as, tmp_path) -> None:
-    stack, _ = login_as("Consultation")  # REPORT_VIEW mais pas REPORT_EXPORT
+    admin_stack, _ = login_as("Administrateur")
+    _strip_report_export_from_consultation(admin_stack)
+
+    stack, _ = login_as("Consultation")  # REPORT_VIEW mais pas REPORT_EXPORT (retiré ci-dessus)
 
     with pytest.raises(PermissionDeniedError):
         stack.reports.export_to_xlsx(tmp_path / "out.xlsx", ["A"], [[1]])
+
+
+def test_consultation_can_export_reports_to_xlsx_by_default(login_as, tmp_path) -> None:
+    """Extension à tous les menus en lecture seule : Consultation a
+    désormais REPORT_EXPORT par défaut (voir seed.py)."""
+    stack, _ = login_as("Consultation")
+
+    stack.reports.export_to_xlsx(tmp_path / "out.xlsx", ["A"], [[1]])  # ne doit pas lever.
 
 
 def test_report_export_writes_xlsx(login_as, tmp_path) -> None:

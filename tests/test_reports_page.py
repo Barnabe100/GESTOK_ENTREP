@@ -22,6 +22,17 @@ def _build_page(stack) -> ReportsPage:
     )
 
 
+def _strip_report_export_from_consultation(stack) -> None:
+    """Retire REPORT_EXPORT du rôle Consultation (qui l'a désormais par
+    défaut, voir app/db/seed.py — extension à tous les menus en lecture
+    seule) pour obtenir, le temps d'un test, un rôle avec REPORT_VIEW mais
+    sans REPORT_EXPORT — modification en base comme le ferait un
+    administrateur réel depuis l'écran Rôles, jamais du seed lui-même."""
+    role_id = next(r.id for r in stack.roles.list_roles() if r.nom == "Consultation")
+    current_codes = stack.roles.get_role_permissions(role_id)
+    stack.roles.update_role_permissions(role_id, [c for c in current_codes if c != "REPORT_EXPORT"])
+
+
 def _make_article(stack, reference="ART-1", stock_initial=Decimal("50"), stock_min=Decimal("0")):
     category = stack.categories.create_category(f"Cat-{reference}")
     return stack.articles.create_article(
@@ -219,7 +230,10 @@ def test_reset_filters_clears_search_and_refreshes(qtbot, login_as) -> None:
 
 
 def test_export_button_disabled_without_permission(qtbot, login_as) -> None:
-    stack, _ = login_as("Consultation")
+    admin_stack, _ = login_as("Administrateur")
+    _strip_report_export_from_consultation(admin_stack)
+
+    stack, _ = login_as("Consultation")  # REPORT_VIEW mais pas REPORT_EXPORT (retiré ci-dessus)
     page = _build_page(stack)
     qtbot.addWidget(page)
 
@@ -228,6 +242,16 @@ def test_export_button_disabled_without_permission(qtbot, login_as) -> None:
 
 def test_export_button_enabled_with_permission(qtbot, login_as) -> None:
     stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.export_button.isEnabled() is True
+
+
+def test_export_button_enabled_for_consultation_by_default(qtbot, login_as) -> None:
+    """Extension à tous les menus en lecture seule : Consultation a
+    désormais REPORT_EXPORT par défaut (voir app/db/seed.py)."""
+    stack, _ = login_as("Consultation")
     page = _build_page(stack)
     qtbot.addWidget(page)
 
@@ -254,11 +278,24 @@ def test_export_to_writes_csv_file(qtbot, login_as, tmp_path) -> None:
 
 
 def test_export_xlsx_button_disabled_without_permission(qtbot, login_as) -> None:
-    stack, _ = login_as("Consultation")
+    admin_stack, _ = login_as("Administrateur")
+    _strip_report_export_from_consultation(admin_stack)
+
+    stack, _ = login_as("Consultation")  # REPORT_VIEW mais pas REPORT_EXPORT (retiré ci-dessus)
     page = _build_page(stack)
     qtbot.addWidget(page)
 
     assert page.export_xlsx_button.isEnabled() is False
+
+
+def test_export_xlsx_button_enabled_for_consultation_by_default(qtbot, login_as) -> None:
+    """Extension à tous les menus en lecture seule : Consultation a
+    désormais REPORT_EXPORT par défaut (voir app/db/seed.py)."""
+    stack, _ = login_as("Consultation")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.export_xlsx_button.isEnabled() is True
 
 
 def test_export_xlsx_button_enabled_with_permission(qtbot, login_as) -> None:
@@ -370,7 +407,10 @@ def test_export_xlsx_with_no_data_shows_information_message_and_writes_nothing(q
 
 
 def test_export_xlsx_reports_errors_from_denied_permission(qtbot, login_as, tmp_path) -> None:
-    stack, _ = login_as("Consultation")
+    admin_stack, _ = login_as("Administrateur")
+    _strip_report_export_from_consultation(admin_stack)
+
+    stack, _ = login_as("Consultation")  # REPORT_VIEW mais pas REPORT_EXPORT (retiré ci-dessus)
     page = _build_page(stack)
     qtbot.addWidget(page)
 
@@ -379,6 +419,21 @@ def test_export_xlsx_reports_errors_from_denied_permission(qtbot, login_as, tmp_
 
     assert result is False
     assert not out_file.exists()
+
+
+def test_consultation_can_export_xlsx_by_default(qtbot, login_as, tmp_path) -> None:
+    """Extension à tous les menus en lecture seule : Consultation a
+    désormais REPORT_EXPORT par défaut (voir app/db/seed.py) — l'export
+    Excel fonctionne sans aucune autre action que la consultation."""
+    stack, _ = login_as("Consultation")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    out_file = tmp_path / "export.xlsx"
+    result = page._export_xlsx_to(str(out_file))
+
+    assert result is True
+    assert out_file.exists()
 
 
 def test_movements_report_xlsx_export_has_money_format_on_cout_unitaire(qtbot, login_as, tmp_path) -> None:

@@ -88,7 +88,10 @@ def test_clients_page_toggle_disabled_for_vendeur(qtbot, login_as) -> None:
     assert page.toggle_button.isEnabled() is False
 
 
-def test_clients_page_table_empty_for_consultation(qtbot, login_as) -> None:
+def test_clients_page_shows_clients_read_only_for_consultation(qtbot, login_as) -> None:
+    """Extension à tous les menus en lecture seule : Consultation reçoit
+    désormais CLIENT_VIEW et voit la liste, sans aucun bouton d'écriture
+    actif."""
     stack, _ = login_as("Administrateur")
     stack.clients.create_client("Client")
 
@@ -96,7 +99,10 @@ def test_clients_page_table_empty_for_consultation(qtbot, login_as) -> None:
     page = _build_page(consultation_stack)
     qtbot.addWidget(page)
 
-    assert page.table.rowCount() == 0
+    assert page.table.rowCount() == 1
+    assert page.add_button.isEnabled() is False
+    assert page.edit_button.isEnabled() is False
+    assert page.toggle_button.isEnabled() is False
 
 
 def test_submit_form_creates_client_and_refreshes(qtbot, login_as) -> None:

@@ -174,6 +174,28 @@ def test_create_manual_backup_requires_permission(login_as) -> None:
         stack.backups.create_manual_backup()
 
 
+def test_consultation_can_list_backups_but_not_create_or_restore(login_as, tmp_path) -> None:
+    """Extension à tous les menus en lecture seule : Consultation reçoit
+    désormais BACKUP_VIEW, mais toujours ni BACKUP_CREATE ni
+    BACKUP_RESTORE — ne peut ni créer ni restaurer une sauvegarde."""
+    admin_stack, _ = login_as("Administrateur")
+    destination = tmp_path / "backups"
+    admin_stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(destination), retention=10,
+    )
+    backup_result = admin_stack.backups.create_manual_backup()
+
+    stack, _ = login_as("Consultation")
+
+    assert stack.backups.list_backups() != []
+
+    with pytest.raises(PermissionDeniedError):
+        stack.backups.create_manual_backup()
+
+    with pytest.raises(PermissionDeniedError):
+        stack.backups.restore_backup(backup_result.file_path)
+
+
 # -- rétention via le service -------------------------------------------------------
 
 

@@ -258,10 +258,28 @@ def test_toggle_exit_reason_status_unknown_id_raises_not_found(login_as) -> None
 
 
 def test_get_exit_reason_denied_without_permission(login_as) -> None:
-    stack, _ = login_as("Consultation")
+    stack, _ = login_as("Vendeur")  # ni STOCK_REASON_VIEW ni aucun code motifs_sortie
 
     try:
         stack.exit_reasons.get_exit_reason(1)
+        assert False, "devait lever PermissionDeniedError"
+    except PermissionDeniedError:
+        pass
+
+
+def test_consultation_can_view_exit_reasons_but_not_create(login_as) -> None:
+    """Extension à tous les menus en lecture seule : Consultation reçoit
+    désormais STOCK_REASON_VIEW, mais aucun code d'écriture."""
+    admin_stack, _ = login_as("Administrateur")
+    created = admin_stack.exit_reasons.create_exit_reason("Perte")
+
+    stack, _ = login_as("Consultation")
+
+    assert stack.exit_reasons.list_exit_reasons() != []
+    assert stack.exit_reasons.get_exit_reason(created.id) is not None
+
+    try:
+        stack.exit_reasons.create_exit_reason("Casse")
         assert False, "devait lever PermissionDeniedError"
     except PermissionDeniedError:
         pass

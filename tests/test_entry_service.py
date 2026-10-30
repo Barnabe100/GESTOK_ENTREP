@@ -367,9 +367,10 @@ def test_vendeur_cannot_view_or_create_entries(login_as) -> None:
         stack.entries.create_entry(1, date(2026, 1, 1), [])
 
 
-def test_consultation_cannot_view_or_create_entries_but_can_view_movements(login_as) -> None:
-    """Consultation reçoit STOCK_MOVEMENT_VIEW mais pas STOCK_ENTRY_VIEW (matrice
-    de permissions validée, cf. app/db/seed.py)."""
+def test_consultation_can_view_entries_but_not_create(login_as) -> None:
+    """Extension à tous les menus en lecture seule : Consultation reçoit
+    désormais STOCK_ENTRY_VIEW (en plus de STOCK_MOVEMENT_VIEW déjà
+    accordée), mais toujours aucun code d'écriture (voir app/db/seed.py)."""
     admin_stack, _ = login_as("Administrateur")
     supplier = _make_supplier(admin_stack)
     article = _make_article(admin_stack)
@@ -381,8 +382,8 @@ def test_consultation_cannot_view_or_create_entries_but_can_view_movements(login
 
     stack, _ = login_as("Consultation")
 
-    with pytest.raises(PermissionDeniedError):
-        stack.entries.list_entries()
+    assert stack.entries.list_entries() != []
+    assert stack.entries.get_entry(entry.id) is not None
 
     with pytest.raises(PermissionDeniedError):
         stack.entries.create_entry(1, date(2026, 1, 1), [])
