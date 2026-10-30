@@ -354,6 +354,7 @@ class ArticlesPage(QWidget):
                 state["values"],
                 is_edit=(article_id is not None),
                 on_create_unite=self._create_unite_from_form,
+                on_delete_unite=self._delete_unite_from_form,
                 parent=self,
             )
 
@@ -378,6 +379,54 @@ class ArticlesPage(QWidget):
             QMessageBox.warning(self, "Création refusée", str(exc))
             return None
         return created.libelle
+
+    def _delete_unite_from_form(self, libelle: str) -> Optional[tuple[list[str], Optional[str]]]:
+        """Callback ``on_delete_unite`` du bouton « Supprimer » (Mission 4,
+        §4) : résout le libellé affiché en identifiant réel, vérifie
+        l'usage AVANT de demander confirmation (§4.2 : une unité protégée
+        est refusée immédiatement, sans boîte de confirmation inutile), puis
+        délègue la suppression elle-même à ``UniteArticleService.delete_unite``
+        qui revérifie de toute façon cette même condition. Renvoie la liste
+        d'unités actualisée et la prochaine sélection suggérée pour le menu
+        déroulant du formulaire, ou ``None`` si rien n'a été supprimé
+        (annulation, refus, erreur) — le formulaire reste alors inchangé."""
+        try:
+            unites = self._unite_article_service.list_unites()
+        except AppError as exc:
+            QMessageBox.warning(self, "Opération refusée", str(exc))
+            return None
+        match = next((u for u in unites if u.libelle == libelle), None)
+        if match is None:
+            QMessageBox.warning(self, "Unité introuvable", "Cette unité n'existe plus.")
+            return None
+
+        try:
+            if self._unite_article_service.is_unite_used(match.id):
+                QMessageBox.warning(
+                    self, "Suppression refusée",
+                    "Cette unité ne peut pas être supprimée car elle est utilisée par des articles.",
+                )
+                return None
+        except AppError as exc:
+            QMessageBox.warning(self, "Opération refusée", str(exc))
+            return None
+
+        if not confirm_action(
+            self, "Supprimer l'unité",
+            f"Voulez-vous vraiment supprimer l'unité « {libelle} » ? Cette opération est irréversible.",
+        ):
+            return None
+
+        try:
+            self._unite_article_service.delete_unite(match.id)
+        except AppError as exc:
+            QMessageBox.warning(self, "Suppression refusée", str(exc))
+            return None
+
+        QMessageBox.information(self, "Unité supprimée", f"L'unité « {libelle} » a été supprimée.")
+        remaining = self._load_unites_for_form()
+        next_selected = remaining[0] if remaining else None
+        return remaining, next_selected
 
     def _submit_form(self, article_id: Optional[int], values: dict) -> bool:
         """Convertit la saisie, appelle le service et affiche le résultat.

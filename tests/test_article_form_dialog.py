@@ -189,6 +189,63 @@ def test_new_unite_button_does_nothing_when_callback_returns_none(qtbot) -> None
     assert dialog.values()["unite"] == before
 
 
+def test_delete_unite_button_disabled_without_callback(qtbot) -> None:
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, _UNITES, is_edit=False)
+    qtbot.addWidget(dialog)
+
+    assert dialog.delete_unite_button.isEnabled() is False
+
+
+def test_delete_unite_button_updates_combo_and_selection(qtbot) -> None:
+    """§4.1/§4.5 : la liste déroulante est actualisée et une autre unité
+    disponible est sélectionnée après une suppression réussie."""
+    dialog = ArticleFormDialog(
+        _CATEGORIES, _SUPPLIERS, _UNITES, is_edit=False,
+        on_delete_unite=lambda libelle: (["Pièce", "Unité"], "Unité"),
+    )
+    qtbot.addWidget(dialog)
+
+    assert dialog.delete_unite_button.isEnabled() is True
+    dialog._on_delete_unite_clicked()
+
+    assert dialog.unite_combo.findText("Carton") == -1
+    assert dialog.values()["unite"] == "Unité"
+
+
+def test_delete_unite_button_does_nothing_when_callback_returns_none(qtbot) -> None:
+    """Refus/annulation côté appelant (unité utilisée, confirmation
+    annulée…) : le menu déroulant ne doit pas changer."""
+    dialog = ArticleFormDialog(
+        _CATEGORIES, _SUPPLIERS, _UNITES, is_edit=False,
+        on_delete_unite=lambda libelle: None,
+    )
+    qtbot.addWidget(dialog)
+    before = [dialog.unite_combo.itemText(i) for i in range(dialog.unite_combo.count())]
+
+    dialog._on_delete_unite_clicked()
+
+    after = [dialog.unite_combo.itemText(i) for i in range(dialog.unite_combo.count())]
+    assert after == before
+
+
+def test_delete_unite_button_passes_currently_selected_label(qtbot) -> None:
+    received = {}
+
+    def on_delete_unite(libelle: str):
+        received["libelle"] = libelle
+        return None
+
+    dialog = ArticleFormDialog(
+        _CATEGORIES, _SUPPLIERS, _UNITES, is_edit=False, on_delete_unite=on_delete_unite
+    )
+    qtbot.addWidget(dialog)
+    dialog.unite_combo.setCurrentText("Carton")
+
+    dialog._on_delete_unite_clicked()
+
+    assert received["libelle"] == "Carton"
+
+
 def test_save_button_accepts(qtbot) -> None:
     dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, _UNITES, is_edit=False)
     qtbot.addWidget(dialog)

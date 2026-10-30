@@ -71,6 +71,7 @@ from app.utils.money import format_money
 from app.utils.quantity import format_quantity
 from app.views.client_form_dialog import ClientFormDialog
 from app.views.common import confirm_action, date_to_qdate, format_decimal_for_input, parse_decimal, required_label
+from app.views.design_system import QuantityEditDelegate
 from app.views.location_detail_dialog import LocationDetailDialog
 
 _COLUMNS = ["Numéro", "Date", "Client", "Créée par", "Total facturé", "Statut"]
@@ -282,12 +283,18 @@ class LocationsPage(QWidget):
         self.caisse_lines_table.setColumnWidth(2, 120)
         caisse_header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
         self.caisse_lines_table.setColumnWidth(3, 160)
-        self.caisse_lines_table.verticalHeader().setDefaultSectionSize(34)
+        # Mission 4, §3 : même correctif que SalesPage — voir
+        # ``QuantityEditDelegate``. Les deux colonnes éditables (Quantité et
+        # Tarif/jour) en bénéficient, pour une cohérence de rendu complète.
+        self.caisse_lines_table.verticalHeader().setDefaultSectionSize(36)
         self.caisse_lines_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.caisse_lines_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.caisse_lines_table.setEditTriggers(
             QTableWidget.EditTrigger.DoubleClicked | QTableWidget.EditTrigger.EditKeyPressed
         )
+        self._caisse_quantity_delegate = QuantityEditDelegate(self.caisse_lines_table)
+        self.caisse_lines_table.setItemDelegateForColumn(_CAISSE_QUANTITY_COLUMN, self._caisse_quantity_delegate)
+        self.caisse_lines_table.setItemDelegateForColumn(_CAISSE_TARIF_COLUMN, self._caisse_quantity_delegate)
         layout.addWidget(self.caisse_lines_table)
 
         remove_row = QHBoxLayout()

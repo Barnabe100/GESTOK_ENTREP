@@ -1,5 +1,7 @@
+from decimal import Decimal
+
 from app.db.unite_article_seed import CANONICAL_UNITES_ARTICLE
-from app.utils.exceptions import ConflictError, PermissionDeniedError, ValidationError
+from app.utils.exceptions import ConflictError, NotFoundError, PermissionDeniedError, ValidationError
 
 
 def test_list_unites_includes_canonical_values(login_as) -> None:
@@ -121,3 +123,100 @@ def test_list_unites_is_ordered_alphabetically(login_as) -> None:
     libelles = [u.libelle for u in stack.unites_article.list_unites()]
 
     assert libelles == sorted(libelles)
+
+
+# -- suppression d'une unité (Mission 4, §4) ----------------------------------
+
+
+def test_delete_unite_removes_unused_unite(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    created = stack.unites_article.create_unite("Botte")
+
+    stack.unites_article.delete_unite(created.id)
+
+    assert "Botte" not in {u.libelle for u in stack.unites_article.list_unites()}
+
+
+def test_delete_unite_denied_when_used_by_an_article(login_as) -> None:
+    """§4.3 : une unité référencée par un article existant ne doit jamais
+    pouvoir être supprimée, même par un administrateur."""
+    stack, _ = login_as("Administrateur")
+    created = stack.unites_article.create_unite("Botte")
+    category = stack.categories.create_category("Matériel")
+    stack.articles.create_article(
+        "ART-BOTTE", "Botte de paille", category.id, "Botte",
+        Decimal("1000"), Decimal("1500"), Decimal("0"),
+    )
+
+    try:
+        stack.unites_article.delete_unite(created.id)
+        assert False, "devait lever ConflictError"
+    except ConflictError:
+        pass
+
+    assert "Botte" in {u.libelle for u in stack.unites_article.list_unites()}
+
+
+def test_delete_unite_denied_when_used_case_insensitive(login_as) -> None:
+    """La vérification d'usage ignore la casse et les espaces superflus,
+    comme la détection de doublon à la création."""
+    stack, _ = login_as("Administrateur")
+    created = stack.unites_article.create_unite("Botte")
+    category = stack.categories.create_category("Matériel")
+    stack.articles.create_article(
+        "ART-BOTTE", "Botte de paille", category.id, "  botte  ",
+        Decimal("1000"), Decimal("1500"), Decimal("0"),
+    )
+
+    try:
+        stack.unites_article.delete_unite(created.id)
+        assert False, "devait lever ConflictError"
+    except ConflictError:
+        pass
+
+
+def test_is_unite_used_reflects_article_usage(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    created = stack.unites_article.create_unite("Botte")
+
+    assert stack.unites_article.is_unite_used(created.id) is False
+
+    category = stack.categories.create_category("Matériel")
+    stack.articles.create_article(
+        "ART-BOTTE", "Botte de paille", category.id, "Botte",
+        Decimal("1000"), Decimal("1500"), Decimal("0"),
+    )
+
+    assert stack.unites_article.is_unite_used(created.id) is True
+
+
+def test_delete_unite_denied_for_vendeur(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    created = stack.unites_article.create_unite("Botte")
+    vendeur_stack, _ = login_as("Vendeur")
+
+    try:
+        vendeur_stack.unites_article.delete_unite(created.id)
+        assert False, "devait lever PermissionDeniedError"
+    except PermissionDeniedError:
+        pass
+
+
+def test_delete_unite_nonexistent_raises_not_found(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+
+    try:
+        stack.unites_article.delete_unite(999999)
+        assert False, "devait lever NotFoundError"
+    except NotFoundError:
+        pass
+
+
+def test_is_unite_used_nonexistent_raises_not_found(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+
+    try:
+        stack.unites_article.is_unite_used(999999)
+        assert False, "devait lever NotFoundError"
+    except NotFoundError:
+        pass

@@ -42,6 +42,7 @@ from app.utils.money import format_money
 from app.utils.pdf_export import build_page_layout, export_document_to_pdf
 from app.utils.quantity import format_quantity
 from app.views.cancellation_reason_dialog import CancellationReasonDialog
+from app.views.design_system import apply_comfortable_row_height
 
 _LINE_COLUMNS = ["Article", "Quantité", "Prix unitaire", "Montant"]
 _MOVEMENT_COLUMNS = ["Date/heure", "Type", "Quantité", "Stock avant", "Stock après", "Utilisateur"]
@@ -95,6 +96,11 @@ class SaleDetailDialog(QDialog):
         self.setWindowTitle(f"Vente — {sale.numero}")
         self.setModal(True)
         self.setMinimumWidth(600)
+        # Mission 4, §2.3 : ouvre déjà assez grand pour voir confortablement
+        # les tableaux de paiements/mouvements sans redimensionnement manuel
+        # — la ``scroll_area`` ci-dessous absorbe le reste si l'utilisateur
+        # réduit la fenêtre ou si le contenu dépasse malgré tout.
+        self.resize(700, 780)
 
         layout = QVBoxLayout(self)
 
@@ -182,6 +188,13 @@ class SaleDetailDialog(QDialog):
         self.payments_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.payments_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.payments_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        # Mission 4, §2.1 : au moins 4 paiements visibles sans défilement
+        # interne au tableau (le défilement reste porté par le
+        # ``scroll_area`` englobant, voir plus bas) — sans quoi le tableau
+        # retombait sur son sizeHint par défaut (~192 px), ne laissant
+        # apparaître qu'une seule ligne de paiement malgré un historique
+        # plus long.
+        apply_comfortable_row_height(self.payments_table, visible_rows=4)
         payment_group_layout.addWidget(self.payments_table)
 
         # Lot 22 (§7.1) : le bouton « Reçu du paiement sélectionné (PDF) »
@@ -477,6 +490,7 @@ class SaleDetailDialog(QDialog):
         movements_table.setHorizontalHeaderLabels(_MOVEMENT_COLUMNS)
         movements_table.horizontalHeader().setStretchLastSection(True)
         movements_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        apply_comfortable_row_height(movements_table, visible_rows=4)
         self._populate_movements_table(movements_table, movements)
         movements_layout.addWidget(movements_table)
         self._content.layout().insertWidget(

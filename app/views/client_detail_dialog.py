@@ -24,6 +24,7 @@ from app.models.enums import StatutOperation
 from app.services.clients.client_service import ClientSummary
 from app.services.sales.sale_service import VenteSummary
 from app.utils.money import format_money
+from app.views.design_system import apply_comfortable_row_height
 
 _SALE_COLUMNS = ["Numéro", "Date", "Statut", "Total"]
 
@@ -46,6 +47,7 @@ class ClientDetailDialog(QDialog):
         self.setWindowTitle(f"Client — {client.nom}")
         self.setModal(True)
         self.setMinimumWidth(560)
+        self.resize(620, 620)
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
@@ -67,6 +69,7 @@ class ClientDetailDialog(QDialog):
         self.sales_table.setHorizontalHeaderLabels(_SALE_COLUMNS)
         self.sales_table.horizontalHeader().setStretchLastSection(True)
         self.sales_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        apply_comfortable_row_height(self.sales_table, visible_rows=5)
         for row, sale in enumerate(sales):
             self.sales_table.setItem(row, 0, QTableWidgetItem(sale.numero))
             self.sales_table.setItem(row, 1, QTableWidgetItem(str(sale.date)))

@@ -830,3 +830,74 @@ def test_toggle_button_updates_after_the_action_it_performs(qtbot, login_as) -> 
 
     assert page.toggle_button.text() == "Activer"
     assert page.toggle_button.property("variant") == "success"
+
+
+# -- suppression d'une unité depuis le formulaire Article (Mission 4, §4) -----
+
+
+def test_delete_unite_from_form_removes_unused_unite(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    created = stack.unites_article.create_unite("Botte")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    monkeypatch.setattr(
+        "app.views.common.QMessageBox.question", lambda *a, **k: QMessageBox.StandardButton.Yes
+    )
+
+    result = page._delete_unite_from_form("Botte")
+
+    assert result is not None
+    remaining, next_selected = result
+    assert "Botte" not in remaining
+    assert next_selected in remaining or next_selected is None
+    assert "Botte" not in {u.libelle for u in stack.unites_article.list_unites()}
+
+
+def test_delete_unite_from_form_refused_when_used_without_prompting_confirmation(
+    qtbot, login_as, monkeypatch
+) -> None:
+    """§4.2 : l'usage est vérifié AVANT la confirmation — une unité protégée
+    ne doit jamais déclencher la boîte de confirmation."""
+    stack, _ = login_as("Administrateur")
+    stack.unites_article.create_unite("Botte")
+    category = stack.categories.create_category("Matériel")
+    stack.articles.create_article(
+        "ART-BOTTE", "Botte de paille", category.id, "Botte", Decimal("100"), Decimal("150"), Decimal("0"),
+    )
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    def _fail_if_called(*a, **k):
+        raise AssertionError("la confirmation ne doit jamais être demandée pour une unité utilisée")
+
+    monkeypatch.setattr("app.views.common.QMessageBox.question", _fail_if_called)
+
+    result = page._delete_unite_from_form("Botte")
+
+    assert result is None
+    assert "Botte" in {u.libelle for u in stack.unites_article.list_unites()}
+
+
+def test_delete_unite_from_form_cancelled_confirmation_keeps_unite(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    stack.unites_article.create_unite("Botte")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    monkeypatch.setattr(
+        "app.views.common.QMessageBox.question", lambda *a, **k: QMessageBox.StandardButton.No
+    )
+
+    result = page._delete_unite_from_form("Botte")
+
+    assert result is None
+    assert "Botte" in {u.libelle for u in stack.unites_article.list_unites()}
+
+
+def test_delete_unite_from_form_unknown_label_returns_none(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    result = page._delete_unite_from_form("Unité qui n'existe pas")
+
+    assert result is None

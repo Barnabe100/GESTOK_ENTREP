@@ -17,10 +17,12 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -41,6 +43,7 @@ from app.utils.pdf_export import build_page_layout, export_document_to_pdf
 from app.utils.quantity import format_quantity
 from app.views.cancellation_reason_dialog import CancellationReasonDialog
 from app.views.common import build_required_field_legend, parse_decimal, required_label
+from app.views.design_system import apply_comfortable_row_height
 from app.views.location_caution_dialog import LocationCautionDialog
 from app.views.location_payment_form_dialog import LocationPaymentFormDialog
 from app.views.location_return_form_dialog import LocationReturnFormDialog
@@ -122,41 +125,57 @@ class LocationDetailDialog(QDialog):
         self.setWindowTitle(f"Location — {location.numero}")
         self.setModal(True)
         self.setMinimumWidth(680)
+        # Mission 4, §2.4 : même constat que la consultation de vente — les
+        # trois tableaux (lignes, retours, paiements) retombaient sur un
+        # ``sizeHint()`` fixe ne laissant voir qu'une seule ligne. La
+        # fenêtre ouvre désormais assez grande, et une zone défilante
+        # absorbe le reste pour rester utilisable même sur un écran
+        # 1366×768 avec un historique long (voir ``scroll_area`` ci-dessous).
+        self.resize(760, 820)
 
         layout = QVBoxLayout(self)
 
-        self._header_form = QFormLayout()
-        layout.addLayout(self._header_form)
+        scroll_area = QScrollArea(self)
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        content = QWidget(scroll_area)
+        content_layout = QVBoxLayout(content)
 
-        layout.addWidget(QLabel("Lignes", self))
-        self.lines_table = QTableWidget(0, len(_LINE_COLUMNS), self)
+        self._header_form = QFormLayout()
+        content_layout.addLayout(self._header_form)
+
+        content_layout.addWidget(QLabel("Lignes", content))
+        self.lines_table = QTableWidget(0, len(_LINE_COLUMNS), content)
         self.lines_table.setAlternatingRowColors(True)
         self.lines_table.setHorizontalHeaderLabels(_LINE_COLUMNS)
         self.lines_table.horizontalHeader().setStretchLastSection(True)
         self.lines_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        layout.addWidget(self.lines_table)
+        apply_comfortable_row_height(self.lines_table, visible_rows=4)
+        content_layout.addWidget(self.lines_table)
 
-        layout.addWidget(QLabel("Historique des retours", self))
-        self.retours_table = QTableWidget(0, len(_RETOUR_COLUMNS), self)
+        content_layout.addWidget(QLabel("Historique des retours", content))
+        self.retours_table = QTableWidget(0, len(_RETOUR_COLUMNS), content)
         self.retours_table.setAlternatingRowColors(True)
         self.retours_table.setHorizontalHeaderLabels(_RETOUR_COLUMNS)
         self.retours_table.horizontalHeader().setStretchLastSection(True)
         self.retours_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        layout.addWidget(self.retours_table)
+        apply_comfortable_row_height(self.retours_table, visible_rows=4)
+        content_layout.addWidget(self.retours_table)
 
         self._payment_form = QFormLayout()
-        layout.addLayout(self._payment_form)
+        content_layout.addLayout(self._payment_form)
 
-        layout.addWidget(QLabel("Historique des paiements", self))
-        self.payments_table = QTableWidget(0, len(_PAYMENT_COLUMNS), self)
+        content_layout.addWidget(QLabel("Historique des paiements", content))
+        self.payments_table = QTableWidget(0, len(_PAYMENT_COLUMNS), content)
         self.payments_table.setAlternatingRowColors(True)
         self.payments_table.setHorizontalHeaderLabels(_PAYMENT_COLUMNS)
         self.payments_table.horizontalHeader().setStretchLastSection(True)
         self.payments_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        layout.addWidget(self.payments_table)
+        apply_comfortable_row_height(self.payments_table, visible_rows=4)
+        content_layout.addWidget(self.payments_table)
 
         self._caution_form = QFormLayout()
-        layout.addLayout(self._caution_form)
+        content_layout.addLayout(self._caution_form)
 
         # Lot 22 (§F) : deux documents distincts (voir
         # ``receipt_service.py``) — jamais un seul bouton ambigu entre les
@@ -176,7 +195,7 @@ class LocationDetailDialog(QDialog):
         ):
             documents_row.addWidget(button)
         documents_row.addStretch(1)
-        layout.addLayout(documents_row)
+        content_layout.addLayout(documents_row)
 
         self.print_voucher_button.clicked.connect(self._on_print_voucher_clicked)
         self.export_voucher_button.clicked.connect(self._on_export_voucher_clicked)
@@ -206,7 +225,7 @@ class LocationDetailDialog(QDialog):
         ):
             action_row.addWidget(button)
         action_row.addStretch(1)
-        layout.addLayout(action_row)
+        content_layout.addLayout(action_row)
 
         self.confirm_button.clicked.connect(self._on_confirm_clicked)
         self.depart_button.clicked.connect(self._on_depart_clicked)
@@ -214,6 +233,10 @@ class LocationDetailDialog(QDialog):
         self.cancel_location_button.clicked.connect(self._on_cancel_clicked)
         self.caution_button.clicked.connect(self._on_caution_clicked)
         self.payment_button.clicked.connect(self._on_payment_clicked)
+
+        content_layout.addStretch(1)
+        scroll_area.setWidget(content)
+        layout.addWidget(scroll_area)
 
         button_row = QHBoxLayout()
         button_row.addStretch(1)

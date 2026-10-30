@@ -8,9 +8,10 @@ from __future__ import annotations
 
 from typing import Optional
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.models.catalog import UniteArticle
+from app.models.catalog import Article, UniteArticle
 from app.repositories.base import SQLAlchemyRepository
 from app.repositories.exit_reason_repository import normalize_label
 
@@ -33,3 +34,18 @@ class UniteArticleRepository(SQLAlchemyRepository[UniteArticle]):
 
     def list_all_ordered(self) -> list[UniteArticle]:
         return self.session.query(UniteArticle).order_by(UniteArticle.libelle).all()
+
+    def count_articles_using_label(self, libelle: str) -> int:
+        """Mission 4, §4.3 : ``Article.unite`` est un simple texte, jamais
+        une clé étrangère vers ``unites_article`` (voir le modèle) — « est
+        utilisée par des articles » se vérifie donc par comparaison de
+        texte, insensible à la casse et aux espaces superflus (même
+        normalisation que la détection de doublon, ``normalize_label``),
+        jamais en chargeant tous les articles en mémoire : agrégat SQL
+        ``COUNT``, compatible SQLite et PostgreSQL."""
+        target = normalize_label(libelle)
+        return (
+            self.session.query(func.count(Article.id))
+            .filter(func.lower(func.trim(Article.unite)) == target)
+            .scalar()
+        ) or 0

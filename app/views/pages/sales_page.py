@@ -79,6 +79,7 @@ from app.utils.pdf_export import build_page_layout
 from app.utils.quantity import format_quantity
 from app.views.cancellation_reason_dialog import CancellationReasonDialog
 from app.views.client_form_dialog import ClientFormDialog
+from app.views.design_system import QuantityEditDelegate
 from app.views.common import (
     confirm_action,
     date_to_qdate,
@@ -816,12 +817,19 @@ class SalesPage(QWidget):
         self.caisse_lines_table.setColumnWidth(2, 120)
         caisse_header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
         self.caisse_lines_table.setColumnWidth(3, 120)
-        self.caisse_lines_table.verticalHeader().setDefaultSectionSize(34)
+        # Mission 4, §3 : hauteur de ligne portée à 36 px (borne haute de la
+        # fourchette indicative demandée) pour que l'éditeur de quantité,
+        # qui hérite exactement de cette hauteur de cellule, ait assez de
+        # place pour rester lisible pendant la saisie — voir
+        # ``QuantityEditDelegate`` pour la correction de l'éditeur lui-même.
+        self.caisse_lines_table.verticalHeader().setDefaultSectionSize(36)
         self.caisse_lines_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.caisse_lines_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.caisse_lines_table.setEditTriggers(
             QTableWidget.EditTrigger.DoubleClicked | QTableWidget.EditTrigger.EditKeyPressed
         )
+        self._caisse_quantity_delegate = QuantityEditDelegate(self.caisse_lines_table)
+        self.caisse_lines_table.setItemDelegateForColumn(_CAISSE_QUANTITY_COLUMN, self._caisse_quantity_delegate)
         layout.addWidget(self.caisse_lines_table)
 
         remove_row = QHBoxLayout()

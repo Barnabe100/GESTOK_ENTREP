@@ -30,6 +30,12 @@ existant dont l'unité ne figure pas dans ``unites`` (saisie libre
 antérieure à ce lot) reste affichée et modifiable sans aucune altération
 silencieuse — ajoutée temporairement à la liste, jamais à la table de
 référence tant que l'utilisateur ne la change pas explicitement.
+
+Mission 4, §4 : bouton « Supprimer » symétrique, pour retirer une unité
+créée par erreur — délègue de la même façon à ``on_delete_unite`` (callback
+prenant le libellé actuellement sélectionné) : ce dialogue ne connaît ni la
+vérification d'usage, ni la confirmation, ni la suppression elle-même,
+toutes entièrement du ressort de l'appelant (``ArticlesPage``).
 """
 from __future__ import annotations
 
@@ -43,6 +49,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QStyle,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -69,12 +76,14 @@ class ArticleFormDialog(QDialog):
         initial: Optional[dict] = None,
         is_edit: bool = False,
         on_create_unite: Optional[Callable[[], Optional[str]]] = None,
+        on_delete_unite: Optional[Callable[[str], Optional[tuple[list[str], Optional[str]]]]] = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         initial = initial or {}
         self.is_edit = is_edit
         self._on_create_unite = on_create_unite
+        self._on_delete_unite = on_delete_unite
 
         self.setWindowTitle("Article")
         self.setModal(True)
@@ -119,6 +128,21 @@ class ArticleFormDialog(QDialog):
         self.new_unite_button.setEnabled(on_create_unite is not None)
         self.new_unite_button.clicked.connect(self._on_new_unite_clicked)
         self.unite_row.addWidget(self.new_unite_button)
+        # Mission 4, §4.1 : action symétrique de « Nouveau », pour retirer
+        # une unité créée par erreur — rouge et icône explicite, jamais
+        # confondue avec les actions neutres/positives qui l'entourent.
+        # Icône seule (option explicitement prévue par la mission) plutôt
+        # qu'icône + texte : cette ligne de formulaire, déjà partagée avec le
+        # sélecteur et le bouton « Nouveau », reste étroite dans la mise en
+        # page en deux colonnes — ne pas la surcharger.
+        self.delete_unite_button = QPushButton(self)
+        self.delete_unite_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
+        self.delete_unite_button.setToolTip("Supprimer l'unité sélectionnée")
+        self.delete_unite_button.setProperty("variant", "danger")
+        self.delete_unite_button.setFixedWidth(40)
+        self.delete_unite_button.setEnabled(on_delete_unite is not None)
+        self.delete_unite_button.clicked.connect(self._on_delete_unite_clicked)
+        self.unite_row.addWidget(self.delete_unite_button)
         left_form.addRow(required_label("Unité"), self.unite_row)
 
         self.prix_achat_edit = QLineEdit(self)
@@ -281,6 +305,23 @@ class ArticleFormDialog(QDialog):
         if self.unite_combo.findText(libelle) == -1:
             self.unite_combo.addItem(libelle)
         self.unite_combo.setCurrentText(libelle)
+
+    def _on_delete_unite_clicked(self) -> None:
+        """Mission 4, §4.1/§4.5 : délègue entièrement la vérification
+        d'usage, la confirmation et la suppression à l'appelant — ce
+        dialogue ne fait que répercuter le résultat sur le menu déroulant
+        (liste réactualisée + sélection d'une autre unité disponible),
+        jamais de logique métier ici."""
+        if self._on_delete_unite is None:
+            return
+        libelle = self.unite_combo.currentText()
+        if not libelle:
+            return
+        result = self._on_delete_unite(libelle)
+        if result is None:
+            return
+        remaining_unites, next_selected = result
+        self._populate_unite_combo(remaining_unites, next_selected)
 
     def _update_price_fields_state(self) -> None:
         """Actualise immédiatement l'état des deux champs de prix au

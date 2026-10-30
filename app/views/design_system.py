@@ -16,7 +16,18 @@ from typing import Optional
 
 from PySide6.QtCore import QPoint, QRect, QSize, Qt
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QLayout, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLayout,
+    QLineEdit,
+    QSizePolicy,
+    QStyledItemDelegate,
+    QTableWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
 # -- Palette (voir app.qss pour le détail des composants QSS) ------------------------
 
@@ -65,6 +76,53 @@ def refresh_style(widget: QWidget) -> None:
     (ex. à la construction d'une page) s'en passent."""
     widget.style().unpolish(widget)
     widget.style().polish(widget)
+
+
+def apply_comfortable_row_height(
+    table: QTableWidget, visible_rows: int = 5, row_height: int = 34
+) -> None:
+    """Hauteur de ligne confortable + hauteur minimale garantissant au moins
+    ``visible_rows`` lignes visibles sans avoir à redimensionner la fenêtre
+    (Mission 4, §2/§2.4) : par défaut, ``QTableWidget`` retombe sur un
+    ``sizeHint()`` fixe (~192 px) totalement indépendant du nombre de
+    lignes réellement contenues — c'est la cause des tableaux de
+    consultation (historique des paiements, mouvements de stock…) qui ne
+    laissaient voir qu'une seule ligne malgré un contenu bien plus long."""
+    table.verticalHeader().setDefaultSectionSize(row_height)
+    header_height = table.horizontalHeader().sizeHint().height() or 32
+    table.setMinimumHeight(header_height + visible_rows * row_height + 12)
+
+
+class QuantityEditDelegate(QStyledItemDelegate):
+    """Délégué d'édition des cellules de quantité (et de tarif) des
+    tableaux de caisse Ventes/Locations (Mission 4, §3).
+
+    Par défaut, ``QTableWidget`` ouvre en édition (double-clic/touche
+    d'édition) un ``QLineEdit`` ordinaire créé par
+    ``QStyledItemDelegate`` — il hérite donc du style global de
+    ``app.qss`` (``QLineEdit { padding: 6px 10px; border: 1px solid; }``),
+    pensé pour des champs de formulaire pleine hauteur, jamais pour une
+    cellule de tableau : combiné à une ligne de ~30-34 px, ce remplissage
+    ne laisse pas assez de place pour que le nombre saisi reste
+    confortablement lisible pendant la frappe (plusieurs chiffres).
+
+    Cette classe ne change rien à la validation ni à la valeur réellement
+    appliquée (toujours lue depuis ``item.text()`` par l'appelant, exactement
+    comme avant) : elle ne fait que remplacer l'apparence de l'éditeur —
+    objectName dédié ciblé par ``app.qss`` (marges réduites), alignement
+    centré et police plus grande, cohérents avec l'affichage (non-édition)
+    de ces mêmes cellules."""
+
+    def createEditor(self, parent, option, index):  # noqa: N802 (API Qt)
+        editor = super().createEditor(parent, option, index)
+        if isinstance(editor, QLineEdit):
+            editor.setObjectName("quantityCellEditor")
+            editor.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            font = editor.font()
+            font.setBold(True)
+            font.setPointSize(font.pointSize() + 1)
+            editor.setFont(font)
+        return editor
 
 
 # -- KpiCard : carte d'indicateur (icône + intitulé + valeur + accent coloré) --------
