@@ -55,6 +55,7 @@ from app.views.common import (
     run_modal_form,
     sort_by_creation_date_desc,
 )
+from app.views.design_system import refresh_style
 
 _COLUMNS = [
     "Référence", "Désignation", "Catégorie", "Stock actuel", "Stock min", "Stock max",
@@ -125,6 +126,7 @@ class ArticlesPage(QWidget):
         toolbar.addWidget(self.edit_button)
 
         self.detail_button = QPushButton("Détails", self)
+        self.detail_button.setProperty("variant", "info")
         toolbar.addWidget(self.detail_button)
 
         self.toggle_button = QPushButton("Activer / désactiver", self)
@@ -138,6 +140,7 @@ class ArticlesPage(QWidget):
         # distincte de « Modifier » (auditée séparément, voir ArticleService.
         # switch_mode_gestion) — même permission ARTICLE_UPDATE.
         self.mode_gestion_button = QPushButton("Mode de gestion…", self)
+        self.mode_gestion_button.setProperty("variant", "violet")
         self.mode_gestion_button.setEnabled(self._permissions.has_permission("ARTICLE_UPDATE"))
         toolbar.addWidget(self.mode_gestion_button)
 
@@ -161,6 +164,7 @@ class ArticlesPage(QWidget):
         self.detail_button.clicked.connect(self._on_detail_clicked)
         self.toggle_button.clicked.connect(self._on_toggle_clicked)
         self.mode_gestion_button.clicked.connect(self._on_mode_gestion_clicked)
+        self.table.itemSelectionChanged.connect(self._update_toggle_button)
 
         self.refresh()
 
@@ -189,6 +193,7 @@ class ArticlesPage(QWidget):
             )
         except AppError:
             self.table.setRowCount(0)
+            self._update_toggle_button()
             return
 
         status_filter = self.status_filter_combo.currentData()
@@ -229,6 +234,8 @@ class ArticlesPage(QWidget):
             self.table.setItem(row, 7, QTableWidgetItem(format_money(article.prix_vente, self._currency_code)))
             self.table.setItem(row, 8, QTableWidgetItem(format_money(article.cout_moyen_pondere, self._currency_code)))
             self.table.setItem(row, 9, QTableWidgetItem("Actif" if article.actif else "Inactif"))
+
+        self._update_toggle_button()
 
     def _selected_row(self) -> Optional[int]:
         selected = self.table.selectionModel().selectedRows()
@@ -499,6 +506,26 @@ class ArticlesPage(QWidget):
             return None
 
     # -- activation / désactivation -----------------------------------------
+
+    def _update_toggle_button(self) -> None:
+        """Libellé et couleur du bouton reflètent l'action réellement
+        proposée pour l'article sélectionné (Mission 3, §7.2) — jamais le
+        vert pour une désactivation : Activer (vert) si l'article est
+        inactif, Désactiver (orange) s'il est actif. Libellé neutre, sans
+        couleur, tant qu'aucune ligne n'est sélectionnée."""
+        row = self._selected_row()
+        if row is None:
+            self.toggle_button.setText("Activer / désactiver")
+            self.toggle_button.setProperty("variant", None)
+        else:
+            currently_active = self.table.item(row, 9).text() == "Actif"
+            if currently_active:
+                self.toggle_button.setText("Désactiver")
+                self.toggle_button.setProperty("variant", "warning")
+            else:
+                self.toggle_button.setText("Activer")
+                self.toggle_button.setProperty("variant", "success")
+        refresh_style(self.toggle_button)
 
     def _on_toggle_clicked(self) -> None:
         row = self._selected_row()

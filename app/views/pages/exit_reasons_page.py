@@ -28,6 +28,7 @@ from app.services.auth.permission_service import PermissionService
 from app.services.exit_reasons.exit_reason_service import ExitReasonService
 from app.utils.exceptions import AppError
 from app.views.common import confirm_action, run_modal_form, sort_by_creation_date_desc
+from app.views.design_system import refresh_style
 from app.views.exit_reason_form_dialog import ExitReasonFormDialog
 
 _COLUMNS = ["Libellé", "Description", "Statut", "Créé le", "Modifié le"]
@@ -84,6 +85,7 @@ class ExitReasonsPage(QWidget):
         self.add_button.clicked.connect(self._on_add_clicked)
         self.edit_button.clicked.connect(self._on_edit_clicked)
         self.toggle_button.clicked.connect(self._on_toggle_clicked)
+        self.table.itemSelectionChanged.connect(self._update_toggle_button)
 
         self.refresh()
 
@@ -94,6 +96,7 @@ class ExitReasonsPage(QWidget):
             reasons = self._exit_reason_service.list_exit_reasons(search=self.search_edit.text())
         except AppError:
             self.table.setRowCount(0)
+            self._update_toggle_button()
             return
 
         # Chantier B : les plus récemment créés en premier — voir le
@@ -109,6 +112,8 @@ class ExitReasonsPage(QWidget):
             self.table.setItem(row, 2, QTableWidgetItem("Actif" if reason.actif else "Inactif"))
             self.table.setItem(row, 3, QTableWidgetItem(reason.date_creation.strftime("%Y-%m-%d %H:%M")))
             self.table.setItem(row, 4, QTableWidgetItem(reason.date_modification.strftime("%Y-%m-%d %H:%M")))
+
+        self._update_toggle_button()
 
     def _selected_row(self) -> Optional[int]:
         selected = self.table.selectionModel().selectedRows()
@@ -158,6 +163,24 @@ class ExitReasonsPage(QWidget):
         return True
 
     # -- activation / désactivation -----------------------------------------
+
+    def _update_toggle_button(self) -> None:
+        """Libellé et couleur reflètent l'action réellement proposée pour le
+        motif sélectionné (Mission 3, §7.2) — jamais le vert pour une
+        désactivation."""
+        row = self._selected_row()
+        if row is None:
+            self.toggle_button.setText("Activer / désactiver")
+            self.toggle_button.setProperty("variant", None)
+        else:
+            currently_active = self.table.item(row, 2).text() == "Actif"
+            if currently_active:
+                self.toggle_button.setText("Désactiver")
+                self.toggle_button.setProperty("variant", "warning")
+            else:
+                self.toggle_button.setText("Activer")
+                self.toggle_button.setProperty("variant", "success")
+        refresh_style(self.toggle_button)
 
     def _on_toggle_clicked(self) -> None:
         row = self._selected_row()

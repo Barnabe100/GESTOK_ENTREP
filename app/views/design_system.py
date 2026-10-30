@@ -54,6 +54,19 @@ def qcolor(hex_value: str) -> QColor:
     return QColor(hex_value)
 
 
+def refresh_style(widget: QWidget) -> None:
+    """À appeler après tout ``setProperty("variant", ...)`` (ou toute autre
+    propriété dynamique utilisée par ``app.qss``) sur un widget déjà affiché
+    — ex. le bouton Activer/Désactiver dont le libellé et la couleur
+    changent selon l'article sélectionné (Mission 3, §7.2). Qt n'évalue les
+    sélecteurs de propriété du QSS qu'au moment du « polish » : un widget
+    déjà visible ne se redessine jamais tout seul après un simple
+    ``setProperty`` — seuls les widgets tagués avant leur premier affichage
+    (ex. à la construction d'une page) s'en passent."""
+    widget.style().unpolish(widget)
+    widget.style().polish(widget)
+
+
 # -- KpiCard : carte d'indicateur (icône + intitulé + valeur + accent coloré) --------
 
 

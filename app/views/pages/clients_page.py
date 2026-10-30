@@ -31,6 +31,7 @@ from app.utils.exceptions import AppError
 from app.views.client_detail_dialog import ClientDetailDialog
 from app.views.client_form_dialog import ClientFormDialog
 from app.views.common import confirm_action, run_modal_form, sort_by_creation_date_desc
+from app.views.design_system import refresh_style
 
 _COLUMNS = ["Nom", "Téléphone", "Email", "Statut", "Créé le", "Modifié le"]
 
@@ -75,6 +76,7 @@ class ClientsPage(QWidget):
         toolbar.addWidget(self.toggle_button)
 
         self.detail_button = QPushButton("Détails", self)
+        self.detail_button.setProperty("variant", "info")
         toolbar.addWidget(self.detail_button)
 
         layout.addLayout(toolbar)
@@ -93,6 +95,7 @@ class ClientsPage(QWidget):
         self.edit_button.clicked.connect(self._on_edit_clicked)
         self.toggle_button.clicked.connect(self._on_toggle_clicked)
         self.detail_button.clicked.connect(self._on_detail_clicked)
+        self.table.itemSelectionChanged.connect(self._update_toggle_button)
 
         self.refresh()
 
@@ -103,6 +106,7 @@ class ClientsPage(QWidget):
             clients = self._client_service.list_clients(search=self.search_edit.text())
         except AppError:
             self.table.setRowCount(0)
+            self._update_toggle_button()
             return
 
         # Chantier B : les plus récemment créés en premier — voir le
@@ -119,6 +123,8 @@ class ClientsPage(QWidget):
             self.table.setItem(row, 3, QTableWidgetItem("Actif" if client.actif else "Inactif"))
             self.table.setItem(row, 4, QTableWidgetItem(client.date_creation.strftime("%Y-%m-%d %H:%M")))
             self.table.setItem(row, 5, QTableWidgetItem(client.date_modification.strftime("%Y-%m-%d %H:%M")))
+
+        self._update_toggle_button()
 
     def _selected_row(self) -> Optional[int]:
         selected = self.table.selectionModel().selectedRows()
@@ -197,6 +203,24 @@ class ClientsPage(QWidget):
         return True
 
     # -- activation / désactivation -----------------------------------------
+
+    def _update_toggle_button(self) -> None:
+        """Libellé et couleur reflètent l'action réellement proposée pour le
+        client sélectionné (Mission 3, §7.2) — jamais le vert pour une
+        désactivation."""
+        row = self._selected_row()
+        if row is None:
+            self.toggle_button.setText("Activer / désactiver")
+            self.toggle_button.setProperty("variant", None)
+        else:
+            currently_active = self.table.item(row, 3).text() == "Actif"
+            if currently_active:
+                self.toggle_button.setText("Désactiver")
+                self.toggle_button.setProperty("variant", "warning")
+            else:
+                self.toggle_button.setText("Activer")
+                self.toggle_button.setProperty("variant", "success")
+        refresh_style(self.toggle_button)
 
     def _on_toggle_clicked(self) -> None:
         row = self._selected_row()

@@ -24,6 +24,7 @@ pour les composants réutilisables (``KpiCard``, ``FlowLayout``) et
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from typing import Callable, Optional
@@ -35,6 +36,7 @@ from PySide6.QtCharts import (
 from PySide6.QtGui import QCursor, QPainter
 from PySide6.QtWidgets import (
     QDateEdit,
+    QDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -51,12 +53,14 @@ from PySide6.QtWidgets import (
 
 from app.models.enums import TypeMouvement
 from app.services.auth.permission_service import PermissionService
+from app.services.dashboard.dashboard_preferences import load_selected_kpis, save_selected_kpis
 from app.services.dashboard.dashboard_service import DashboardOverview, DashboardService, default_period
 from app.services.settings.company_settings_service import get_effective_currency
 from app.utils.exceptions import AppError
 from app.utils.money import format_money
 from app.utils.quantity import format_quantity
 from app.views.common import date_to_qdate
+from app.views.dashboard_kpi_settings_dialog import DashboardKpiSettingsDialog, KpiOption
 from app.views.design_system import (
     COLOR_DANGER,
     COLOR_INDIGO,
@@ -105,6 +109,85 @@ _MOVEMENT_TYPE_COLORS: dict[TypeMouvement, str] = {
 _AXIS_LABEL_ROTATION_THRESHOLD = 10
 
 
+@dataclass(frozen=True)
+class _KpiDef:
+    """Un indicateur personnalisable du Dashboard (Mission 3, §6) : identité
+    stable (``id``, utilisé pour la persistance des préférences — voir
+    ``dashboard_preferences.py``), présentation (``label``/``icon``/
+    ``accent``, repris tels quels par ``KpiCard``) et catégorie d'affichage
+    pour la fenêtre de personnalisation."""
+
+    id: str
+    label: str
+    icon: str
+    accent: str
+    category: str
+    permission: Callable[[PermissionService], bool]
+
+
+# Les 10 indicateurs déjà existants avant cette mission conservent leurs
+# libellé/icône/accent d'origine à l'identique (voir _build_kpi_grid de la
+# refonte visuelle globale) ; §6.1 ajoute 4 indicateurs Locations, dont la
+# définition de « montant des locations » est documentée sur
+# ``RentalKpis`` (montant RÉELLEMENT FACTURÉ, jamais la caution/un paiement
+# encaissé). Pas d'indicateur « Locations en retard » : voir le docstring
+# de ``RentalKpis`` — le modèle métier ne porte aucune date d'échéance.
+_KPI_DEFINITIONS: list[_KpiDef] = [
+    _KpiDef("articles", "Articles actifs", "📦", "blue", "Stock", lambda p: p.has_permission("ARTICLE_VIEW")),
+    _KpiDef("stock_value", "Valeur du stock", "💰", "indigo", "Stock", lambda p: p.has_permission("REPORT_VIEW")),
+    _KpiDef(
+        "stock_quantity", "Quantité en stock", "📊", "blue", "Stock", lambda p: p.has_permission("REPORT_VIEW")
+    ),
+    _KpiDef("low_stock", "Stock faible", "⚠", "orange", "Stock", lambda p: p.has_permission("REPORT_VIEW")),
+    _KpiDef("out_of_stock", "Ruptures", "⛔", "red", "Stock", lambda p: p.has_permission("REPORT_VIEW")),
+    _KpiDef(
+        "sales_amount", "Chiffre d'affaires (période)", "📈", "green", "Activité commerciale",
+        lambda p: p.has_permission("SALE_VIEW") or p.has_permission("REPORT_VIEW"),
+    ),
+    _KpiDef(
+        "sales_count", "Ventes (période)", "🛒", "blue", "Activité commerciale",
+        lambda p: p.has_permission("SALE_VIEW") or p.has_permission("REPORT_VIEW"),
+    ),
+    _KpiDef(
+        "entries", "Entrées (période)", "⬇", "green", "Activité commerciale",
+        lambda p: p.has_permission("REPORT_VIEW"),
+    ),
+    _KpiDef(
+        "exits", "Sorties (période)", "⬆", "orange", "Activité commerciale",
+        lambda p: p.has_permission("REPORT_VIEW"),
+    ),
+    _KpiDef(
+        "rental_count", "Locations (période)", "🔑", "blue", "Locations",
+        lambda p: p.has_permission("LOCATION_VIEW"),
+    ),
+    _KpiDef(
+        "rental_amount", "Montant des locations (période)", "💶", "violet", "Locations",
+        lambda p: p.has_permission("LOCATION_VIEW"),
+    ),
+    _KpiDef(
+        "rental_in_progress", "Locations en cours", "⏳", "indigo", "Locations",
+        lambda p: p.has_permission("LOCATION_VIEW"),
+    ),
+    _KpiDef(
+        "rental_returns", "Retours (période)", "↩", "green", "Locations",
+        lambda p: p.has_permission("LOCATION_VIEW"),
+    ),
+    _KpiDef(
+        "inventories", "Inventaires (période)", "📋", "violet", "Gestion",
+        lambda p: p.has_permission("REPORT_VIEW"),
+    ),
+]
+
+# Sélection par défaut (§6.4 : « huit à dix KPI visibles par défaut au
+# maximum ») — les 10 déjà affichés avant cette mission, inchangés : les 4
+# nouveaux indicateurs Locations sont disponibles via « Personnaliser le
+# tableau de bord », jamais imposés d'office à un Dashboard déjà en place.
+_DEFAULT_KPI_IDS: list[str] = [
+    "articles", "stock_value", "low_stock", "out_of_stock", "sales_amount",
+    "stock_quantity", "entries", "exits", "sales_count", "inventories",
+]
+
+
 def _decimal_to_float(value: Decimal) -> float:
     """Conversion strictement pour l'affichage graphique (géométrie des
     barres/secteurs) — jamais utilisée pour un calcul métier ; tous les
@@ -151,6 +234,7 @@ class DashboardPage(QWidget):
         # utilisé pour la géométrie des barres (voir _decimal_to_float).
         self._sales_chart_points: list = []
         self._category_chart_rows: list = []
+        self._rental_chart_points: list = []
 
         # Le contenu (KPI + graphiques + tableaux) peut dépasser la hauteur
         # disponible sur une petite fenêtre — enveloppé dans un QScrollArea
@@ -175,7 +259,10 @@ class DashboardPage(QWidget):
         layout.setSpacing(18)
 
         layout.addWidget(self._build_period_card())
-        layout.addLayout(self._build_kpi_grid())
+        self._kpi_flow = self._build_kpi_grid()
+        layout.addLayout(self._kpi_flow)
+        self._selected_kpi_ids = self._load_initial_kpi_selection()
+        self._apply_kpi_selection(self._selected_kpi_ids)
 
         self.status_label = QLabel("", self)
         self.status_label.setProperty("status", "danger")
@@ -229,6 +316,13 @@ class DashboardPage(QWidget):
         self.date_to_edit.setMinimumWidth(150)
         row.addWidget(self.date_to_edit)
         row.addStretch(1)
+        # Action clairement identifiable (§6.2) : ouvre la fenêtre de
+        # personnalisation des KPI — neutre (jamais colorée comme une
+        # action de validation), placée à côté d'Actualiser pour rester
+        # visible sans encombrer le reste de l'en-tête.
+        self.customize_button = QPushButton("Personnaliser le tableau de bord", self)
+        self.customize_button.clicked.connect(self._on_customize_clicked)
+        row.addWidget(self.customize_button)
         self.refresh_button = QPushButton("Actualiser", self)
         self.refresh_button.setProperty("variant", "primary")
         row.addWidget(self.refresh_button)
@@ -249,44 +343,114 @@ class DashboardPage(QWidget):
         self.date_to_edit.setMinimumDate(self.date_from_edit.date())
 
     def _build_kpi_grid(self) -> FlowLayout:
-        """Grille équilibrée des 10 indicateurs (§4.3), en disposition en
-        flux (``FlowLayout``) : s'adapte à la largeur de fenêtre disponible
-        (1366 comme 1920) en répartissant naturellement les cartes sur
-        plusieurs lignes, sans jamais déborder horizontalement."""
+        """Grille équilibrée des indicateurs (§4.3, enrichie §6.1), en
+        disposition en flux (``FlowLayout``) : s'adapte à la largeur de
+        fenêtre disponible (1366 comme 1920) en répartissant naturellement
+        les cartes sur plusieurs lignes, sans jamais déborder
+        horizontalement.
+
+        Les 14 cartes (10 historiques + 4 Locations, voir
+        ``_KPI_DEFINITIONS``) sont TOUTES construites ici et ajoutées une
+        seule fois au flux — la personnalisation (§6.2) n'en bascule que la
+        visibilité (voir ``_apply_kpi_selection``), jamais une
+        reconstruction : ``FlowLayout`` ignore déjà nativement tout widget
+        invisible lors de la disposition (voir ``design_system.FlowLayout``),
+        qui se réorganise donc automatiquement selon le nombre de cartes
+        réellement affichées."""
         flow = FlowLayout(spacing=14)
+        self._kpi_cards: dict[str, KpiCard] = {}
 
-        self.kpi_articles_card = KpiCard("Articles actifs", "📦", "blue", self)
-        self.kpi_articles_label = self.kpi_articles_card.value_label
-        self.kpi_stock_value_card = KpiCard("Valeur du stock", "💰", "indigo", self)
-        self.kpi_stock_value_label = self.kpi_stock_value_card.value_label
-        self.kpi_low_stock_card = KpiCard("Stock faible", "⚠", "orange", self)
-        self.kpi_low_stock_label = self.kpi_low_stock_card.value_label
-        self.kpi_out_of_stock_card = KpiCard("Ruptures", "⛔", "red", self)
-        self.kpi_out_of_stock_label = self.kpi_out_of_stock_card.value_label
-        self.kpi_sales_card = KpiCard("Chiffre d'affaires (période)", "📈", "green", self)
-        self.kpi_sales_label = self.kpi_sales_card.value_label
-        self.kpi_stock_quantity_card = KpiCard("Quantité en stock", "📊", "blue", self)
-        self.kpi_stock_quantity_label = self.kpi_stock_quantity_card.value_label
-        self.kpi_entries_card = KpiCard("Entrées (période)", "⬇", "green", self)
-        self.kpi_entries_label = self.kpi_entries_card.value_label
-        self.kpi_exits_card = KpiCard("Sorties (période)", "⬆", "orange", self)
-        self.kpi_exits_label = self.kpi_exits_card.value_label
-        self.kpi_sales_count_card = KpiCard("Ventes (période)", "🛒", "blue", self)
-        self.kpi_sales_count_label = self.kpi_sales_count_card.value_label
-        self.kpi_inventories_card = KpiCard("Inventaires (période)", "📋", "violet", self)
-        self.kpi_inventories_label = self.kpi_inventories_card.value_label
-
-        for card in (
-            self.kpi_articles_card, self.kpi_stock_value_card, self.kpi_low_stock_card,
-            self.kpi_out_of_stock_card, self.kpi_sales_card, self.kpi_stock_quantity_card,
-            self.kpi_entries_card, self.kpi_exits_card, self.kpi_sales_count_card,
-            self.kpi_inventories_card,
-        ):
+        for kpi in _KPI_DEFINITIONS:
+            card = KpiCard(kpi.label, kpi.icon, kpi.accent, self)
             card.setMinimumWidth(190)
             card.setMinimumHeight(84)
+            self._kpi_cards[kpi.id] = card
             flow.addWidget(card)
 
+        # Alias historiques (refonte visuelle globale) — préservés à
+        # l'identique pour ne rien casser des écrans/tests déjà écrits
+        # contre ces noms d'attributs.
+        self.kpi_articles_card = self._kpi_cards["articles"]
+        self.kpi_articles_label = self.kpi_articles_card.value_label
+        self.kpi_stock_value_card = self._kpi_cards["stock_value"]
+        self.kpi_stock_value_label = self.kpi_stock_value_card.value_label
+        self.kpi_low_stock_card = self._kpi_cards["low_stock"]
+        self.kpi_low_stock_label = self.kpi_low_stock_card.value_label
+        self.kpi_out_of_stock_card = self._kpi_cards["out_of_stock"]
+        self.kpi_out_of_stock_label = self.kpi_out_of_stock_card.value_label
+        self.kpi_sales_card = self._kpi_cards["sales_amount"]
+        self.kpi_sales_label = self.kpi_sales_card.value_label
+        self.kpi_stock_quantity_card = self._kpi_cards["stock_quantity"]
+        self.kpi_stock_quantity_label = self.kpi_stock_quantity_card.value_label
+        self.kpi_entries_card = self._kpi_cards["entries"]
+        self.kpi_entries_label = self.kpi_entries_card.value_label
+        self.kpi_exits_card = self._kpi_cards["exits"]
+        self.kpi_exits_label = self.kpi_exits_card.value_label
+        self.kpi_sales_count_card = self._kpi_cards["sales_count"]
+        self.kpi_sales_count_label = self.kpi_sales_count_card.value_label
+        self.kpi_inventories_card = self._kpi_cards["inventories"]
+        self.kpi_inventories_label = self.kpi_inventories_card.value_label
+
+        # Nouveaux indicateurs Locations (§6.1).
+        self.kpi_rental_count_card = self._kpi_cards["rental_count"]
+        self.kpi_rental_count_label = self.kpi_rental_count_card.value_label
+        self.kpi_rental_amount_card = self._kpi_cards["rental_amount"]
+        self.kpi_rental_amount_label = self.kpi_rental_amount_card.value_label
+        self.kpi_rental_in_progress_card = self._kpi_cards["rental_in_progress"]
+        self.kpi_rental_in_progress_label = self.kpi_rental_in_progress_card.value_label
+        self.kpi_rental_returns_card = self._kpi_cards["rental_returns"]
+        self.kpi_rental_returns_label = self.kpi_rental_returns_card.value_label
+
         return flow
+
+    # -- personnalisation des KPI (§6.2-6.4) -------------------------------------------
+
+    def _available_kpi_definitions(self) -> list[_KpiDef]:
+        """Indicateurs que l'utilisateur courant a le droit de voir — ni
+        sélectionnables dans la fenêtre de personnalisation, ni jamais
+        affichés, s'il n'a pas la permission source correspondante (§8 :
+        « les KPI doivent être calculés uniquement à partir des données
+        accessibles à l'utilisateur »)."""
+        return [kpi for kpi in _KPI_DEFINITIONS if kpi.permission(self._permissions)]
+
+    def _load_initial_kpi_selection(self) -> list[str]:
+        current_user = self._permissions.current_user
+        username = current_user.username if current_user is not None else None
+        saved = load_selected_kpis(username) if username else None
+        available_ids = {kpi.id for kpi in self._available_kpi_definitions()}
+
+        candidate = saved if saved is not None else _DEFAULT_KPI_IDS
+        selected = [kpi_id for kpi_id in candidate if kpi_id in available_ids]
+        if not selected:
+            # Un rôle très restreint ou une sélection enregistrée devenue
+            # totalement inaccessible (changement de permissions) ne doit
+            # jamais laisser le Dashboard sans aucune carte — retombe sur
+            # les indicateurs par défaut encore accessibles.
+            selected = [kpi_id for kpi_id in _DEFAULT_KPI_IDS if kpi_id in available_ids]
+        return selected
+
+    def _apply_kpi_selection(self, selected_ids: list[str]) -> None:
+        selected_set = set(selected_ids)
+        for kpi_id, card in self._kpi_cards.items():
+            card.setVisible(kpi_id in selected_set)
+        self._kpi_flow.invalidate()
+
+    def _on_customize_clicked(self) -> None:
+        available = self._available_kpi_definitions()
+        options = [KpiOption(kpi.id, kpi.label, kpi.category) for kpi in available]
+        available_ids = {kpi.id for kpi in available}
+        default_ids = [kpi_id for kpi_id in _DEFAULT_KPI_IDS if kpi_id in available_ids]
+
+        dialog = DashboardKpiSettingsDialog(options, self._selected_kpi_ids, default_ids, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        self._selected_kpi_ids = dialog.selected_ids()
+        self._apply_kpi_selection(self._selected_kpi_ids)
+
+        current_user = self._permissions.current_user
+        if current_user is not None:
+            save_selected_kpis(current_user.username, self._selected_kpi_ids)
 
     def _build_empty_state_label(self, message: str) -> QLabel:
         """Message affiché à la place d'un graphique/tableau sans donnée —
@@ -345,6 +509,18 @@ class DashboardPage(QWidget):
             "Valeur du stock par catégorie", self.category_value_chart_view, "Aucune donnée de stock par catégorie."
         )
         grid.addWidget(category_cell, 1, 0)
+
+        # Évolution des locations (Mission 3, §5) : même présentation que
+        # « Évolution des ventes », couleur distincte (violet, voir
+        # _apply_rental_chart) — sur sa propre ligne, pleine largeur, pour
+        # ne pas resserrer les autres graphiques déjà en place.
+        self.rental_chart_view = QChartView(self)
+        self.rental_chart_view.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self.rental_chart_view.setMinimumHeight(260)
+        rental_cell, self.rental_empty_label = self._build_chart_cell(
+            "Évolution des locations", self.rental_chart_view, "Aucune location sur cette période."
+        )
+        grid.addWidget(rental_cell, 2, 0, 1, 2)
 
         low_stock_card = _card_frame(self)
         low_stock_box = QVBoxLayout(low_stock_card)
@@ -502,11 +678,28 @@ class DashboardPage(QWidget):
             str(activity.inventories_validated) if activity.inventories_validated is not None else "—"
         )
 
+        # Indicateurs Locations (§6.1) : ``None`` dans son ensemble si
+        # LOCATION_VIEW manque (voir RentalKpis) — même convention que
+        # StockKpis, jamais un 0 trompeur à la place d'une permission
+        # absente.
+        rental = overview.rental
+        if rental is not None:
+            self.kpi_rental_count_label.setText(str(rental.count))
+            self.kpi_rental_amount_label.setText(format_money(rental.amount, self._currency_code))
+            self.kpi_rental_in_progress_label.setText(str(rental.in_progress_count))
+            self.kpi_rental_returns_label.setText(str(rental.returns_count))
+        else:
+            self.kpi_rental_count_label.setText("—")
+            self.kpi_rental_amount_label.setText("—")
+            self.kpi_rental_in_progress_label.setText("—")
+            self.kpi_rental_returns_label.setText("—")
+
         # `None` (permission manquante) et liste/dict vide (aucune donnée
         # réelle sur la période) ne doivent jamais être confondus (§ lot
         # dates/permissions) : la distinction est transmise telle quelle,
         # jamais aplatie ici — chaque `_apply_*` choisit le message adapté.
         self._apply_sales_chart(overview.sales_evolution)
+        self._apply_rental_chart(overview.rental_evolution)
         self._apply_movement_chart(overview.movement_breakdown)
         self._apply_category_value_chart(overview.stock_value_by_category)
         self._apply_low_stock_table(overview.low_stock_top)
@@ -584,6 +777,58 @@ class DashboardPage(QWidget):
         point = self._sales_chart_points[index]
         text = f"{point.label} : {format_money(point.amount, self._currency_code)}"
         QToolTip.showText(QCursor.pos(), text, self.sales_chart_view)
+
+    def _apply_rental_chart(self, points: Optional[list]) -> None:
+        """Évolution des locations (Mission 3, §5) : même construction que
+        ``_apply_sales_chart`` (axes, granularité, carte, état vide) —
+        couleur distincte (violet, jamais le bleu des ventes, §5.2) pour
+        qu'un même coup d'œil distingue les deux graphiques. ``points`` est
+        ``None`` si LOCATION_VIEW manque, une liste vide si la période ne
+        contient réellement aucune location — jamais confondus (voir
+        ``_PERMISSION_MISSING_MESSAGE``), et jamais un point inventé pour
+        remplir le graphique."""
+        has_data = bool(points)
+        self.rental_chart_view.setVisible(has_data)
+        self.rental_empty_label.setVisible(not has_data)
+        if not has_data:
+            self.rental_empty_label.setText(
+                _PERMISSION_MISSING_MESSAGE if points is None else "Aucune location sur cette période."
+            )
+            return
+
+        self._rental_chart_points = points
+
+        chart = QChart()
+        bar_set = QBarSet("Montant des locations")
+        bar_set.setColor(qcolor(COLOR_VIOLET))
+        categories = []
+        for point in points:
+            bar_set.append(_decimal_to_float(point.amount))
+            categories.append(point.label)
+        series = QBarSeries()
+        series.append(bar_set)
+        series.hovered.connect(self._on_rental_bar_hovered)
+        chart.addSeries(series)
+
+        axis_x = QBarCategoryAxis()
+        axis_x.append(categories)
+        chart.addAxis(axis_x, Qt.AlignmentFlag.AlignBottom)
+        series.attachAxis(axis_x)
+
+        axis_y = QValueAxis()
+        chart.addAxis(axis_y, Qt.AlignmentFlag.AlignLeft)
+        series.attachAxis(axis_y)
+
+        self._style_bar_axes(chart, axis_x, axis_y, len(categories))
+        self.rental_chart_view.setChart(chart)
+
+    def _on_rental_bar_hovered(self, status: bool, index: int, _barset: QBarSet | None = None) -> None:
+        if not status or not (0 <= index < len(self._rental_chart_points)):
+            QToolTip.hideText()
+            return
+        point = self._rental_chart_points[index]
+        text = f"{point.label} : {format_money(point.amount, self._currency_code)}"
+        QToolTip.showText(QCursor.pos(), text, self.rental_chart_view)
 
     def _apply_movement_chart(self, breakdown: Optional[dict[TypeMouvement, int]]) -> None:
         has_data = bool(breakdown)

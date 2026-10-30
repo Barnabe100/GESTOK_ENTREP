@@ -25,6 +25,7 @@ from app.services.users.user_service import UserService
 from app.utils.exceptions import AppError, ValidationError
 from app.views.common import confirm_action, run_modal_form
 from app.views.create_user_dialog import CreateUserDialog
+from app.views.design_system import refresh_style
 from app.views.edit_user_dialog import EditUserDialog
 from app.views.reset_password_dialog import ResetPasswordDialog
 
@@ -78,6 +79,7 @@ class UsersPage(QWidget):
         self.edit_button.clicked.connect(self._on_edit_clicked)
         self.reset_password_button.clicked.connect(self._on_reset_password_clicked)
         self.toggle_button.clicked.connect(self._on_toggle_clicked)
+        self.table.itemSelectionChanged.connect(self._update_toggle_button)
 
         self.refresh()
 
@@ -86,6 +88,7 @@ class UsersPage(QWidget):
             users = self._user_service.list_users()
         except AppError:
             self.table.setRowCount(0)
+            self._update_toggle_button()
             return
 
         self.table.setRowCount(len(users))
@@ -104,6 +107,8 @@ class UsersPage(QWidget):
                 user.dernier_login.strftime("%Y-%m-%d %H:%M") if user.dernier_login else "—"
             )
             self.table.setItem(row, 3, QTableWidgetItem(last_login))
+
+        self._update_toggle_button()
 
     # -- création --------------------------------------------------------------
 
@@ -232,6 +237,25 @@ class UsersPage(QWidget):
         return True
 
     # -- activation / désactivation ----------------------------------------------
+
+    def _update_toggle_button(self) -> None:
+        """Libellé et couleur reflètent l'action réellement proposée pour le
+        compte sélectionné (Mission 3, §7.2) — jamais le vert pour une
+        désactivation."""
+        selected = self.table.selectionModel().selectedRows()
+        if not selected:
+            self.toggle_button.setText("Activer / désactiver le compte sélectionné")
+            self.toggle_button.setProperty("variant", None)
+        else:
+            row = selected[0].row()
+            currently_active = self.table.item(row, 2).text() == "Actif"
+            if currently_active:
+                self.toggle_button.setText("Désactiver le compte sélectionné")
+                self.toggle_button.setProperty("variant", "warning")
+            else:
+                self.toggle_button.setText("Activer le compte sélectionné")
+                self.toggle_button.setProperty("variant", "success")
+        refresh_style(self.toggle_button)
 
     def _on_toggle_clicked(self) -> None:
         selected = self.table.selectionModel().selectedRows()

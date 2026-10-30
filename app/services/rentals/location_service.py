@@ -405,6 +405,23 @@ class LocationService:
                 raise NotFoundError(f"Location {location_id} introuvable.")
             return LocationSummary.from_model(location)
 
+    def count_by_statut(self, statut: StatutLocation) -> int:
+        """Comptage instantané (ex. KPI Dashboard « Locations en cours ») —
+        agrégation SQL (voir ``LocationRepository.count_by_statut``), jamais
+        le chargement des locations complètes juste pour un total."""
+        self._permissions.require_permission("LOCATION_VIEW")
+        with session_scope(self._settings) as session:
+            return LocationRepository(session).count_by_statut(statut)
+
+    def count_returns_in_period(self, date_from: date, date_to: date) -> int:
+        """Nombre d'événements de retour sur la période (KPI Dashboard
+        « Retours »), filtré par ``LocationRetour.date_retour`` — jamais par
+        ``Location.date`` : un retour peut survenir bien après la création
+        de la location qui le porte, voir ``LocationRepository.count_returns_in_period``."""
+        self._permissions.require_permission("LOCATION_VIEW")
+        with session_scope(self._settings) as session:
+            return LocationRepository(session).count_returns_in_period(date_from, date_to)
+
     # -- création / modification / suppression -------------------------------------
 
     def create_location(

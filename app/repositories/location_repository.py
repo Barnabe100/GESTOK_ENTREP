@@ -14,7 +14,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.models.enums import StatutLocation
-from app.models.rental import Location, LocationLigne
+from app.models.rental import Location, LocationLigne, LocationRetour
 from app.repositories.base import SQLAlchemyRepository
 
 
@@ -61,3 +61,22 @@ class LocationRepository(SQLAlchemyRepository[Location]):
         """Utilisé pour générer le prochain numéro de location (LOC-NNNNNN),
         à l'identique de ``VenteRepository.count_all``."""
         return self.session.query(func.count(Location.id)).scalar() or 0
+
+    def count_by_statut(self, statut: StatutLocation) -> int:
+        """Comptage instantané (ex. « Locations en cours », Dashboard §6) —
+        agrégation SQL plutôt que charger les locations complètes juste pour
+        un total (même principe que les compteurs de ``ArticleRepository``)."""
+        return self.session.query(func.count(Location.id)).filter(Location.statut == statut).scalar() or 0
+
+    def count_returns_in_period(self, date_from: date, date_to: date) -> int:
+        """Nombre d'événements de retour (``LocationRetour``, pas de
+        locations) dont la date de retour tombe dans la période (Dashboard
+        §6) — distinct du filtre par ``Location.date`` utilisé pour le
+        montant facturé/l'évolution : un retour peut survenir bien après la
+        date de création de la location qui le porte."""
+        return (
+            self.session.query(func.count(LocationRetour.id))
+            .filter(LocationRetour.date_retour >= date_from, LocationRetour.date_retour <= date_to)
+            .scalar()
+            or 0
+        )

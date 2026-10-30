@@ -2,6 +2,7 @@ from datetime import datetime
 from decimal import Decimal
 
 import pytest
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QMessageBox
 
 from app.config.settings import get_settings
@@ -15,6 +16,13 @@ from app.views.pages.articles_page import ArticlesPage
 def _no_blocking_dialogs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("app.views.pages.articles_page.QMessageBox.information", lambda *a, **k: None)
     monkeypatch.setattr("app.views.pages.articles_page.QMessageBox.warning", lambda *a, **k: None)
+
+
+def _make_article(stack, reference="ART-1"):
+    category = stack.categories.create_category(f"Cat-{reference}")
+    return stack.articles.create_article(
+        reference, "Article de test", category.id, "unité", Decimal("100"), Decimal("150"), Decimal("0")
+    )
 
 
 def _build_page(stack) -> ArticlesPage:
@@ -763,3 +771,62 @@ def test_table_shows_most_recently_created_article_first(qtbot, login_as) -> Non
 
     assert page.table.item(0, 0).text() == "ART-A-RECENT"
     assert page.table.item(1, 0).text() == "ART-Z-ANCIEN"
+
+
+# -- Mission 3, §7.2 : bouton Activer/Désactiver dynamique --------------------------
+
+
+def test_toggle_button_neutral_label_without_selection(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.table.selectionModel().selectedRows() == []
+    assert page.toggle_button.text() == "Activer / désactiver"
+    assert page.toggle_button.property("variant") is None
+
+
+def test_toggle_button_shows_disable_in_orange_for_active_article(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    page.table.selectRow(0)
+
+    assert page.toggle_button.text() == "Désactiver"
+    assert page.toggle_button.property("variant") == "warning"
+
+
+def test_toggle_button_shows_enable_in_green_for_inactive_article(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    stack.articles.deactivate_article(article.id)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page.status_filter_combo.setCurrentIndex(0)  # "Tous" : l'article inactif doit apparaître
+
+    page.table.selectRow(0)
+
+    assert page.toggle_button.text() == "Activer"
+    assert page.toggle_button.property("variant") == "success"
+
+
+def test_toggle_button_updates_after_the_action_it_performs(qtbot, login_as) -> None:
+    """Après désactivation, le bouton propose désormais Activer — jamais
+    l'inverse (toujours l'action réellement possible, Mission 3, §7.2)."""
+    stack, _ = login_as("Administrateur")
+    _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page.table.selectRow(0)
+    assert page.toggle_button.text() == "Désactiver"
+
+    article_id = page.table.item(0, 0).data(Qt.ItemDataRole.UserRole)
+    assert page._toggle_status(article_id, currently_active=True) is True
+    page.status_filter_combo.setCurrentIndex(0)  # "Tous" : l'article désormais inactif doit rester visible
+    page.table.selectRow(0)
+
+    assert page.toggle_button.text() == "Activer"
+    assert page.toggle_button.property("variant") == "success"

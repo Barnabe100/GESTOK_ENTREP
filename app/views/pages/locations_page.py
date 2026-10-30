@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QFormLayout,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -167,6 +168,7 @@ class LocationsPage(QWidget):
         toolbar.addWidget(self.delete_button)
 
         self.detail_button = QPushButton("Détails", self)
+        self.detail_button.setProperty("variant", "info")
         toolbar.addWidget(self.detail_button)
 
         list_layout.addLayout(toolbar)
@@ -268,7 +270,19 @@ class LocationsPage(QWidget):
         self.caisse_lines_table = QTableWidget(0, len(_CAISSE_LINE_COLUMNS), panel)
         self.caisse_lines_table.setAlternatingRowColors(True)
         self.caisse_lines_table.setHorizontalHeaderLabels(_CAISSE_LINE_COLUMNS)
-        self.caisse_lines_table.horizontalHeader().setStretchLastSection(True)
+        # §3 (Mission 3) : même correctif que SalesPage — la colonne
+        # Quantité est la seule éditable ; sans largeur explicite, l'éditeur
+        # en place que Qt y ouvre hérite d'une largeur par défaut trop
+        # étroite et tronque la saisie. Article absorbe l'espace restant.
+        caisse_header = self.caisse_lines_table.horizontalHeader()
+        caisse_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        caisse_header.setSectionResizeMode(_CAISSE_QUANTITY_COLUMN, QHeaderView.ResizeMode.Interactive)
+        self.caisse_lines_table.setColumnWidth(_CAISSE_QUANTITY_COLUMN, 95)
+        caisse_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+        self.caisse_lines_table.setColumnWidth(2, 120)
+        caisse_header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
+        self.caisse_lines_table.setColumnWidth(3, 160)
+        self.caisse_lines_table.verticalHeader().setDefaultSectionSize(34)
         self.caisse_lines_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.caisse_lines_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.caisse_lines_table.setEditTriggers(
@@ -702,17 +716,30 @@ class LocationsPage(QWidget):
             article_item.setFlags(article_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.caisse_lines_table.setItem(row, 0, article_item)
 
+            # §3 (Mission 3) : alignement centré + police marquée pour les
+            # deux colonnes éditables de ce tableau — se reconnaissent
+            # immédiatement comme telles et restent lisibles à plusieurs
+            # chiffres (voir aussi les largeurs de colonnes ci-dessus).
             quantite_item = QTableWidgetItem(format_quantity(line["quantite"]))
             quantite_item.setFlags(quantite_item.flags() | Qt.ItemFlag.ItemIsEditable)
+            quantite_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            quantite_font = quantite_item.font()
+            quantite_font.setBold(True)
+            quantite_item.setFont(quantite_font)
             self.caisse_lines_table.setItem(row, _CAISSE_QUANTITY_COLUMN, quantite_item)
 
             tarif_item = QTableWidgetItem(format_decimal_for_input(line["tarif_jour"]))
             tarif_item.setFlags(tarif_item.flags() | Qt.ItemFlag.ItemIsEditable)
+            tarif_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            tarif_font = tarif_item.font()
+            tarif_font.setBold(True)
+            tarif_item.setFont(tarif_font)
             self.caisse_lines_table.setItem(row, _CAISSE_TARIF_COLUMN, tarif_item)
 
             estimation = line["quantite"] * line["tarif_jour"]
             estimation_item = QTableWidgetItem(format_money(estimation, self._currency_code))
             estimation_item.setFlags(estimation_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            estimation_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             self.caisse_lines_table.setItem(row, 3, estimation_item)
         self.caisse_lines_table.blockSignals(False)
         self._update_caisse_recap()

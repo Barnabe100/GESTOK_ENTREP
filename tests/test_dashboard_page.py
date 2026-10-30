@@ -778,3 +778,189 @@ def test_f_gestionnaire_stock_sales_kpi_still_visible(qtbot, login_as) -> None:
 
     assert page.kpi_sales_count_label.text() == "1"
     assert page.kpi_sales_label.text() != "—"
+
+
+# -- Mission 3 : KPI Locations + personnalisation du Dashboard --------------------
+
+
+def test_rental_kpi_cards_exist_with_expected_accents(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.kpi_rental_count_card.property("accent") == "blue"
+    assert page.kpi_rental_amount_card.property("accent") == "violet"
+    assert page.kpi_rental_in_progress_card.property("accent") == "indigo"
+    assert page.kpi_rental_returns_card.property("accent") == "green"
+
+
+def test_rental_kpi_values_reflect_overview(qtbot, login_as) -> None:
+    from app.models.enums import ModeGestionArticle
+    from app.services.rentals.location_service import LocationLigneInput
+
+    stack, _ = login_as("Administrateur")
+    category = stack.categories.create_category("Matériel")
+    article = stack.articles.create_article(
+        "ART-LOC", "Article de location", category.id, "unité", Decimal("100"), Decimal("0"), Decimal("0"),
+        stock_initial=Decimal("10"), tarif_location_jour=Decimal("20"),
+    )
+    stack.articles.switch_mode_gestion(article.id, ModeGestionArticle.LOCATION)
+    client = stack.clients.create_client("Client Location")
+    today = date.today()
+    location = stack.rentals.create_location(today, client.id, [LocationLigneInput(article.id, Decimal("2"))])
+    stack.rentals.confirm_location(location.id)
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page.date_from_edit.setDate(QDate(today.year, today.month, today.day))
+    page.date_to_edit.setDate(QDate(today.year, today.month, today.day))
+    page.refresh()
+
+    assert page.kpi_rental_count_label.text() == "1"
+    # Confirmée mais jamais partie : rien n'est encore réellement facturé.
+    assert page.kpi_rental_amount_label.text() == format_money(Decimal("0"), page._currency_code)
+    assert page.kpi_rental_in_progress_label.text() == "0"
+    assert page.kpi_rental_returns_label.text() == "0"
+
+
+def test_rental_evolution_chart_view_exists(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.rental_chart_view is not None
+    assert page.rental_empty_label.text() == "Aucune location sur cette période."
+
+
+def test_customize_button_exists_and_opens_a_modal_dialog(qtbot, login_as, monkeypatch) -> None:
+    from PySide6.QtWidgets import QDialog
+
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    dialog_opened = {"value": False}
+
+    def _fake_exec(self):
+        dialog_opened["value"] = True
+        return QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr("app.views.pages.dashboard_page.DashboardKpiSettingsDialog.exec", _fake_exec)
+
+    page.customize_button.click()
+
+    assert dialog_opened["value"] is True
+
+
+def test_default_kpi_selection_shows_historic_cards_and_hides_rental_ones(qtbot, login_as) -> None:
+    """§6.4 : sélection par défaut inchangée par rapport à la refonte
+    précédente — les 4 nouveaux indicateurs Locations ne sont jamais
+    imposés d'office."""
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.kpi_articles_card.isHidden() is False
+    assert page.kpi_sales_card.isHidden() is False
+    assert page.kpi_rental_count_card.isHidden() is True
+    assert page.kpi_rental_amount_card.isHidden() is True
+    assert page.kpi_rental_in_progress_card.isHidden() is True
+    assert page.kpi_rental_returns_card.isHidden() is True
+
+
+def test_customize_dialog_accept_updates_card_visibility_and_persists(qtbot, login_as, monkeypatch) -> None:
+    from PySide6.QtWidgets import QDialog
+
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    def _fake_exec(self):
+        for checkbox in self._checkboxes.values():
+            checkbox.setChecked(False)
+        self._checkboxes["rental_count"].setChecked(True)
+        self._checkboxes["rental_amount"].setChecked(True)
+        self.accept()
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr("app.views.pages.dashboard_page.DashboardKpiSettingsDialog.exec", _fake_exec)
+
+    page.customize_button.click()
+
+    assert page.kpi_rental_count_card.isHidden() is False
+    assert page.kpi_rental_amount_card.isHidden() is False
+    assert page.kpi_articles_card.isHidden() is True
+
+
+def test_kpi_selection_persists_across_page_rebuild_for_same_user(qtbot, login_as, monkeypatch) -> None:
+    from PySide6.QtWidgets import QDialog
+
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    def _fake_exec(self):
+        for checkbox in self._checkboxes.values():
+            checkbox.setChecked(False)
+        self._checkboxes["rental_count"].setChecked(True)
+        self.accept()
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr("app.views.pages.dashboard_page.DashboardKpiSettingsDialog.exec", _fake_exec)
+    page.customize_button.click()
+
+    # Même utilisateur (même ``stack``), nouvelle instance de page — simule
+    # une fermeture/réouverture de l'application.
+    reopened = _build_page(stack)
+    qtbot.addWidget(reopened)
+
+    assert reopened.kpi_rental_count_card.isHidden() is False
+    assert reopened.kpi_articles_card.isHidden() is True
+
+
+def test_reset_to_defaults_in_dialog_restores_historic_selection(qtbot, login_as, monkeypatch) -> None:
+    from PySide6.QtWidgets import QDialog
+
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    def _customize_to_rental_only(self):
+        for checkbox in self._checkboxes.values():
+            checkbox.setChecked(False)
+        self._checkboxes["rental_count"].setChecked(True)
+        self.accept()
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr("app.views.pages.dashboard_page.DashboardKpiSettingsDialog.exec", _customize_to_rental_only)
+    page.customize_button.click()
+    assert page.kpi_articles_card.isHidden() is True
+
+    def _reset_then_save(self):
+        self.reset_button.click()
+        self.accept()
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr("app.views.pages.dashboard_page.DashboardKpiSettingsDialog.exec", _reset_then_save)
+    page.customize_button.click()
+
+    assert page.kpi_articles_card.isHidden() is False
+    assert page.kpi_rental_count_card.isHidden() is True
+
+
+def test_rental_kpis_not_offered_to_role_without_location_view(qtbot, login_as) -> None:
+    """§8 : « les KPI doivent être calculés uniquement à partir des données
+    accessibles à l'utilisateur » — un rôle sans LOCATION_VIEW ne doit même
+    pas pouvoir sélectionner les indicateurs Locations."""
+    admin_stack, _ = login_as("Administrateur")
+    role_id = next(r.id for r in admin_stack.roles.list_roles() if r.nom == "Consultation")
+    current_codes = admin_stack.roles.get_role_permissions(role_id)
+    admin_stack.roles.update_role_permissions(role_id, [c for c in current_codes if c != "LOCATION_VIEW"])
+
+    stack, _ = login_as("Consultation")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    available_ids = {kpi.id for kpi in page._available_kpi_definitions()}
+    assert "rental_count" not in available_ids
+    assert page.kpi_rental_count_label.text() == "—"

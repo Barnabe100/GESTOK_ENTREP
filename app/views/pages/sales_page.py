@@ -50,6 +50,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QFormLayout,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -200,6 +201,7 @@ class SalesPage(QWidget):
         toolbar.addWidget(self.delete_button)
 
         self.detail_button = QPushButton("Détails", self)
+        self.detail_button.setProperty("variant", "info")
         toolbar.addWidget(self.detail_button)
 
         self.validate_button = QPushButton("Valider", self)
@@ -218,6 +220,7 @@ class SalesPage(QWidget):
         # c'est déjà ici que l'on filtre/recherche une vente ancienne par
         # statut, numéro ou client.
         self.pay_button = QPushButton("Payer", self)
+        self.pay_button.setProperty("variant", "success")
         toolbar.addWidget(self.pay_button)
 
         layout.addLayout(toolbar)
@@ -799,7 +802,21 @@ class SalesPage(QWidget):
         self.caisse_lines_table = QTableWidget(0, len(_CAISSE_LINE_COLUMNS), panel)
         self.caisse_lines_table.setAlternatingRowColors(True)
         self.caisse_lines_table.setHorizontalHeaderLabels(_CAISSE_LINE_COLUMNS)
-        self.caisse_lines_table.horizontalHeader().setStretchLastSection(True)
+        # §3 (Mission 3) : la colonne Quantité est la seule éditable de ce
+        # tableau — l'éditeur en place que Qt y ouvre (double-clic) hérite
+        # de la largeur/hauteur de la cellule ; sans largeur explicite, elle
+        # reste au défaut Qt (souvent trop étroit) et tronque la saisie.
+        # Désignation absorbe l'espace restant (texte potentiellement long),
+        # les trois autres colonnes gardent une largeur fixe confortable.
+        caisse_header = self.caisse_lines_table.horizontalHeader()
+        caisse_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        caisse_header.setSectionResizeMode(_CAISSE_QUANTITY_COLUMN, QHeaderView.ResizeMode.Interactive)
+        self.caisse_lines_table.setColumnWidth(_CAISSE_QUANTITY_COLUMN, 95)
+        caisse_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+        self.caisse_lines_table.setColumnWidth(2, 120)
+        caisse_header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
+        self.caisse_lines_table.setColumnWidth(3, 120)
+        self.caisse_lines_table.verticalHeader().setDefaultSectionSize(34)
         self.caisse_lines_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.caisse_lines_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.caisse_lines_table.setEditTriggers(
@@ -864,6 +881,7 @@ class SalesPage(QWidget):
         # ``_update_caisse_payment_controls``, seule méthode qui pilote son
         # état, jamais une activation locale ad hoc.
         self.caisse_pay_button = QPushButton("Payer", panel)
+        self.caisse_pay_button.setProperty("variant", "success")
         layout.addWidget(self.caisse_pay_button)
 
         self.caisse_back_button = QPushButton("Retour à la liste", panel)
@@ -1113,15 +1131,25 @@ class SalesPage(QWidget):
 
             quantite_item = QTableWidgetItem(format_quantity(line["quantite"]))
             quantite_item.setFlags(quantite_item.flags() | Qt.ItemFlag.ItemIsEditable)
+            # §3 : alignement centré + police légèrement plus marquée — seule
+            # colonne éditable de ce tableau, elle doit se reconnaître
+            # immédiatement comme telle et rester lisible y compris à
+            # plusieurs chiffres.
+            quantite_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            quantite_font = quantite_item.font()
+            quantite_font.setBold(True)
+            quantite_item.setFont(quantite_font)
             self.caisse_lines_table.setItem(row, _CAISSE_QUANTITY_COLUMN, quantite_item)
 
             prix_item = QTableWidgetItem(format_money(line["prix_unitaire"], self._currency_code))
             prix_item.setFlags(prix_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            prix_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             self.caisse_lines_table.setItem(row, 2, prix_item)
 
             montant = line["quantite"] * line["prix_unitaire"]
             montant_item = QTableWidgetItem(format_money(montant, self._currency_code))
             montant_item.setFlags(montant_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            montant_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             self.caisse_lines_table.setItem(row, 3, montant_item)
         self.caisse_lines_table.blockSignals(False)
         self._update_caisse_totals()

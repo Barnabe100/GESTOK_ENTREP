@@ -112,6 +112,7 @@ def build_service_registry(
     report_service = ReportService(permission_service, settings)
     backup_service = BackupService(permission_service, settings)
     sale_service = SaleService(permission_service, settings)
+    rental_service = LocationService(permission_service, settings)
 
     return ServiceRegistry(
         settings=resolved_settings,
@@ -133,7 +134,7 @@ def build_service_registry(
         backups=backup_service,
         licenses=license_service,
         activation=activation_service,
-        dashboard=DashboardService(permission_service, report_service, sale_service, settings),
+        dashboard=DashboardService(permission_service, report_service, sale_service, rental_service, settings),
         parameters=CompanySettingsService(permission_service, settings),
         documents=ReceiptService(permission_service, settings),
         audit=AuditService(permission_service, settings),
@@ -141,6 +142,6 @@ def build_service_registry(
         onboarding=OnboardingService(settings),
         data_reset=DataResetService(permission_service, backup_service, settings),
         account_recovery=AccountRecoveryService(permission_service, settings),
-        rentals=LocationService(permission_service, settings),
+        rentals=rental_service,
         database_admin=DatabaseAdminService(permission_service, settings),
     )

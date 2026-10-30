@@ -6,13 +6,35 @@ from decimal import Decimal
 
 import pytest
 
-from app.models.enums import EditionLicence
+from app.models.enums import EditionLicence, ModeGestionArticle, StatutLocation
 from app.services.entries.entry_service import EntreeLigneInput
 from app.services.exits.exit_service import SortieLigneInput
 from app.services.inventory.inventory_service import InventaireLigneInput
 from app.services.licensing.license_payload import DEFAULT_FEATURES_BY_EDITION
+from app.services.rentals.location_service import LocationLigneInput
 from app.services.sales.sale_service import VenteLigneInput
 from app.utils.exceptions import LicenseError, PermissionDeniedError, ValidationError
+
+
+def _make_rental_article(stack, reference="ART-LOC", stock_initial=Decimal("50"), tarif_jour=Decimal("20")):
+    category = stack.categories.create_category(f"Cat-{reference}")
+    article = stack.articles.create_article(
+        reference, "Article de location", category.id, "unité",
+        Decimal("100"), Decimal("0"), Decimal("0"),
+        stock_initial=stock_initial, tarif_location_jour=tarif_jour,
+    )
+    stack.articles.switch_mode_gestion(article.id, ModeGestionArticle.LOCATION)
+    return stack.articles.get_article(article.id)
+
+
+def _strip_location_view_from_consultation(stack) -> None:
+    """Retire LOCATION_VIEW du rôle Consultation (qui l'a par défaut, voir
+    app/db/seed.py) pour obtenir, le temps d'un test, un rôle sans accès au
+    domaine Locations — même principe que
+    ``test_reports_page._strip_report_export_from_consultation``."""
+    role_id = next(r.id for r in stack.roles.list_roles() if r.nom == "Consultation")
+    current_codes = stack.roles.get_role_permissions(role_id)
+    stack.roles.update_role_permissions(role_id, [c for c in current_codes if c != "LOCATION_VIEW"])
 
 
 def _setup_catalog(stack):
@@ -674,3 +696,152 @@ def test_p_sale_dated_exactly_the_last_day_of_period_is_included(login_as) -> No
 
     assert kpis.sales_validated == 1
     assert kpis.sales_amount == Decimal("45.00")
+
+
+# -- KPI Locations (Mission 3, §5/§6) ----------------------------------------------
+
+
+def test_rental_kpis_counts_and_sums_only_really_billed_amounts(login_as) -> None:
+    """§5.1 : le montant est celui RÉELLEMENT FACTURÉ (somme des
+    LocationRetour.montant_facture), jamais la caution ni un paiement
+    encaissé — une location confirmée mais jamais partie contribue au
+    compteur mais à un montant facturé nul."""
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack, tarif_jour=Decimal("20"))
+    client = stack.clients.create_client("Client Location")
+    today = date.today()
+
+    # Location confirmée seulement : comptée, montant facturé = 0.
+    confirmed_only = stack.rentals.create_location(today, client.id, [LocationLigneInput(article.id, Decimal("2"))])
+    stack.rentals.confirm_location(confirmed_only.id)
+
+    # Location partie puis retournée le jour même : 1 jour * 20 * 3 = 60.
+    departing = stack.rentals.create_location(today, client.id, [LocationLigneInput(article.id, Decimal("3"))])
+    confirmed = stack.rentals.confirm_location(departing.id)
+    departed = stack.rentals.depart_location(confirmed.id, today)
+    stack.rentals.return_location_line(
+        departed.id, departed.lignes[0].id, today, quantite_bon_etat=Decimal("3"),
+    )
+
+    kpis = stack.dashboard.get_rental_kpis(today, today)
+
+    assert kpis.count == 2
+    assert kpis.amount == Decimal("60.00")
+
+
+def test_rental_kpis_excludes_brouillon_and_annulee(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    client = stack.clients.create_client("Client Location")
+    today = date.today()
+
+    stack.rentals.create_location(today, client.id, [LocationLigneInput(article.id, Decimal("1"))])  # BROUILLON
+    cancelled = stack.rentals.create_location(today, client.id, [LocationLigneInput(article.id, Decimal("1"))])
+    stack.rentals.cancel_location(cancelled.id, "Changement de besoin client")
+
+    kpis = stack.dashboard.get_rental_kpis(today, today)
+
+    assert kpis.count == 0
+    assert kpis.amount == Decimal("0")
+
+
+def test_rental_in_progress_count_ignores_dashboard_period(login_as) -> None:
+    """``in_progress_count`` est un instantané (statut EN_COURS), à
+    l'identique de ``StockKpis.low_stock_count`` — jamais filtré par la
+    période sélectionnée sur le Dashboard."""
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack, stock_initial=Decimal("20"))
+    client = stack.clients.create_client("Client Location")
+    old_date = date(2020, 1, 1)
+
+    location = stack.rentals.create_location(old_date, client.id, [LocationLigneInput(article.id, Decimal("1"))])
+    confirmed = stack.rentals.confirm_location(location.id)
+    stack.rentals.depart_location(confirmed.id, old_date)
+
+    far_future_period = date.today()
+    kpis = stack.dashboard.get_rental_kpis(far_future_period, far_future_period)
+
+    assert kpis.count == 0  # la location date de 2020, hors période demandée
+    assert kpis.in_progress_count == 1  # mais toujours EN_COURS aujourd'hui
+
+
+def test_rental_returns_count_follows_date_retour_not_location_date(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack, stock_initial=Decimal("20"))
+    client = stack.clients.create_client("Client Location")
+
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("2"))]
+    )
+    confirmed = stack.rentals.confirm_location(location.id)
+    departed = stack.rentals.depart_location(confirmed.id, date(2026, 1, 1))
+    stack.rentals.return_location_line(
+        departed.id, departed.lignes[0].id, date(2026, 3, 15), quantite_bon_etat=Decimal("2"),
+    )
+
+    kpis_january = stack.dashboard.get_rental_kpis(date(2026, 1, 1), date(2026, 1, 31))
+    kpis_march = stack.dashboard.get_rental_kpis(date(2026, 3, 1), date(2026, 3, 31))
+
+    assert kpis_january.returns_count == 0
+    assert kpis_march.returns_count == 1
+
+
+def test_rental_kpis_none_without_location_view(login_as) -> None:
+    admin_stack, _ = login_as("Administrateur")
+    _strip_location_view_from_consultation(admin_stack)
+    stack, _ = login_as("Consultation")
+
+    assert stack.dashboard.get_rental_kpis(date.today(), date.today()) is None
+    assert stack.dashboard.get_rental_evolution(date.today(), date.today()) is None
+
+
+def test_rental_evolution_groups_same_day_rentals_together(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack, tarif_jour=Decimal("10"))
+    client = stack.clients.create_client("Client Location")
+    today = date.today()
+
+    for _ in range(2):
+        location = stack.rentals.create_location(today, client.id, [LocationLigneInput(article.id, Decimal("1"))])
+        confirmed = stack.rentals.confirm_location(location.id)
+        departed = stack.rentals.depart_location(confirmed.id, today)
+        stack.rentals.return_location_line(
+            departed.id, departed.lignes[0].id, today, quantite_bon_etat=Decimal("1"),
+        )
+
+    points = stack.dashboard.get_rental_evolution(today, today)
+
+    assert len(points) == 1
+    assert points[0].amount == Decimal("20.00")
+    assert points[0].bucket_start == today
+
+
+def test_rental_evolution_empty_period_returns_empty_list(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    today = date.today()
+
+    points = stack.dashboard.get_rental_evolution(today, today)
+
+    assert points == []
+
+
+def test_rental_evolution_never_invents_a_point_without_data(login_as) -> None:
+    """§5.2 : jamais de point fabriqué pour une période sans aucune location
+    — même garantie que pour l'évolution des ventes."""
+    stack, _ = login_as("Administrateur")
+    far_past = date(2000, 1, 1)
+
+    points = stack.dashboard.get_rental_evolution(far_past, far_past)
+
+    assert points == []
+
+
+def test_overview_includes_rental_section(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    today = date.today()
+
+    overview = stack.dashboard.get_overview(today, today)
+
+    assert overview.rental is not None
+    assert overview.rental.count == 0
+    assert overview.rental_evolution == []

@@ -26,6 +26,7 @@ from app.services.categories.category_service import CategoryService
 from app.utils.exceptions import AppError
 from app.views.category_form_dialog import CategoryFormDialog
 from app.views.common import confirm_action, run_modal_form, sort_by_creation_date_desc
+from app.views.design_system import refresh_style
 
 _COLUMNS = ["Nom", "Statut", "Créée le", "Modifiée le"]
 
@@ -81,6 +82,7 @@ class CategoriesPage(QWidget):
         self.add_button.clicked.connect(self._on_add_clicked)
         self.edit_button.clicked.connect(self._on_edit_clicked)
         self.toggle_button.clicked.connect(self._on_toggle_clicked)
+        self.table.itemSelectionChanged.connect(self._update_toggle_button)
 
         self.refresh()
 
@@ -91,6 +93,7 @@ class CategoriesPage(QWidget):
             categories = self._category_service.list_categories(search=self.search_edit.text())
         except AppError:
             self.table.setRowCount(0)
+            self._update_toggle_button()
             return
 
         # Chantier B : les plus récemment créées en premier — tri appliqué
@@ -107,6 +110,8 @@ class CategoriesPage(QWidget):
             self.table.setItem(row, 1, QTableWidgetItem("Actif" if category.actif else "Inactif"))
             self.table.setItem(row, 2, QTableWidgetItem(category.date_creation.strftime("%Y-%m-%d %H:%M")))
             self.table.setItem(row, 3, QTableWidgetItem(category.date_modification.strftime("%Y-%m-%d %H:%M")))
+
+        self._update_toggle_button()
 
     def _selected_row(self) -> Optional[int]:
         selected = self.table.selectionModel().selectedRows()
@@ -156,6 +161,24 @@ class CategoriesPage(QWidget):
         return True
 
     # -- activation / désactivation -----------------------------------------
+
+    def _update_toggle_button(self) -> None:
+        """Libellé et couleur reflètent l'action réellement proposée pour la
+        catégorie sélectionnée (Mission 3, §7.2) — jamais le vert pour une
+        désactivation."""
+        row = self._selected_row()
+        if row is None:
+            self.toggle_button.setText("Activer / désactiver")
+            self.toggle_button.setProperty("variant", None)
+        else:
+            currently_active = self.table.item(row, 1).text() == "Actif"
+            if currently_active:
+                self.toggle_button.setText("Désactiver")
+                self.toggle_button.setProperty("variant", "warning")
+            else:
+                self.toggle_button.setText("Activer")
+                self.toggle_button.setProperty("variant", "success")
+        refresh_style(self.toggle_button)
 
     def _on_toggle_clicked(self) -> None:
         row = self._selected_row()

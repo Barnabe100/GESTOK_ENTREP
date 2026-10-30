@@ -96,6 +96,7 @@ class EntriesPage(QWidget):
         toolbar.addWidget(self.edit_button)
 
         self.detail_button = QPushButton("Détails", self)
+        self.detail_button.setProperty("variant", "info")
         toolbar.addWidget(self.detail_button)
 
         self.validate_button = QPushButton("Valider", self)

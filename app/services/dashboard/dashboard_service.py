@@ -43,16 +43,26 @@ from typing import Optional
 
 from app.config.settings import Settings
 from app.db.session import session_scope
-from app.models.enums import StatutOperation, TypeMouvement
+from app.models.enums import StatutLocation, StatutOperation, TypeMouvement
 from app.repositories.article_repository import ArticleRepository
 from app.repositories.category_repository import CategoryRepository
 from app.repositories.mouvement_repository import MouvementRepository
 from app.repositories.supplier_repository import SupplierRepository
 from app.services.auth.permission_service import PermissionService
+from app.services.rentals.location_service import LocationService, LocationSummary
 from app.services.reports.report_service import ReportService, StockStateRow
 from app.services.sales.sale_service import SaleService, VenteSummary
 from app.services.stock.movement_summary import MouvementSummary
 from app.utils.exceptions import ValidationError
+
+# Statuts de location jamais comptés dans les indicateurs d'activité (§5/§6
+# de la mission finition Dashboard) : BROUILLON n'est qu'un brouillon non
+# engagé (à l'identique des ventes en BROUILLON, déjà exclues de
+# ``_fetch_period_sales``) et ANNULEE n'a jamais pu générer de retour facturé
+# (voir le docstring de ``app.models.rental`` : aucune annulation après le
+# départ). Exclure les deux revient exactement à ne garder que
+# CONFIRMEE/EN_COURS/RETOURNEE.
+_RENTAL_EXCLUDED_STATUTS = (StatutLocation.BROUILLON, StatutLocation.ANNULEE)
 
 # Nombre de lignes affichées dans les widgets "top N" du Dashboard — bornes
 # volontairement modestes (§10 : lisibilité, pas une liste exhaustive).
@@ -127,6 +137,60 @@ class SalesPoint:
 
 
 @dataclass(frozen=True)
+class RentalPoint:
+    """Un point du graphique d'évolution des locations (Mission 3, §5) —
+    même structure que ``SalesPoint``, même granularité (voir
+    ``_pick_granularity``)."""
+
+    label: str
+    bucket_start: date
+    amount: Decimal
+
+
+@dataclass(frozen=True)
+class RentalKpis:
+    """Indicateurs du module Locations (Mission 3, §6.1). ``None`` dans son
+    ensemble si l'utilisateur n'a pas ``LOCATION_VIEW`` — même convention que
+    ``StockKpis`` (ici, un seul et même droit protège tous les champs,
+    contrairement à ``ActivityKpis`` dont les champs dépendent de
+    permissions différentes).
+
+    ``amount`` est le montant RÉELLEMENT FACTURÉ (somme de
+    ``LocationRetour.montant_facture`` sur les locations de la période,
+    jamais la caution, ni les paiements encaissés, ni les retours de
+    caution — voir ``LocationSummary.montant_total_facture``). ``count`` et
+    ``amount`` ne portent que sur les locations réellement engagées (exclut
+    BROUILLON et ANNULEE, voir ``_RENTAL_EXCLUDED_STATUTS``), filtrées par
+    ``Location.date`` (même convention que les ventes, voir
+    ``_fetch_period_sales``).
+
+    ``in_progress_count`` (« Locations en cours ») est un instantané
+    (statut EN_COURS), indépendant de la période du Dashboard — même
+    principe que ``StockKpis.low_stock_count``/``out_of_stock_count``.
+
+    ``returns_count`` compte les événements de retour dont
+    ``LocationRetour.date_retour`` tombe dans la période — jamais
+    ``Location.date`` : un retour peut survenir bien après la création de
+    la location qui le porte (voir
+    ``LocationRepository.count_returns_in_period``).
+
+    Pas de KPI « Locations en retard de retour » : le modèle métier ne
+    porte aucune date d'échéance/durée prévue de location (seul
+    ``Location.date_depart`` existe, jamais de date de retour attendue) —
+    l'inventer reviendrait à fabriquer un seuil arbitraire non garanti par
+    les données réelles (§5.1 : « ne jamais inventer de données »). Ajouter
+    une telle date nécessiterait une migration non justifiée par cette
+    mission (§6.3)."""
+
+    period_from: date
+    period_to: date
+    count: int
+    amount: Decimal
+    in_progress_count: int
+    returns_count: int
+
+
+@dataclass(frozen=True)
 class CategoryStockValue:
     """Une barre du graphique « Valeur du stock par catégorie » (§5.D)."""
 
@@ -151,6 +215,8 @@ class DashboardOverview:
     low_stock_top: Optional[list[StockStateRow]]
     stock_value_by_category: Optional[list[CategoryStockValue]]
     recent_activity: Optional[list[MouvementSummary]]
+    rental: Optional[RentalKpis]
+    rental_evolution: Optional[list[RentalPoint]]
 
 
 class DashboardService:
@@ -159,11 +225,13 @@ class DashboardService:
         permission_service: PermissionService,
         report_service: ReportService,
         sale_service: SaleService,
+        rental_service: LocationService,
         settings: Optional[Settings] = None,
     ) -> None:
         self._permissions = permission_service
         self._reports = report_service
         self._sales = sale_service
+        self._rentals = rental_service
         self._settings = settings
 
     def _require_dashboard(self) -> None:
@@ -178,6 +246,23 @@ class DashboardService:
         pour un rôle qui n'avait que ``REPORT_VIEW`` jusqu'ici (Gestionnaire
         de stock, qui n'a pas ``SALE_VIEW``)."""
         return self._permissions.has_permission("SALE_VIEW") or self._has_report_access()
+
+    def _has_rental_domain_access(self) -> bool:
+        """Les indicateurs du domaine Locations ne dépendent que de
+        ``LOCATION_VIEW`` — aucune section de ``ReportService`` ne couvre ce
+        domaine (contrairement aux ventes), donc pas de repli sur
+        ``REPORT_VIEW`` ici."""
+        return self._permissions.has_permission("LOCATION_VIEW")
+
+    def _fetch_period_rentals(self, period_from: date, period_to: date) -> list[LocationSummary]:
+        """Locations réellement engagées (exclut BROUILLON/ANNULEE, voir
+        ``_RENTAL_EXCLUDED_STATUTS``) dont ``Location.date`` tombe dans la
+        période — même convention que ``_fetch_period_sales`` pour les
+        ventes. Source commune des KPI de période et du graphique
+        d'évolution : jamais deux définitions différentes de « locations de
+        la période »."""
+        rentals = self._rentals.list_locations(date_from=period_from, date_to=period_to)
+        return [r for r in rentals if r.statut not in _RENTAL_EXCLUDED_STATUTS]
 
     def _fetch_period_sales(self, period_from: date, period_to: date) -> list[VenteSummary]:
         """Ventes VALIDEE sur la période, quelle que soit la permission qui a
@@ -320,6 +405,49 @@ class DashboardService:
             for bucket_start, amount in sorted(buckets.items())
         ]
 
+    # -- locations (Mission 3, §5/§6) ------------------------------------------------
+
+    def get_rental_kpis(self, period_from: date, period_to: date) -> Optional[RentalKpis]:
+        """``None`` si l'utilisateur n'a pas ``LOCATION_VIEW`` — jamais une
+        exception qui interromprait le chargement du reste du Dashboard
+        (même principe que ``get_stock_kpis``)."""
+        self._require_dashboard()
+        self._validate_period(period_from, period_to)
+        if not self._has_rental_domain_access():
+            return None
+
+        rentals = self._fetch_period_rentals(period_from, period_to)
+        amount = sum((r.montant_total_facture for r in rentals), Decimal("0"))
+        return RentalKpis(
+            period_from=period_from, period_to=period_to,
+            count=len(rentals), amount=amount,
+            in_progress_count=self._rentals.count_by_statut(StatutLocation.EN_COURS),
+            returns_count=self._rentals.count_returns_in_period(period_from, period_to),
+        )
+
+    def get_rental_evolution(self, period_from: date, period_to: date) -> Optional[list[RentalPoint]]:
+        """Montant des locations réellement facturé, agrégé par jour/semaine/
+        mois selon la durée de la période — même granularité que
+        ``get_sales_evolution`` (voir ``_pick_granularity``), pour que les
+        deux graphiques restent directement comparables visuellement."""
+        self._require_dashboard()
+        self._validate_period(period_from, period_to)
+        if not self._has_rental_domain_access():
+            return None
+
+        rentals = self._fetch_period_rentals(period_from, period_to)
+        granularity = _pick_granularity(period_from, period_to)
+
+        buckets: dict[date, Decimal] = {}
+        for rental in rentals:
+            bucket_start = _bucket_start(rental.date, granularity)
+            buckets[bucket_start] = buckets.get(bucket_start, Decimal("0")) + rental.montant_total_facture
+
+        return [
+            RentalPoint(label=_bucket_label(bucket_start, granularity), bucket_start=bucket_start, amount=amount)
+            for bucket_start, amount in sorted(buckets.items())
+        ]
+
     def get_movement_breakdown(self, period_from: date, period_to: date) -> Optional[dict[TypeMouvement, int]]:
         """Nombre de mouvements par type sur la période (§5.B) — inclut
         uniquement les types réellement présents dans les données (jamais de
@@ -368,6 +496,8 @@ class DashboardService:
             low_stock_top=self.get_low_stock_top(low_stock_limit),
             stock_value_by_category=self.get_stock_value_by_category(),
             recent_activity=self.get_recent_activity(recent_activity_limit),
+            rental=self.get_rental_kpis(period_from, period_to),
+            rental_evolution=self.get_rental_evolution(period_from, period_to),
         )
 
 

@@ -216,6 +216,32 @@ QPushButton[variant="export"]:hover { background-color: #F0FDF4; border-color: #
 QPushButton[variant="export"]:pressed { background-color: #DCFCE7; }
 QPushButton[variant="export"]:disabled { background-color: #F4F6FA; color: #94A3B8; border-color: #E2E8F0; }
 
+/* Information (Mission 3, §7) : action de consultation/détail — distincte
+   d'Ajouter (primary) et de Modifier (indigo), jamais blanche par défaut
+   pour une action réellement importante du parcours. */
+QPushButton[variant="info"] {
+    background-color: #0284C7;
+    color: #FFFFFF;
+    border: 1px solid #0284C7;
+    font-weight: 600;
+}
+QPushButton[variant="info"]:hover { background-color: #0369A1; border-color: #0369A1; }
+QPushButton[variant="info"]:pressed { background-color: #075985; border-color: #075985; }
+QPushButton[variant="info"]:disabled { background-color: #7DD3FC; border-color: #7DD3FC; color: #F0F9FF; }
+
+/* Violet (Mission 3, §7.4) : variante secondaire distincte pour une action
+   de configuration/bascule de mode (ex. « Mode de gestion… ») — jamais
+   confondue avec Ajouter/Modifier/Détails. */
+QPushButton[variant="violet"] {
+    background-color: #7C3AED;
+    color: #FFFFFF;
+    border: 1px solid #7C3AED;
+    font-weight: 600;
+}
+QPushButton[variant="violet"]:hover { background-color: #6D28D9; border-color: #6D28D9; }
+QPushButton[variant="violet"]:pressed { background-color: #5B21B6; border-color: #5B21B6; }
+QPushButton[variant="violet"]:disabled { background-color: #DDD6FE; border-color: #DDD6FE; color: #F5F3FF; }
+
 /* ============================= Champs de saisie =========================== */
 
 QLineEdit, QDateEdit, QDateTimeEdit, QTimeEdit, QSpinBox, QDoubleSpinBox, QComboBox, QTextEdit, QPlainTextEdit {

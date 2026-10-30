@@ -193,7 +193,13 @@ class LocationDetailDialog(QDialog):
         self.cancel_location_button = QPushButton("Annuler la location", self)
         self.cancel_location_button.setProperty("variant", "danger")
         self.caution_button = QPushButton("Caution…", self)
-        self.payment_button = QPushButton("Paiement…", self)
+        # §4 (Mission 3) : « Payer » — même libellé et même couleur que
+        # l'action équivalente de SalesPage (le dialogue ouvert,
+        # LocationPaymentFormDialog, enregistre bien un paiement, voir
+        # _on_payment_clicked) ; vert, jamais blanc, pour ne plus se
+        # confondre avec les boutons secondaires de cette rangée.
+        self.payment_button = QPushButton("Payer", self)
+        self.payment_button.setProperty("variant", "success")
         for button in (
             self.confirm_button, self.depart_button, self.return_button,
             self.cancel_location_button, self.caution_button, self.payment_button,

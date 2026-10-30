@@ -864,3 +864,55 @@ def test_list_locations_orders_by_creation_date_not_business_date(login_as) -> N
     results = stack.rentals.list_locations()
 
     assert [r.id for r in results] == [newer_creation.id, older_creation.id]
+
+
+# -- KPI Dashboard (Mission 3, §5/§6) --------------------------------------------
+
+
+def test_count_by_statut_counts_only_matching_locations(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack, stock_initial=Decimal("20"))
+    client = _make_client(stack)
+
+    _create_and_confirm(stack, article, client, quantite=Decimal("1"))  # CONFIRMEE
+    _create_confirm_depart(stack, article, client, quantite=Decimal("1"))  # EN_COURS
+    _create_confirm_depart(stack, article, client, quantite=Decimal("1"))  # EN_COURS
+
+    assert stack.rentals.count_by_statut(StatutLocation.EN_COURS) == 2
+    assert stack.rentals.count_by_statut(StatutLocation.CONFIRMEE) == 1
+    assert stack.rentals.count_by_statut(StatutLocation.RETOURNEE) == 0
+
+
+def test_count_returns_in_period_filters_by_date_retour_not_location_date(login_as) -> None:
+    """Un retour peut survenir bien après la date de la location qui le
+    porte (§5.1/§6 de la mission finition dashboard) : le comptage doit
+    suivre ``LocationRetour.date_retour``, jamais ``Location.date``."""
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack, stock_initial=Decimal("20"))
+    client = _make_client(stack)
+
+    departed = _create_confirm_depart(stack, article, client, quantite=Decimal("2"), date_depart=date(2026, 1, 1))
+    # Location datée du 1er janvier, mais le retour n'a lieu qu'en mars —
+    # doit compter dans la période de mars, pas celle de janvier.
+    stack.rentals.return_location_line(
+        departed.id, departed.lignes[0].id, date(2026, 3, 15), quantite_bon_etat=Decimal("2"),
+    )
+
+    assert stack.rentals.count_returns_in_period(date(2026, 1, 1), date(2026, 1, 31)) == 0
+    assert stack.rentals.count_returns_in_period(date(2026, 3, 1), date(2026, 3, 31)) == 1
+
+
+def test_count_returns_in_period_counts_each_return_event_once(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack, stock_initial=Decimal("20"))
+    client = _make_client(stack)
+
+    departed = _create_confirm_depart(stack, article, client, quantite=Decimal("4"), date_depart=date(2026, 1, 1))
+    stack.rentals.return_location_line(
+        departed.id, departed.lignes[0].id, date(2026, 1, 5), quantite_bon_etat=Decimal("1"),
+    )
+    stack.rentals.return_location_line(
+        departed.id, departed.lignes[0].id, date(2026, 1, 10), quantite_bon_etat=Decimal("3"),
+    )
+
+    assert stack.rentals.count_returns_in_period(date(2026, 1, 1), date(2026, 1, 31)) == 2

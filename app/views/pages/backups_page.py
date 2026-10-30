@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -27,6 +28,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
@@ -41,6 +43,7 @@ from app.utils.exceptions import AppError
 from app.views.background_task import BackgroundTask
 from app.views.common import confirm_action
 from app.views.data_reset_confirm_dialog import DataResetConfirmDialog
+from app.views.design_system import COLOR_DANGER, COLOR_SUCCESS, COLOR_TEXT_SECONDARY, qcolor
 from app.views.loading_overlay import LoadingOverlay
 
 _FREQUENCY_LABELS = {FREQUENCY_DAILY: "Quotidienne", FREQUENCY_WEEKLY: "Hebdomadaire"}
@@ -101,16 +104,39 @@ class BackupsPage(QWidget):
             self._active_postgresql_target = None
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(16)
+        layout.setContentsMargins(0, 0, 0, 0)
 
-        layout.addWidget(self._build_engine_group())
-        layout.addWidget(self._build_config_group())
-        layout.addLayout(self._build_actions_row())
+        # Zone défilante (régression constatée Mission 3, §2) : les cinq
+        # zones de cet écran (moteur actif, configuration automatique,
+        # actions, historique, zone dangereuse) dépassent la hauteur
+        # disponible à 1366×768 une fois les espacements de la Mission 2
+        # appliqués — sans défilement, le `QStackedWidget` de MainWindow
+        # (voir page_stack) ne scrolle jamais lui-même, et le contenu en
+        # excédent est simplement rogné (champs de configuration et lignes
+        # d'historique invisibles). Même principe déjà établi dans
+        # ``SettingsPage`` pour la même raison : jamais de champ supprimé,
+        # seulement rendu accessible par défilement.
+        scroll_area = QScrollArea(self)
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        content = QWidget(scroll_area)
+        content_layout = QVBoxLayout(content)
+        # Espacement resserré (§2.3 : cinq zones à faire tenir sur
+        # 1366×768 sans sacrifier ni les paramètres, ni l'historique) —
+        # reste nettement plus aéré que l'état d'avant Mission 2.
+        content_layout.setSpacing(10)
+
+        content_layout.addWidget(self._build_engine_group())
+        content_layout.addWidget(self._build_config_group())
+        content_layout.addLayout(self._build_actions_row())
         history_title = QLabel("Historique des sauvegardes", self)
         history_title.setProperty("role", "sectionTitle")
-        layout.addWidget(history_title)
-        layout.addWidget(self._build_history_table())
-        layout.addWidget(self._build_danger_zone_group())
+        content_layout.addWidget(history_title)
+        content_layout.addWidget(self._build_history_table())
+        content_layout.addWidget(self._build_danger_zone_group())
+
+        scroll_area.setWidget(content)
+        layout.addWidget(scroll_area)
 
         # Phase amélioration UX, point 4 : voile de chargement pendant une
         # sauvegarde/restauration manuelle (opérations potentiellement
@@ -141,7 +167,7 @@ class BackupsPage(QWidget):
     def _build_engine_group(self) -> QGroupBox:
         group = QGroupBox("Moteur de base de données actif", self)
         layout = QVBoxLayout(group)
-        layout.setSpacing(8)
+        layout.setSpacing(4)
 
         self.active_engine_label = QLabel(_ENGINE_LABELS.get(self._active_engine, self._active_engine), self)
         self.active_engine_label.setStyleSheet("font-size: 16px; font-weight: 700; color: #172B4D;")
@@ -172,7 +198,7 @@ class BackupsPage(QWidget):
     def _build_config_group(self) -> QGroupBox:
         group = QGroupBox("Configuration de la sauvegarde automatique", self)
         form = QFormLayout(group)
-        form.setVerticalSpacing(14)
+        form.setVerticalSpacing(10)
         form.setHorizontalSpacing(16)
 
         self.auto_enabled_checkbox = QCheckBox("Activer la sauvegarde automatique", self)
@@ -360,6 +386,12 @@ class BackupsPage(QWidget):
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         self.history_table.verticalHeader().setDefaultSectionSize(30)
+        # §2.2 : au moins cinq sauvegardes visibles simultanément sans avoir
+        # à faire défiler le tableau lui-même — en-tête (~32px) + 5 lignes
+        # (30px) + bordures ; la barre de défilement verticale propre à ce
+        # tableau (comportement par défaut de QTableWidget) prend ensuite le
+        # relais pour les sauvegardes au-delà des cinq premières visibles.
+        self.history_table.setMinimumHeight(32 + 5 * 30 + 12)
         self.history_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.history_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.history_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -387,10 +419,29 @@ class BackupsPage(QWidget):
 
             engine_item = QTableWidgetItem(_ENGINE_LABELS.get(entry.engine, entry.engine))
             self.history_table.setItem(row, 0, engine_item)
-            self.history_table.setItem(row, 1, QTableWidgetItem(info.modified_at.strftime("%Y-%m-%d %H:%M:%S")))
-            self.history_table.setItem(row, 2, QTableWidgetItem(info.name))
+            # §2.2 : format français, cohérent avec le reste de l'application
+            # depuis la Mission 2 (dd/MM/yyyy) — jamais le format ISO brut,
+            # moins lisible au premier coup d'œil.
+            date_item = QTableWidgetItem(info.modified_at.strftime("%d/%m/%Y %H:%M:%S"))
+            self.history_table.setItem(row, 1, date_item)
+            name_item = QTableWidgetItem(info.name)
+            name_item.setToolTip(info.name)
+            self.history_table.setItem(row, 2, name_item)
             self.history_table.setItem(row, 3, QTableWidgetItem(_format_size(info.size_bytes)))
-            self.history_table.setItem(row, 4, QTableWidgetItem(statut))
+            statut_item = QTableWidgetItem(statut)
+            # Couleurs de statut cohérentes (§2.2) : vert = valide, rouge =
+            # invalide, gris neutre pour le cas « indéterminé » (``?``, une
+            # erreur de vérification n'est ni un succès ni un échec confirmé).
+            if statut == "Valide":
+                statut_item.setForeground(qcolor(COLOR_SUCCESS))
+            elif statut == "Invalide":
+                statut_item.setForeground(qcolor(COLOR_DANGER))
+            else:
+                statut_item.setForeground(qcolor(COLOR_TEXT_SECONDARY))
+            font = statut_item.font()
+            font.setBold(True)
+            statut_item.setFont(font)
+            self.history_table.setItem(row, 4, statut_item)
 
         self._update_restore_button()
 
