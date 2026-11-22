@@ -1051,15 +1051,35 @@ def test_create_article_accepts_inclusive_bounds(login_as) -> None:
     assert article.prix_autre_max == Decimal("500000")
 
 
-def test_create_article_rejects_interval_without_sous_traitant(login_as) -> None:
+def test_create_article_accepts_complete_interval_without_sous_traitant(login_as) -> None:
+    """Mission 5.1, §2.5 (cas 4) : un intervalle complet sans prix
+    sous-traitant reste une configuration valide — jamais un prix
+    sous-traitant fictif n'est exigé ni déduit."""
+    stack, _ = login_as("Administrateur")
+    category = _make_category(stack)
+
+    article = stack.articles.create_article(
+        "ART-TARIF5", "Article", category.id, "unité", Decimal("200"), Decimal("500000"), Decimal("0"),
+        prix_autre_min=Decimal("350000"),
+        prix_autre_max=Decimal("550000"),
+    )
+
+    assert article.prix_sous_traitant is None
+    assert article.prix_autre_min == Decimal("350000")
+    assert article.prix_autre_max == Decimal("550000")
+
+
+def test_create_article_rejects_interval_without_sous_traitant_but_end_below_normal(login_as) -> None:
+    """Sans prix sous-traitant, les autres règles de cohérence (fin >=
+    normal, début <= fin) s'appliquent toujours."""
     stack, _ = login_as("Administrateur")
     category = _make_category(stack)
 
     try:
         stack.articles.create_article(
-            "ART-TARIF5", "Article", category.id, "unité", Decimal("200"), Decimal("500000"), Decimal("0"),
+            "ART-TARIF5BIS", "Article", category.id, "unité", Decimal("200"), Decimal("500000"), Decimal("0"),
             prix_autre_min=Decimal("350000"),
-            prix_autre_max=Decimal("550000"),
+            prix_autre_max=Decimal("450000"),  # < prix_vente : toujours invalide
         )
         assert False, "devait lever ValidationError"
     except ValidationError:
@@ -1237,3 +1257,90 @@ def test_create_article_rejects_rental_interval_without_tarif_normal(login_as) -
         assert False, "devait lever ValidationError"
     except ValidationError:
         pass
+
+
+# -- Mission 5.1, §2 : tarifs supplémentaires entièrement facultatifs ----------
+
+
+def test_create_article_with_only_normal_price_requires_nothing_else(login_as) -> None:
+    """§2.2 : le formulaire article doit permettre d'enregistrer un
+    article avec uniquement son prix normal — aucun blocage lorsque les
+    tarifs supplémentaires ne sont pas renseignés."""
+    stack, _ = login_as("Administrateur")
+    category = _make_category(stack)
+
+    article = stack.articles.create_article(
+        "ART-SIMPLE", "Article simple", category.id, "unité", Decimal("200"), Decimal("500000"), Decimal("0"),
+    )
+
+    assert article.prix_vente == Decimal("500000")
+    assert article.prix_sous_traitant is None
+    assert article.prix_autre_min is None
+    assert article.prix_autre_max is None
+
+
+def test_create_article_with_only_sous_traitant_price_is_valid(login_as) -> None:
+    """§2.5 (cas 2) : prix sous-traitant seul, sans aucun intervalle, est
+    une configuration valide."""
+    stack, _ = login_as("Administrateur")
+    category = _make_category(stack)
+
+    article = stack.articles.create_article(
+        "ART-SOUSTRAITANT-SEUL", "Article", category.id, "unité", Decimal("200"), Decimal("500000"),
+        Decimal("0"), prix_sous_traitant=Decimal("400000"),
+    )
+
+    assert article.prix_sous_traitant == Decimal("400000")
+    assert article.prix_autre_min is None
+    assert article.prix_autre_max is None
+
+
+def test_update_article_without_any_tariff_fields_keeps_them_unset(login_as) -> None:
+    """§2.2 : la modification d'un article sans renseigner les tarifs
+    supplémentaires ne doit jamais les forcer à une valeur."""
+    stack, _ = login_as("Administrateur")
+    category = _make_category(stack)
+    created = stack.articles.create_article(
+        "ART-UPD-SIMPLE", "Article", category.id, "unité", Decimal("200"), Decimal("500000"), Decimal("0"),
+    )
+
+    updated = stack.articles.update_article(
+        created.id, "ART-UPD-SIMPLE", "Nouveau nom", category.id, "unité",
+        Decimal("200"), Decimal("500000"), Decimal("0"),
+    )
+
+    assert updated.designation == "Nouveau nom"
+    assert updated.prix_sous_traitant is None
+    assert updated.prix_autre_min is None
+    assert updated.prix_autre_max is None
+
+
+def test_create_article_rental_accepts_complete_interval_without_sous_traitant(login_as) -> None:
+    """Même assouplissement que pour la vente, appliqué à la location."""
+    stack, _ = login_as("Administrateur")
+    category = _make_category(stack)
+
+    article = stack.articles.create_article(
+        "ART-LOCTARIF5", "Article", category.id, "unité", Decimal("200"), Decimal("500"), Decimal("0"),
+        tarif_location_jour=Decimal("1000"),
+        tarif_location_autre_min=Decimal("700"),
+        tarif_location_autre_max=Decimal("1100"),
+    )
+
+    assert article.tarif_location_sous_traitant is None
+    assert article.tarif_location_autre_min == Decimal("700")
+    assert article.tarif_location_autre_max == Decimal("1100")
+
+
+def test_create_article_with_only_rental_sous_traitant_tariff_is_valid(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    category = _make_category(stack)
+
+    article = stack.articles.create_article(
+        "ART-LOCSOUSTRAITANT-SEUL", "Article", category.id, "unité", Decimal("200"), Decimal("500"),
+        Decimal("0"), tarif_location_jour=Decimal("1000"), tarif_location_sous_traitant=Decimal("800"),
+    )
+
+    assert article.tarif_location_sous_traitant == Decimal("800")
+    assert article.tarif_location_autre_min is None
+    assert article.tarif_location_autre_max is None

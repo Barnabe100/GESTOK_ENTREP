@@ -187,12 +187,13 @@ def test_detail_dialog_hides_motif_row_when_not_annulee(qtbot) -> None:
     dialog = _build_dialog(_make_sale(statut=StatutOperation.VALIDEE))
     qtbot.addWidget(dialog)
 
-    form = dialog.findChild(QFormLayout)
-    # La ligne du bouton « Annuler la vente » (Lot 15 — étape 2) n'a pas de
-    # label : elle occupe les deux colonnes et ``itemAt(i, LabelRole)`` y
-    # renvoie None, à ignorer ici (seuls les libellés nous intéressent).
+    # Mission 5.1, Correction C : « Informations générales » est désormais
+    # répartie sur 3 colonnes (3 ``QFormLayout`` distincts, voir
+    # ``MultiColumnForm``) plutôt qu'un seul — on parcourt donc tous les
+    # ``QFormLayout`` du dialogue, pas seulement le premier trouvé.
     row_labels = [
         label_item.widget().text()
+        for form in dialog.findChildren(QFormLayout)
         for i in range(form.rowCount())
         if (label_item := form.itemAt(i, QFormLayout.ItemRole.LabelRole)) is not None
     ]

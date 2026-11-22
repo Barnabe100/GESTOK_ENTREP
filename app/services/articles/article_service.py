@@ -197,18 +197,25 @@ def _validate_tariff_interval(
     label: str,
 ) -> None:
     """Règle commune aux 3 tarifs de vente et aux 3 tarifs de location
-    (Mission 5, §2.2/§3) : ``intervalle_min``/``intervalle_max`` ne forment
-    jamais un prix fixe, mais l'intervalle autorisé pour un montant
-    personnalisé (« Autre prix »/« Autre tarif ») librement choisi ensuite
-    lors d'une vente/location — voir ``SaleService``/``LocationService``.
+    (Mission 5, §2.2/§3 ; assouplie en Mission 5.1, §2.5 : le prix/tarif
+    sous-traitant et l'intervalle « autre » sont chacun indépendamment
+    facultatifs — jamais l'un une condition préalable à l'autre).
+    ``intervalle_min``/``intervalle_max`` ne forment jamais un prix fixe,
+    mais l'intervalle autorisé pour un montant personnalisé (« Autre
+    prix »/« Autre tarif ») librement choisi ensuite lors d'une
+    vente/location — voir ``SaleService``/``LocationService``.
 
     Règles formelles (bornes inclusives) :
     - les deux bornes sont fournies ensemble, ou aucune (un intervalle
-      « à moitié configuré » n'a pas de sens) ;
-    - le prix sous-traitant doit être défini avant de configurer
-      l'intervalle (sert de référence au début de l'intervalle) ;
-    - début de l'intervalle <= prix sous-traitant ;
-    - fin de l'intervalle >= prix normal.
+      « à moitié configuré » n'a pas de sens, mais aucune des deux n'est
+      jamais obligatoire) ;
+    - début de l'intervalle <= prix sous-traitant — UNIQUEMENT si ce
+      dernier est renseigné (§2.5, cas 4 : un intervalle complet sans
+      prix sous-traitant reste une configuration valide, jamais un prix
+      sous-traitant fictif n'est déduit pour permettre ce contrôle) ;
+    - fin de l'intervalle >= prix normal (le prix normal, lui, reste
+      obligatoire selon les règles déjà existantes : sans lui, aucune
+      comparaison n'est possible).
     """
     if (intervalle_min is None) != (intervalle_max is None):
         raise ValidationError(
@@ -216,15 +223,11 @@ def _validate_tariff_interval(
         )
     if intervalle_min is None:
         return
-    if prix_sous_traitant is None:
-        raise ValidationError(
-            f"Le prix sous-traitant {label} doit être défini avant de configurer son intervalle."
-        )
     if prix_normal is None:
         raise ValidationError(f"Le prix normal {label} doit être défini avant de configurer son intervalle.")
     if intervalle_min > intervalle_max:
         raise ValidationError(f"Le début de l'intervalle {label} doit être inférieur ou égal à sa fin.")
-    if intervalle_min > prix_sous_traitant:
+    if prix_sous_traitant is not None and intervalle_min > prix_sous_traitant:
         raise ValidationError(
             f"Le début de l'intervalle {label} doit être inférieur ou égal au prix sous-traitant."
         )

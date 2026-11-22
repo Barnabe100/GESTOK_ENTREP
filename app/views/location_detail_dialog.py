@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QFrame,
+    QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -44,7 +45,7 @@ from app.utils.pdf_export import build_page_layout, export_document_to_pdf
 from app.utils.quantity import format_quantity
 from app.views.cancellation_reason_dialog import CancellationReasonDialog
 from app.views.common import build_required_field_legend, parse_decimal, required_label
-from app.views.design_system import apply_comfortable_row_height
+from app.views.design_system import MultiColumnForm, apply_comfortable_row_height
 from app.views.location_caution_dialog import LocationCautionDialog
 from app.views.location_payment_form_dialog import LocationPaymentFormDialog
 from app.views.location_return_form_dialog import LocationReturnFormDialog
@@ -150,8 +151,17 @@ class LocationDetailDialog(QDialog):
         content = QWidget(scroll_area)
         content_layout = QVBoxLayout(content)
 
-        self._header_form = QFormLayout()
-        content_layout.addLayout(self._header_form)
+        # Mission 5.1, Correction C : regroupée dans un ``QGroupBox``, avec
+        # une disposition sur 3 colonnes plutôt qu'une colonne verticale
+        # unique — même composant partagé que ``SaleDetailDialog``, et même
+        # intitulé « Informations générales » pour une présentation
+        # cohérente entre vente et location (voir
+        # ``design_system.MultiColumnForm``).
+        header_group = QGroupBox("Informations générales", content)
+        header_group_layout = QVBoxLayout(header_group)
+        self._header_form = MultiColumnForm(header_group, column_count=3)
+        header_group_layout.addWidget(self._header_form.widget)
+        content_layout.addWidget(header_group)
 
         content_layout.addWidget(QLabel("Lignes", content))
         self.lines_table = QTableWidget(0, len(_LINE_COLUMNS), content)
@@ -184,11 +194,19 @@ class LocationDetailDialog(QDialog):
             self.retours_table.setColumnWidth(col, width)
         content_layout.addWidget(self.retours_table)
 
-        self._payment_form = QFormLayout()
-        content_layout.addLayout(self._payment_form)
+        # Mission 5.1, Correction C : même traitement que « Informations
+        # générales » ci-dessus — 3 colonnes (Total facturé | Payé | Reste
+        # à payer) regroupées dans un ``QGroupBox`` « Paiement », cohérent
+        # avec ``SaleDetailDialog``. L'historique des paiements reste un
+        # tableau séparé en pleine largeur, à l'intérieur de ce même groupe
+        # (même disposition que côté vente).
+        payment_group = QGroupBox("Paiement", content)
+        payment_group_layout = QVBoxLayout(payment_group)
+        self._payment_form = MultiColumnForm(payment_group, column_count=3)
+        payment_group_layout.addWidget(self._payment_form.widget)
 
-        content_layout.addWidget(QLabel("Historique des paiements", content))
-        self.payments_table = QTableWidget(0, len(_PAYMENT_COLUMNS), content)
+        payment_group_layout.addWidget(QLabel("Historique des paiements", payment_group))
+        self.payments_table = QTableWidget(0, len(_PAYMENT_COLUMNS), payment_group)
         self.payments_table.setAlternatingRowColors(True)
         self.payments_table.setHorizontalHeaderLabels(_PAYMENT_COLUMNS)
         self.payments_table.horizontalHeader().setStretchLastSection(True)
@@ -199,7 +217,8 @@ class LocationDetailDialog(QDialog):
         # « AAAA-MM-JJ HH:MM » — largeur explicite, comme les autres
         # tableaux de ce dialogue.
         self.payments_table.setColumnWidth(0, 140)
-        content_layout.addWidget(self.payments_table)
+        payment_group_layout.addWidget(self.payments_table)
+        content_layout.addWidget(payment_group)
 
         self._caution_form = QFormLayout()
         content_layout.addLayout(self._caution_form)
@@ -283,23 +302,25 @@ class LocationDetailDialog(QDialog):
             pass
         location = self._location
 
-        self._clear_form(self._header_form)
-        self._header_form.addRow("Numéro", QLabel(location.numero, self))
-        self._header_form.addRow("Date", QLabel(str(location.date), self))
-        self._header_form.addRow("Client", QLabel(location.client_nom or "Client non renseigné", self))
-        self._header_form.addRow("Créée par", QLabel(location.username, self))
-        self._header_form.addRow("Statut", QLabel(_STATUT_LABELS.get(location.statut, str(location.statut)), self))
+        self._header_form.clear()
+        self._header_form.add_row(0, "Numéro", QLabel(location.numero, self))
+        self._header_form.add_row(1, "Date", QLabel(str(location.date), self))
+        self._header_form.add_row(2, "Client", QLabel(location.client_nom or "Client non renseigné", self))
+        self._header_form.add_row(0, "Créée par", QLabel(location.username, self))
+        self._header_form.add_row(
+            1, "Statut", QLabel(_STATUT_LABELS.get(location.statut, str(location.statut)), self)
+        )
         if location.date_depart is not None:
-            self._header_form.addRow("Date de départ", QLabel(str(location.date_depart), self))
+            self._header_form.add_row(1, "Date de départ", QLabel(str(location.date_depart), self))
         if location.statut == StatutLocation.ANNULEE:
             motif_label = QLabel(location.annulation_motif or "—", self)
             motif_label.setWordWrap(True)
-            self._header_form.addRow("Motif d'annulation", motif_label)
+            self._header_form.add_row(2, "Motif d'annulation", motif_label)
         if location.commentaire:
             commentaire_label = QLabel(location.commentaire, self)
             commentaire_label.setWordWrap(True)
-            self._header_form.addRow("Commentaire", commentaire_label)
-        self._header_form.addRow("Créée le", QLabel(location.date_creation.strftime("%Y-%m-%d %H:%M"), self))
+            self._header_form.add_row(2, "Commentaire", commentaire_label)
+        self._header_form.add_row(0, "Créée le", QLabel(location.date_creation.strftime("%Y-%m-%d %H:%M"), self))
 
         self.lines_table.setRowCount(len(location.lignes))
         for row, ligne in enumerate(location.lignes):
@@ -324,14 +345,16 @@ class LocationDetailDialog(QDialog):
             self.retours_table.setItem(row, 4, QTableWidgetItem(format_money(retour.montant_facture, self._currency_code)))
             self.retours_table.setItem(row, 5, QTableWidgetItem(retour.username))
 
-        self._clear_form(self._payment_form)
-        self._payment_form.addRow(
-            "Total facturé", QLabel(format_money(location.montant_total_facture, self._currency_code), self)
+        self._payment_form.clear()
+        self._payment_form.add_row(
+            0, "Total facturé", QLabel(format_money(location.montant_total_facture, self._currency_code), self)
         )
-        self._payment_form.addRow("Payé", QLabel(format_money(location.montant_paye, self._currency_code), self))
+        self._payment_form.add_row(
+            1, "Payé", QLabel(format_money(location.montant_paye, self._currency_code), self)
+        )
         reste_label = QLabel(format_money(location.reste_a_payer, self._currency_code), self)
         reste_label.setStyleSheet("font-weight: 600;")
-        self._payment_form.addRow("Reste à payer", reste_label)
+        self._payment_form.add_row(2, "Reste à payer", reste_label)
 
         self.payments_table.setRowCount(len(location.paiements))
         for row, paiement in enumerate(location.paiements):

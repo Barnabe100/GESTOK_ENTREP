@@ -512,10 +512,11 @@ def test_detail_dialog_shows_neutral_label_when_client_absent(qtbot, login_as) -
     dialog = _build_dialog(stack, location)
     qtbot.addWidget(dialog)
 
-    labels = [
-        dialog._header_form.itemAt(i, dialog._header_form.ItemRole.FieldRole).widget().text()
-        for i in range(dialog._header_form.rowCount())
-    ]
+    # Mission 5.1, Correction C : ``_header_form`` est désormais un
+    # ``MultiColumnForm`` (3 colonnes) plutôt qu'un ``QFormLayout`` unique —
+    # ``.rows()`` expose les paires (étiquette, valeur) de toutes les
+    # colonnes, sans dépendre de la colonne exacte où l'information se trouve.
+    labels = [field.text() for _, field in dialog._header_form.rows() if field is not None]
     assert "Client non renseigné" in labels
 
 
@@ -527,10 +528,7 @@ def test_detail_dialog_shows_client_name_when_present(qtbot, login_as) -> None:
     dialog = _build_dialog(stack, location)
     qtbot.addWidget(dialog)
 
-    labels = [
-        dialog._header_form.itemAt(i, dialog._header_form.ItemRole.FieldRole).widget().text()
-        for i in range(dialog._header_form.rowCount())
-    ]
+    labels = [field.text() for _, field in dialog._header_form.rows() if field is not None]
     assert client.nom in labels
 
 

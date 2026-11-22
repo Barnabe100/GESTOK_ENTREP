@@ -17,6 +17,7 @@ from typing import Optional
 from PySide6.QtCore import QPoint, QRect, QSize, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QFormLayout,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -123,6 +124,63 @@ class QuantityEditDelegate(QStyledItemDelegate):
             font.setPointSize(font.pointSize() + 1)
             editor.setFont(font)
         return editor
+
+
+# -- MultiColumnForm : section d'informations sur plusieurs colonnes ----------------
+
+
+class MultiColumnForm:
+    """Section d'informations présentée sur plusieurs colonnes côte à côte
+    (Mission 5.1, Correction C) — remplace la colonne verticale unique
+    (``QFormLayout``) des dialogues de consultation (vente, location), qui
+    gaspillait la largeur disponible et allongeait inutilement la fenêtre.
+    Partagée entre ``SaleDetailDialog`` et ``LocationDetailDialog`` pour ne
+    jamais dupliquer cette disposition.
+
+    Chaque colonne reste un ``QFormLayout`` ordinaire (alignement
+    étiquette/valeur natif, inchangé) ; seule leur mise côte à côte est
+    nouvelle. ``add_row``/``clear`` ciblent une colonne par son index, pour
+    garder le même regroupement logique qu'avant (ex. Numéro/Créée
+    par/Date de modification dans la première colonne) plutôt qu'une
+    répartition automatique qui mélangerait les informations sans ordre
+    voulu.
+    """
+
+    def __init__(self, parent: Optional[QWidget], column_count: int) -> None:
+        self.widget = QWidget(parent)
+        row = QHBoxLayout(self.widget)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(32)
+        self._columns: list[QFormLayout] = []
+        for _ in range(column_count):
+            column_widget = QWidget(self.widget)
+            form = QFormLayout(column_widget)
+            form.setContentsMargins(0, 0, 0, 0)
+            row.addWidget(column_widget, 1)
+            self._columns.append(form)
+
+    def add_row(self, column: int, label: str, field: QWidget) -> None:
+        self._columns[column].addRow(label, field)
+
+    def clear(self) -> None:
+        for form in self._columns:
+            while form.rowCount() > 0:
+                form.removeRow(0)
+
+    def rows(self) -> list[tuple[Optional[QWidget], Optional[QWidget]]]:
+        """Toutes les paires (étiquette, valeur) de toutes les colonnes,
+        dans l'ordre colonne par colonne — utilisé par les tests qui
+        vérifient qu'une information apparaît quelque part dans la
+        section, sans dépendre de sa colonne exacte."""
+        result: list[tuple[Optional[QWidget], Optional[QWidget]]] = []
+        for form in self._columns:
+            for i in range(form.rowCount()):
+                label_item = form.itemAt(i, QFormLayout.ItemRole.LabelRole)
+                field_item = form.itemAt(i, QFormLayout.ItemRole.FieldRole)
+                result.append(
+                    (label_item.widget() if label_item else None, field_item.widget() if field_item else None)
+                )
+        return result
 
 
 # -- KpiCard : carte d'indicateur (icône + intitulé + valeur + accent coloré) --------

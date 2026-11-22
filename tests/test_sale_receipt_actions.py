@@ -528,11 +528,15 @@ def test_submit_cancel_sale_shows_motif_row_after_success(qtbot, login_as) -> No
 
     dialog._submit_cancel_sale("Motif affiché après annulation")
 
-    form = dialog.findChild(QFormLayout)
+    # Mission 5.1, Correction C : « Informations générales » est désormais
+    # répartie sur 3 colonnes (3 ``QFormLayout`` distincts, voir
+    # ``MultiColumnForm``) — on parcourt donc tous les ``QFormLayout`` du
+    # dialogue, pas seulement le premier trouvé.
     rows = {
         form.itemAt(i, QFormLayout.ItemRole.LabelRole).widget().text(): form.itemAt(
             i, QFormLayout.ItemRole.FieldRole
         ).widget()
+        for form in dialog.findChildren(QFormLayout)
         for i in range(form.rowCount())
         if form.itemAt(i, QFormLayout.ItemRole.LabelRole) is not None
     }

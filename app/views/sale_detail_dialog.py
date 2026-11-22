@@ -17,10 +17,10 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QFileDialog,
-    QFormLayout,
     QFrame,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QMessageBox,
     QPushButton,
@@ -42,7 +42,7 @@ from app.utils.money import format_money
 from app.utils.pdf_export import build_page_layout, export_document_to_pdf
 from app.utils.quantity import format_quantity
 from app.views.cancellation_reason_dialog import CancellationReasonDialog
-from app.views.design_system import apply_comfortable_row_height
+from app.views.design_system import MultiColumnForm, apply_comfortable_row_height
 
 _LINE_COLUMNS = ["Article", "Quantité", "Prix unitaire", "Montant"]
 _MOVEMENT_COLUMNS = ["Date/heure", "Type", "Quantité", "Stock avant", "Stock après", "Utilisateur"]
@@ -95,12 +95,19 @@ class SaleDetailDialog(QDialog):
 
         self.setWindowTitle(f"Vente — {sale.numero}")
         self.setModal(True)
-        self.setMinimumWidth(600)
+        # Mission 5.1, Correction B : même constat que les détails de
+        # location (Mission 5, §5) — la largeur précédente (600/700px)
+        # obligeait les tableaux à un défilement horizontal pour voir
+        # toutes leurs colonnes. Largeur minimale et initiale revues pour
+        # que chaque colonne reste visible sans défilement horizontal,
+        # y compris à 1366×768 (voir les largeurs de colonnes explicites
+        # ci-dessous, même principe que ``location_detail_dialog.py``).
+        self.setMinimumWidth(850)
         # Mission 4, §2.3 : ouvre déjà assez grand pour voir confortablement
         # les tableaux de paiements/mouvements sans redimensionnement manuel
         # — la ``scroll_area`` ci-dessous absorbe le reste si l'utilisateur
         # réduit la fenêtre ou si le contenu dépasse malgré tout.
-        self.resize(700, 780)
+        self.resize(900, 780)
 
         layout = QVBoxLayout(self)
 
@@ -117,31 +124,49 @@ class SaleDetailDialog(QDialog):
         self._content = content
         header_group = QGroupBox("Informations générales", content)
         self._header_group = header_group
-        form = QFormLayout(header_group)
-        self._header_form = form
+        header_group_layout = QVBoxLayout(header_group)
 
-        form.addRow("Numéro", QLabel(sale.numero, header_group))
-        form.addRow("Date", QLabel(str(sale.date), header_group))
-        form.addRow("Client", QLabel(sale.client_nom or "—", header_group))
-        form.addRow("Créée par", QLabel(sale.username, header_group))
+        # Mission 5.1, Correction C : disposition sur 3 colonnes plutôt
+        # qu'une unique colonne verticale — exploite toute la largeur
+        # désormais disponible (Correction B) au lieu d'allonger
+        # inutilement la fenêtre. Composant partagé avec
+        # ``LocationDetailDialog`` (voir ``design_system.MultiColumnForm``)
+        # pour ne jamais dupliquer cette disposition.
+        self._header_form = MultiColumnForm(header_group, column_count=3)
+        header_group_layout.addWidget(self._header_form.widget)
+
         self.statut_label = QLabel(_STATUT_LABELS.get(sale.statut, str(sale.statut)), header_group)
-        form.addRow("Statut", self.statut_label)
         self._motif_label: Optional[QLabel] = None
+        self._header_form.add_row(0, "Numéro", QLabel(sale.numero, header_group))
+        self._header_form.add_row(1, "Date", QLabel(str(sale.date), header_group))
+        self._header_form.add_row(2, "Client", QLabel(sale.client_nom or "—", header_group))
+        self._header_form.add_row(0, "Créée par", QLabel(sale.username, header_group))
+        self._header_form.add_row(1, "Statut", self.statut_label)
+        self._header_form.add_row(
+            2, "Créée le", QLabel(sale.date_creation.strftime("%Y-%m-%d %H:%M"), header_group)
+        )
+        self._header_form.add_row(
+            0, "Modifiée le", QLabel(sale.date_modification.strftime("%Y-%m-%d %H:%M"), header_group)
+        )
         if sale.statut == StatutOperation.ANNULEE:
             self._motif_label = QLabel(sale.annulation_motif or "—", header_group)
             self._motif_label.setWordWrap(True)
-            form.addRow("Motif d'annulation", self._motif_label)
-        form.addRow("Créée le", QLabel(sale.date_creation.strftime("%Y-%m-%d %H:%M"), header_group))
-        form.addRow("Modifiée le", QLabel(sale.date_modification.strftime("%Y-%m-%d %H:%M"), header_group))
+            self._header_form.add_row(1, "Motif d'annulation", self._motif_label)
 
         # Annulation (Lot 15 — étape 2) : réutilise directement SaleService.
         # cancel_sale et CancellationReasonDialog, exactement comme
         # SalesPage._on_cancel_clicked/_cancel_selected — aucune règle de
         # permission/propriété réimplémentée (voir can_manage_sale ci-dessous).
+        # Mission 5.1, Correction C : reste hors de la grille d'informations,
+        # sur sa propre ligne, pour demeurer clairement identifiable (couleur
+        # « danger ») quelle que soit la disposition des informations.
+        cancel_row = QHBoxLayout()
         self.cancel_sale_button = QPushButton("Annuler la vente", header_group)
         self.cancel_sale_button.setProperty("variant", "danger")
         self.cancel_sale_button.setEnabled(False)
-        form.addRow(self.cancel_sale_button)
+        cancel_row.addWidget(self.cancel_sale_button)
+        cancel_row.addStretch(1)
+        header_group_layout.addLayout(cancel_row)
         self.cancel_sale_button.clicked.connect(self._on_cancel_sale_clicked)
 
         content_layout.addWidget(header_group)
@@ -152,8 +177,16 @@ class SaleDetailDialog(QDialog):
         lines_table = QTableWidget(len(sale.lignes), len(_LINE_COLUMNS), lines_group)
         lines_table.setAlternatingRowColors(True)
         lines_table.setHorizontalHeaderLabels(_LINE_COLUMNS)
-        lines_table.horizontalHeader().setStretchLastSection(True)
         lines_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        # Mission 5.1, Correction B : largeurs explicites (même principe que
+        # ``location_detail_dialog.py``) — seule la colonne Article s'étire,
+        # les colonnes numériques/monétaires gardent une largeur fixe
+        # confortable, jamais de défilement horizontal pour les voir toutes.
+        lines_header = lines_table.horizontalHeader()
+        lines_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for col, width in ((1, 110), (2, 150), (3, 150)):
+            lines_header.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
+            lines_table.setColumnWidth(col, width)
         for row, ligne in enumerate(sale.lignes):
             lines_table.setItem(row, 0, QTableWidgetItem(f"{ligne.article_reference} — {ligne.article_designation}"))
             lines_table.setItem(row, 1, QTableWidgetItem(format_quantity(ligne.quantite)))
@@ -171,14 +204,17 @@ class SaleDetailDialog(QDialog):
         payment_group = QGroupBox("Paiement", content)
         payment_group_layout = QVBoxLayout(payment_group)
 
-        payment_form = QFormLayout()
+        # Mission 5.1, Correction C : 3 colonnes (Payé | Reste à payer |
+        # Statut de paiement) plutôt qu'une colonne verticale — même
+        # composant partagé que « Informations générales » ci-dessus.
+        self._payment_form = MultiColumnForm(payment_group, column_count=3)
+        payment_group_layout.addWidget(self._payment_form.widget)
         self.montant_paye_label = QLabel("", payment_group)
-        payment_form.addRow("Payé", self.montant_paye_label)
+        self._payment_form.add_row(0, "Payé", self.montant_paye_label)
         self.reste_a_payer_label = QLabel("", payment_group)
-        payment_form.addRow("Reste à payer", self.reste_a_payer_label)
+        self._payment_form.add_row(1, "Reste à payer", self.reste_a_payer_label)
         self.statut_paiement_label = QLabel("", payment_group)
-        payment_form.addRow("Statut de paiement", self.statut_paiement_label)
-        payment_group_layout.addLayout(payment_form)
+        self._payment_form.add_row(2, "Statut de paiement", self.statut_paiement_label)
 
         payment_group_layout.addWidget(QLabel("Historique des paiements", payment_group))
         self.payments_table = QTableWidget(0, len(_PAYMENT_COLUMNS), payment_group)
@@ -195,6 +231,14 @@ class SaleDetailDialog(QDialog):
         # apparaître qu'une seule ligne de paiement malgré un historique
         # plus long.
         apply_comfortable_row_height(self.payments_table, visible_rows=4)
+        # Mission 5.1, Correction B : largeurs explicites (même principe que
+        # ``location_detail_dialog.py``) — la colonne Date, dimensionnée par
+        # défaut sur la largeur de son seul en-tête, tronquait systématiquement
+        # « AAAA-MM-JJ HH:MM ».
+        payments_header = self.payments_table.horizontalHeader()
+        for col, width in ((0, 140), (1, 120), (2, 110), (3, 140)):
+            payments_header.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
+            self.payments_table.setColumnWidth(col, width)
         payment_group_layout.addWidget(self.payments_table)
 
         # Lot 22 (§7.1) : le bouton « Reçu du paiement sélectionné (PDF) »
@@ -468,7 +512,7 @@ class SaleDetailDialog(QDialog):
         if self._motif_label is None:
             self._motif_label = QLabel(sale.annulation_motif or "—", self._header_group)
             self._motif_label.setWordWrap(True)
-            self._header_form.insertRow(5, "Motif d'annulation", self._motif_label)
+            self._header_form.add_row(1, "Motif d'annulation", self._motif_label)
         else:
             self._motif_label.setText(sale.annulation_motif or "—")
 
@@ -488,9 +532,17 @@ class SaleDetailDialog(QDialog):
         movements_table = QTableWidget(0, len(_MOVEMENT_COLUMNS), movements_group)
         movements_table.setAlternatingRowColors(True)
         movements_table.setHorizontalHeaderLabels(_MOVEMENT_COLUMNS)
-        movements_table.horizontalHeader().setStretchLastSection(True)
         movements_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         apply_comfortable_row_height(movements_table, visible_rows=4)
+        # Mission 5.1, Correction B : largeurs explicites — seule la
+        # colonne Utilisateur (texte variable) s'étire, les autres gardent
+        # une largeur fixe confortable (même principe que les tableaux de
+        # ``location_detail_dialog.py``).
+        movements_header = movements_table.horizontalHeader()
+        movements_header.setStretchLastSection(True)
+        for col, width in ((0, 150), (1, 110), (2, 100), (3, 115), (4, 115)):
+            movements_header.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
+            movements_table.setColumnWidth(col, width)
         self._populate_movements_table(movements_table, movements)
         movements_layout.addWidget(movements_table)
         self._content.layout().insertWidget(
