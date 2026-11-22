@@ -57,7 +57,14 @@ from sqlalchemy.exc import IntegrityError
 from app.config.settings import Settings
 from app.db.session import session_scope
 from app.models.audit import AuditLog
-from app.models.enums import ModeGestionArticle, ResultatAudit, StatutActifInactif, StatutLocation, TypeMouvement
+from app.models.enums import (
+    ModeGestionArticle,
+    ResultatAudit,
+    StatutActifInactif,
+    StatutLocation,
+    TypeMouvement,
+    TypeTarif,
+)
 from app.models.rental import Location, LocationLigne, LocationPaiement, LocationRetour
 from app.repositories.article_repository import ArticleRepository
 from app.repositories.client_repository import ClientRepository
@@ -70,6 +77,7 @@ from app.utils.dates import validate_not_future_date
 from app.utils.exceptions import ConflictError, NotFoundError, PermissionDeniedError, ValidationError
 from app.utils.logging_config import get_logger
 from app.utils.money import round_money
+from app.utils.tariff_validation import validate_chosen_tariff
 
 logger = get_logger("services.rentals")
 
@@ -94,6 +102,8 @@ class LocationLigneInput:
     article_id: int
     quantite: Decimal
     tarif_jour: Optional[Decimal] = None
+    # Mission 5 (§3/§4) : même principe que ``VenteLigneInput.type_tarif``.
+    type_tarif: TypeTarif = TypeTarif.NORMAL
 
 
 @dataclass(frozen=True)
@@ -137,6 +147,8 @@ class LocationLigneSummary:
     qte_immobilisee: Decimal
     tarif_jour: Decimal
     retours: list[LocationRetourSummary] = field(default_factory=list)
+    # Mission 5 (§3/§4) : même principe que ``VenteLigneSummary.type_tarif``.
+    type_tarif: TypeTarif = TypeTarif.NORMAL
 
     @property
     def montant_facture_total(self) -> Decimal:
@@ -162,6 +174,7 @@ class LocationLigneSummary:
             qte_immobilisee=ligne.qte_immobilisee,
             tarif_jour=ligne.tarif_jour,
             retours=[LocationRetourSummary.from_model(r) for r in ligne.retours],
+            type_tarif=ligne.type_tarif,
         )
 
 
@@ -368,6 +381,15 @@ class LocationService:
                     f"Aucun tarif de location journalier n'est défini pour « {article.reference} »."
                 )
             tarif_jour = _validate_money(tarif_jour, "tarif de location journalier")
+            validate_chosen_tariff(
+                type_tarif=line.type_tarif,
+                montant=tarif_jour,
+                prix_sous_traitant=article.tarif_location_sous_traitant,
+                intervalle_min=article.tarif_location_autre_min,
+                intervalle_max=article.tarif_location_autre_max,
+                article_reference=article.reference,
+                label="tarif de location",
+            )
 
             lignes.append(
                 LocationLigne(
@@ -375,6 +397,7 @@ class LocationService:
                     qte_prevue=quantite,
                     qte_reservee=quantite,
                     tarif_jour=tarif_jour,
+                    type_tarif=line.type_tarif,
                 )
             )
         return lignes

@@ -36,6 +36,18 @@ créée par erreur — délègue de la même façon à ``on_delete_unite`` (call
 prenant le libellé actuellement sélectionné) : ce dialogue ne connaît ni la
 vérification d'usage, ni la confirmation, ni la suppression elle-même,
 toutes entièrement du ressort de l'appelant (``ArticlesPage``).
+
+Mission 5, §2/§3 : tarifs alternatifs (sous-traitant + intervalle « autre »)
+pour la vente ET pour la location, totalement indépendants l'un de l'autre.
+Entièrement facultatifs (laissés vides, aucun tarif alternatif n'est
+configuré) et soumis au même activation/désactivation par mode de gestion
+que les champs existants qu'ils complètent (``prix_vente``/
+``tarif_location_jour``) — jamais vidés, seulement désactivés dans le mode
+où ils sont sans objet. La validation croisée réelle (bornes, cohérence
+avec le prix normal/sous-traitant) vit entièrement dans ``ArticleService`` :
+ce formulaire ne fait que collecter la saisie. Le contenu du formulaire est
+désormais placé dans une zone défilante : les six nouveaux champs
+auraient autrement rendu le dialogue trop haut pour un écran 1366×768.
 """
 from __future__ import annotations
 
@@ -45,10 +57,12 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QStyle,
     QTextEdit,
     QVBoxLayout,
@@ -95,8 +109,15 @@ class ArticleFormDialog(QDialog):
         # 1366×768 pour un dialogue modal, jamais une largeur fixe
         # (redimensionnement plus étroit toujours possible).
         self.setMinimumWidth(760)
+        self.resize(820, 700)
 
         layout = QVBoxLayout(self)
+
+        scroll_area = QScrollArea(self)
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        content = QWidget(scroll_area)
+        content_layout = QVBoxLayout(content)
 
         columns_row = QHBoxLayout()
         columns_row.setSpacing(28)
@@ -175,6 +196,32 @@ class ArticleFormDialog(QDialog):
         left_form.addRow("Tarif de location (par jour)", self.tarif_location_jour_edit)
         self.mode_gestion_combo.currentIndexChanged.connect(self._update_price_fields_state)
 
+        # Mission 5, §3 : tarifs alternatifs de location — entièrement
+        # indépendants des tarifs de vente (jamais dérivés l'un de l'autre).
+        self.tarif_location_sous_traitant_edit = QLineEdit(self)
+        self.tarif_location_sous_traitant_edit.setPlaceholderText("Facultatif")
+        self.tarif_location_sous_traitant_edit.setText(
+            _as_text(initial.get("tarif_location_sous_traitant"))
+            if initial.get("tarif_location_sous_traitant") is not None else ""
+        )
+        left_form.addRow("Tarif de location sous-traitant", self.tarif_location_sous_traitant_edit)
+
+        self.tarif_location_autre_min_edit = QLineEdit(self)
+        self.tarif_location_autre_min_edit.setPlaceholderText("Facultatif")
+        self.tarif_location_autre_min_edit.setText(
+            _as_text(initial.get("tarif_location_autre_min"))
+            if initial.get("tarif_location_autre_min") is not None else ""
+        )
+        left_form.addRow("Autre tarif location — début intervalle", self.tarif_location_autre_min_edit)
+
+        self.tarif_location_autre_max_edit = QLineEdit(self)
+        self.tarif_location_autre_max_edit.setPlaceholderText("Facultatif")
+        self.tarif_location_autre_max_edit.setText(
+            _as_text(initial.get("tarif_location_autre_max"))
+            if initial.get("tarif_location_autre_max") is not None else ""
+        )
+        left_form.addRow("Autre tarif location — fin intervalle", self.tarif_location_autre_max_edit)
+
         self.stock_min_edit = QLineEdit(self)
         self.stock_min_edit.setText(
             format_quantity(initial["stock_min"]) if initial.get("stock_min") is not None else "0"
@@ -198,6 +245,29 @@ class ArticleFormDialog(QDialog):
         self.prix_vente_edit = QLineEdit(self)
         self.prix_vente_edit.setText(_as_text(initial.get("prix_vente"), default="0"))
         right_form.addRow(required_label("Prix de vente"), self.prix_vente_edit)
+
+        # Mission 5, §2 : tarifs alternatifs de vente — entièrement
+        # facultatifs, co-localisés avec le prix de vente qu'ils complètent.
+        self.prix_sous_traitant_edit = QLineEdit(self)
+        self.prix_sous_traitant_edit.setPlaceholderText("Facultatif")
+        self.prix_sous_traitant_edit.setText(
+            _as_text(initial.get("prix_sous_traitant")) if initial.get("prix_sous_traitant") is not None else ""
+        )
+        right_form.addRow("Prix sous-traitant", self.prix_sous_traitant_edit)
+
+        self.prix_autre_min_edit = QLineEdit(self)
+        self.prix_autre_min_edit.setPlaceholderText("Facultatif")
+        self.prix_autre_min_edit.setText(
+            _as_text(initial.get("prix_autre_min")) if initial.get("prix_autre_min") is not None else ""
+        )
+        right_form.addRow("Autre prix — début intervalle", self.prix_autre_min_edit)
+
+        self.prix_autre_max_edit = QLineEdit(self)
+        self.prix_autre_max_edit.setPlaceholderText("Facultatif")
+        self.prix_autre_max_edit.setText(
+            _as_text(initial.get("prix_autre_max")) if initial.get("prix_autre_max") is not None else ""
+        )
+        right_form.addRow("Autre prix — fin intervalle", self.prix_autre_max_edit)
 
         self.stock_max_edit = QLineEdit(self)
         self.stock_max_edit.setText(
@@ -237,7 +307,7 @@ class ArticleFormDialog(QDialog):
         # colonne droite).
         self._update_price_fields_state()
 
-        layout.addLayout(columns_row)
+        content_layout.addLayout(columns_row)
 
         # Description : occupe toute la largeur du dialogue, sous les deux
         # colonnes (§6 : « zone suffisamment large en bas du formulaire »).
@@ -249,7 +319,11 @@ class ArticleFormDialog(QDialog):
         self.description_edit.setPlainText(initial.get("description", "") or "")
         self.description_edit.setFixedHeight(60)
         description_form.addRow("Description", self.description_edit)
-        layout.addLayout(description_form)
+        content_layout.addLayout(description_form)
+
+        content_layout.addStretch(1)
+        scroll_area.setWidget(content)
+        layout.addWidget(scroll_area)
 
         layout.addWidget(build_required_field_legend(self))
 
@@ -339,6 +413,17 @@ class ArticleFormDialog(QDialog):
             "Tarif strictement positif requis en mode Location" if is_location else "Sans objet en mode Vente"
         )
         self.prix_vente_edit.setEnabled(not is_location)
+        # Mission 5 : les tarifs alternatifs suivent le même état que le
+        # tarif normal qu'ils complètent — jamais vidés, seulement
+        # désactivés dans le mode où ils sont sans objet.
+        for edit in (self.prix_sous_traitant_edit, self.prix_autre_min_edit, self.prix_autre_max_edit):
+            edit.setEnabled(not is_location)
+        for edit in (
+            self.tarif_location_sous_traitant_edit,
+            self.tarif_location_autre_min_edit,
+            self.tarif_location_autre_max_edit,
+        ):
+            edit.setEnabled(is_location)
 
     def values(self) -> dict:
         return {
@@ -374,6 +459,12 @@ class ArticleFormDialog(QDialog):
             "description": self.description_edit.toPlainText(),
             "stock_initial": self.stock_initial_edit.text() if self.stock_initial_edit else "0",
             "tarif_location_jour": self.tarif_location_jour_edit.text(),
+            "prix_sous_traitant": self.prix_sous_traitant_edit.text(),
+            "prix_autre_min": self.prix_autre_min_edit.text(),
+            "prix_autre_max": self.prix_autre_max_edit.text(),
+            "tarif_location_sous_traitant": self.tarif_location_sous_traitant_edit.text(),
+            "tarif_location_autre_min": self.tarif_location_autre_min_edit.text(),
+            "tarif_location_autre_max": self.tarif_location_autre_max_edit.text(),
         }
 
     def set_error(self, message: str) -> None:

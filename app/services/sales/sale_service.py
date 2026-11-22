@@ -65,6 +65,7 @@ from app.models.enums import (
     StatutOperation,
     StatutPaiement,
     TypeMouvement,
+    TypeTarif,
 )
 from app.models.movement import MouvementStock
 from app.models.payment import Paiement
@@ -82,6 +83,7 @@ from app.utils.dates import validate_not_future_date
 from app.utils.exceptions import ConflictError, NotFoundError, PermissionDeniedError, ValidationError
 from app.utils.logging_config import get_logger
 from app.utils.money import round_money
+from app.utils.tariff_validation import validate_chosen_tariff
 
 logger = get_logger("services.sales")
 
@@ -108,6 +110,12 @@ class VenteLigneInput:
     article_id: int
     quantite: Decimal
     prix_unitaire: Decimal
+    # Mission 5 (§2/§4) : type de tarif choisi — NORMAL par défaut (aucun
+    # appelant existant n'a besoin de le fournir). Seul AUTRE déclenche la
+    # vérification d'intervalle dans ``_build_lignes`` ; NORMAL/SOUS_TRAITANT
+    # restent aussi librement modifiables qu'avant (``prix_unitaire`` reste
+    # une vraie saisie, jamais recalculée).
+    type_tarif: TypeTarif = TypeTarif.NORMAL
 
 
 @dataclass(frozen=True)
@@ -121,6 +129,7 @@ class VenteLigneSummary:
     quantite: Decimal
     prix_unitaire: Decimal
     sous_total: Decimal
+    type_tarif: TypeTarif = TypeTarif.NORMAL
 
     @classmethod
     def from_model(cls, ligne: VenteLigne) -> "VenteLigneSummary":
@@ -132,6 +141,7 @@ class VenteLigneSummary:
             quantite=ligne.quantite,
             prix_unitaire=ligne.prix_unitaire,
             sous_total=ligne.sous_total,
+            type_tarif=ligne.type_tarif,
         )
 
 
@@ -403,6 +413,15 @@ class SaleService:
                 raise ValidationError(
                     f"L'article « {article.reference} » est en mode Location : il ne peut pas être vendu."
                 )
+            validate_chosen_tariff(
+                type_tarif=line.type_tarif,
+                montant=prix_unitaire,
+                prix_sous_traitant=article.prix_sous_traitant,
+                intervalle_min=article.prix_autre_min,
+                intervalle_max=article.prix_autre_max,
+                article_reference=article.reference,
+                label="prix",
+            )
 
             lignes.append(
                 VenteLigne(
@@ -410,6 +429,7 @@ class SaleService:
                     quantite=quantite,
                     prix_unitaire=prix_unitaire,
                     sous_total=round_money(quantite * prix_unitaire),
+                    type_tarif=line.type_tarif,
                 )
             )
         return lignes

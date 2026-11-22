@@ -59,7 +59,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.models.enums import ModeGestionArticle, StatutLocation
+from app.models.enums import ModeGestionArticle, StatutLocation, TypeTarif
 from app.services.articles.article_service import ArticleService
 from app.services.auth.permission_service import PermissionService
 from app.services.clients.client_service import ClientService
@@ -73,6 +73,7 @@ from app.views.client_form_dialog import ClientFormDialog
 from app.views.common import confirm_action, date_to_qdate, format_decimal_for_input, parse_decimal, required_label
 from app.views.design_system import QuantityEditDelegate
 from app.views.location_detail_dialog import LocationDetailDialog
+from app.views.tariff_choice_dialog import TariffChoiceDialog
 
 _COLUMNS = ["Numéro", "Date", "Client", "Créée par", "Total facturé", "Statut"]
 
@@ -508,6 +509,7 @@ class LocationsPage(QWidget):
                     "article_label": f"{ligne.article_reference} — {ligne.article_designation}",
                     "quantite": ligne.qte_prevue,
                     "tarif_jour": ligne.tarif_jour,
+                    "type_tarif": ligne.type_tarif,
                 }
                 for ligne in location.lignes
             ],
@@ -609,7 +611,11 @@ class LocationsPage(QWidget):
         if data is None:
             return
         article_id, label, tarif_jour = data
-        self._add_caisse_line(article_id, label, Decimal("1"), Decimal(str(tarif_jour)))
+        choice = self._prompt_tariff_for_article(article_id, label)
+        if choice is None:
+            return
+        type_tarif, montant = choice
+        self._add_caisse_line(article_id, label, Decimal("1"), montant, type_tarif)
         self.caisse_search_edit.clear()
 
     # -- scan code-barres (lecteur USB « keyboard wedge ») -------------------
@@ -628,7 +634,11 @@ class LocationsPage(QWidget):
             self._show_scan_rejection_message(code)
             return
         article_id, label, tarif_jour = result
-        self._add_caisse_line(article_id, label, Decimal("1"), Decimal(str(tarif_jour)))
+        choice = self._prompt_tariff_for_article(article_id, label)
+        if choice is None:
+            return
+        type_tarif, montant = choice
+        self._add_caisse_line(article_id, label, Decimal("1"), montant, type_tarif)
 
     def _lookup_article_by_barcode(self, code: str) -> Optional[tuple[int, str, str]]:
         """Ne renvoie qu'un article actif ET en mode Location — même
@@ -663,16 +673,55 @@ class LocationsPage(QWidget):
             f"Aucun article actif ne correspond au code-barres « {code} ».",
         )
 
+    # -- choix du tarif (Mission 5, §3.1) ------------------------------------
+
+    def _prompt_tariff_for_article(
+        self, article_id: int, article_label: str
+    ) -> Optional[tuple[TypeTarif, Decimal]]:
+        """Même principe que ``SalesPage._prompt_tariff_for_article`` —
+        tarif normal présélectionné par défaut. Contrairement à Sales, la
+        modification ultérieure du tarif d'une ligne déjà ajoutée reste
+        possible via l'édition en place existante de la colonne « Tarif /
+        jour » (préservée telle quelle, voir ``_on_caisse_line_item_changed``)
+        plutôt que par une réouverture de ce dialogue — ce formulaire ne
+        propose donc ce choix qu'à l'ajout."""
+        try:
+            article = self._article_service.get_article(article_id)
+        except AppError as exc:
+            QMessageBox.warning(self, "Opération refusée", str(exc))
+            return None
+        dialog = TariffChoiceDialog(
+            article_label, article.tarif_location_jour or Decimal("0"), article.tarif_location_sous_traitant,
+            article.tarif_location_autre_min, article.tarif_location_autre_max, self._currency_code,
+            is_location=True, parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return dialog.values()
+
     # -- gestion centralisée des lignes --------------------------------------
 
-    def _add_caisse_line(self, article_id: int, article_label: str, quantite: Decimal, tarif_jour: Decimal) -> None:
+    def _add_caisse_line(
+        self,
+        article_id: int,
+        article_label: str,
+        quantite: Decimal,
+        tarif_jour: Decimal,
+        type_tarif: TypeTarif = TypeTarif.NORMAL,
+    ) -> None:
         """Point d'entrée unique pour ajouter une ligne à la location en
         cours de saisie, quelle que soit son origine (recherche ou scan) —
         n'appelle jamais de service métier : une ligne de brouillon n'a
         d'existence qu'en mémoire jusqu'à l'enregistrement."""
         self.caisse_error_label.setText("")
         self._caisse_lines.append(
-            {"article_id": article_id, "article_label": article_label, "quantite": quantite, "tarif_jour": tarif_jour}
+            {
+                "article_id": article_id,
+                "article_label": article_label,
+                "quantite": quantite,
+                "tarif_jour": tarif_jour,
+                "type_tarif": type_tarif,
+            }
         )
         self._refresh_caisse_lines_table()
 
@@ -787,7 +836,8 @@ class LocationsPage(QWidget):
         caisse — même principe que ``SalesPage._caisse_snapshot``."""
         values = self._caisse_values()
         lignes = tuple(
-            (line["article_id"], line["quantite"], line["tarif_jour"]) for line in values["lignes"]
+            (line["article_id"], line["quantite"], line["tarif_jour"], line.get("type_tarif", TypeTarif.NORMAL))
+            for line in values["lignes"]
         )
         return (values["date"], values["client_id"], values["commentaire"], lignes)
 
@@ -878,6 +928,7 @@ class LocationsPage(QWidget):
             lines = [
                 LocationLigneInput(
                     article_id=line["article_id"], quantite=line["quantite"], tarif_jour=line["tarif_jour"],
+                    type_tarif=line.get("type_tarif", TypeTarif.NORMAL),
                 )
                 for line in values["lignes"]
             ]

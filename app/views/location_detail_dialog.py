@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QFrame,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QMessageBox,
     QPushButton,
@@ -124,14 +125,22 @@ class LocationDetailDialog(QDialog):
 
         self.setWindowTitle(f"Location — {location.numero}")
         self.setModal(True)
-        self.setMinimumWidth(680)
+        # Mission 5, §5 : la largeur précédente (680/760px) obligeait les
+        # trois tableaux à un défilement horizontal pour voir toutes leurs
+        # colonnes (7 pour « Lignes » à elles seules) — largeur minimale et
+        # initiale revues pour que chaque colonne reste visible sans
+        # défilement horizontal, y compris à 1366×768 (voir les largeurs de
+        # colonnes explicites ci-dessous, même principe que les tableaux de
+        # caisse Ventes/Locations).
+        self.setMinimumWidth(1050)
         # Mission 4, §2.4 : même constat que la consultation de vente — les
         # trois tableaux (lignes, retours, paiements) retombaient sur un
         # ``sizeHint()`` fixe ne laissant voir qu'une seule ligne. La
         # fenêtre ouvre désormais assez grande, et une zone défilante
-        # absorbe le reste pour rester utilisable même sur un écran
-        # 1366×768 avec un historique long (voir ``scroll_area`` ci-dessous).
-        self.resize(760, 820)
+        # absorbe le reste (verticalement uniquement) pour rester utilisable
+        # même sur un écran 1366×768 avec un historique long (voir
+        # ``scroll_area`` ci-dessous).
+        self.resize(1100, 820)
 
         layout = QVBoxLayout(self)
 
@@ -148,18 +157,31 @@ class LocationDetailDialog(QDialog):
         self.lines_table = QTableWidget(0, len(_LINE_COLUMNS), content)
         self.lines_table.setAlternatingRowColors(True)
         self.lines_table.setHorizontalHeaderLabels(_LINE_COLUMNS)
-        self.lines_table.horizontalHeader().setStretchLastSection(True)
         self.lines_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         apply_comfortable_row_height(self.lines_table, visible_rows=4)
+        # Mission 5, §5 : largeurs explicites (même principe que les
+        # tableaux de caisse Ventes/Locations) — seule la colonne Article
+        # s'étire, les cinq colonnes numériques/monétaires gardent une
+        # largeur fixe confortable, jamais de défilement horizontal pour
+        # les voir toutes.
+        lines_header = self.lines_table.horizontalHeader()
+        lines_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for col, width in ((1, 95), (2, 130), (3, 140), (4, 130), (5, 115), (6, 115)):
+            lines_header.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
+            self.lines_table.setColumnWidth(col, width)
         content_layout.addWidget(self.lines_table)
 
         content_layout.addWidget(QLabel("Historique des retours", content))
         self.retours_table = QTableWidget(0, len(_RETOUR_COLUMNS), content)
         self.retours_table.setAlternatingRowColors(True)
         self.retours_table.setHorizontalHeaderLabels(_RETOUR_COLUMNS)
-        self.retours_table.horizontalHeader().setStretchLastSection(True)
         self.retours_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         apply_comfortable_row_height(self.retours_table, visible_rows=4)
+        retours_header = self.retours_table.horizontalHeader()
+        retours_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        for col, width in ((0, 100), (2, 105), (3, 115), (4, 125), (5, 140)):
+            retours_header.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
+            self.retours_table.setColumnWidth(col, width)
         content_layout.addWidget(self.retours_table)
 
         self._payment_form = QFormLayout()
@@ -172,6 +194,11 @@ class LocationDetailDialog(QDialog):
         self.payments_table.horizontalHeader().setStretchLastSection(True)
         self.payments_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         apply_comfortable_row_height(self.payments_table, visible_rows=4)
+        # Mission 5, §5 : la colonne Date, dimensionnée par défaut sur la
+        # largeur de son seul en-tête, tronquait systématiquement
+        # « AAAA-MM-JJ HH:MM » — largeur explicite, comme les autres
+        # tableaux de ce dialogue.
+        self.payments_table.setColumnWidth(0, 140)
         content_layout.addWidget(self.payments_table)
 
         self._caution_form = QFormLayout()

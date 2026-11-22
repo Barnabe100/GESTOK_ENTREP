@@ -118,6 +118,57 @@ class Article(TimestampMixin, Base):
         CheckConstraint(
             "stock_max IS NULL OR stock_max >= stock_min", name="ck_article_stock_max_gte_min"
         ),
+        # Mission 5 (§2/§3) : les 3 tarifs de vente et de location — défense
+        # en profondeur, la validation croisée réelle (avec message métier
+        # compréhensible) vit dans ``ArticleService``, jamais seulement ici.
+        CheckConstraint(
+            "prix_sous_traitant IS NULL OR prix_sous_traitant >= 0",
+            name="ck_article_prix_sous_traitant_positif",
+        ),
+        CheckConstraint(
+            "prix_autre_min IS NULL OR prix_autre_min >= 0", name="ck_article_prix_autre_min_positif"
+        ),
+        CheckConstraint(
+            "prix_autre_max IS NULL OR prix_autre_max >= 0", name="ck_article_prix_autre_max_positif"
+        ),
+        CheckConstraint(
+            "prix_autre_min IS NULL OR prix_autre_max IS NULL OR prix_autre_min <= prix_autre_max",
+            name="ck_article_prix_autre_min_le_max",
+        ),
+        CheckConstraint(
+            "prix_autre_min IS NULL OR prix_sous_traitant IS NULL OR prix_autre_min <= prix_sous_traitant",
+            name="ck_article_prix_autre_min_le_sous_traitant",
+        ),
+        CheckConstraint(
+            "prix_autre_max IS NULL OR prix_autre_max >= prix_vente",
+            name="ck_article_prix_autre_max_ge_normal",
+        ),
+        CheckConstraint(
+            "tarif_location_sous_traitant IS NULL OR tarif_location_sous_traitant >= 0",
+            name="ck_article_tarif_location_sous_traitant_positif",
+        ),
+        CheckConstraint(
+            "tarif_location_autre_min IS NULL OR tarif_location_autre_min >= 0",
+            name="ck_article_tarif_location_autre_min_positif",
+        ),
+        CheckConstraint(
+            "tarif_location_autre_max IS NULL OR tarif_location_autre_max >= 0",
+            name="ck_article_tarif_location_autre_max_positif",
+        ),
+        CheckConstraint(
+            "tarif_location_autre_min IS NULL OR tarif_location_autre_max IS NULL "
+            "OR tarif_location_autre_min <= tarif_location_autre_max",
+            name="ck_article_tarif_location_autre_min_le_max",
+        ),
+        CheckConstraint(
+            "tarif_location_autre_min IS NULL OR tarif_location_sous_traitant IS NULL "
+            "OR tarif_location_autre_min <= tarif_location_sous_traitant",
+            name="ck_article_tarif_location_autre_min_le_sous_traitant",
+        ),
+        CheckConstraint(
+            "tarif_location_autre_max IS NULL OR tarif_location_autre_max >= tarif_location_jour",
+            name="ck_article_tarif_location_autre_max_ge_normal",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -155,6 +206,21 @@ class Article(TimestampMixin, Base):
     # de VenteLigne.prix_unitaire (une vraie saisie historisée par ligne,
     # jamais recalculée rétroactivement si ce tarif catalogue change).
     tarif_location_jour: Mapped[Optional[Decimal]] = mapped_column(MONEY, nullable=True)
+
+    # Mission 5 (§2/§3) : trois tarifs de vente et trois tarifs de location,
+    # entièrement indépendants (jamais l'un dérivé de l'autre). None tant
+    # qu'un tarif n'a jamais été configuré — un article existant avant cette
+    # mission a donc les six champs à None, sans valeur arbitraire imposée
+    # (§6). ``prix_autre_min``/``prix_autre_max`` ne sont définis qu'en même
+    # temps (voir validation croisée dans ArticleService) : ensemble, ils
+    # forment l'intervalle autorisé pour le prix personnalisé (« Autre
+    # prix ») saisi lors d'une vente/location, jamais un prix fixe.
+    prix_sous_traitant: Mapped[Optional[Decimal]] = mapped_column(MONEY, nullable=True)
+    prix_autre_min: Mapped[Optional[Decimal]] = mapped_column(MONEY, nullable=True)
+    prix_autre_max: Mapped[Optional[Decimal]] = mapped_column(MONEY, nullable=True)
+    tarif_location_sous_traitant: Mapped[Optional[Decimal]] = mapped_column(MONEY, nullable=True)
+    tarif_location_autre_min: Mapped[Optional[Decimal]] = mapped_column(MONEY, nullable=True)
+    tarif_location_autre_max: Mapped[Optional[Decimal]] = mapped_column(MONEY, nullable=True)
 
     category: Mapped["Category"] = relationship("Category", back_populates="articles")
     fournisseur_principal: Mapped[Optional["Supplier"]] = relationship(

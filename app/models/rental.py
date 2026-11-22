@@ -54,11 +54,12 @@ from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
-from app.models.enums import StatutLocation
+from app.models.enums import StatutLocation, TypeTarif
 from app.models.mixins import TimestampMixin, utcnow
 from app.models.types import MONEY, QUANTITY
 
 _STATUT_LOCATION_TYPE = SAEnum(StatutLocation, native_enum=False, length=20, name="statut_location")
+_TYPE_TARIF_TYPE = SAEnum(TypeTarif, native_enum=False, length=20, name="type_tarif")
 
 
 class Location(TimestampMixin, Base):
@@ -136,6 +137,11 @@ class LocationLigne(Base):
     # depuis Article.tarif_location_jour mais librement modifiable — jamais
     # recalculée si le tarif catalogue change ensuite.
     tarif_jour: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    # Mission 5 (§4) : même principe que VenteLigne.type_tarif — NORMAL pour
+    # toute ligne antérieure à cette mission (server_default, voir migration).
+    type_tarif: Mapped[TypeTarif] = mapped_column(
+        _TYPE_TARIF_TYPE, default=TypeTarif.NORMAL, nullable=False
+    )
 
     location: Mapped["Location"] = relationship("Location", back_populates="lignes")
     article: Mapped["Article"] = relationship("Article")

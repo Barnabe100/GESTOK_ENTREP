@@ -5,28 +5,36 @@ import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog, QMessageBox
 
-from app.models.enums import ModeGestionArticle, StatutOperation, StatutPaiement
+from app.models.enums import ModeGestionArticle, StatutOperation, StatutPaiement, TypeTarif
 from app.services.sales.sale_service import VenteLigneInput
 from app.utils.exceptions import AppError
 from app.utils.money import format_money
 from app.views.pages.sales_page import SalesPage
+from app.views.tariff_choice_dialog import TariffChoiceDialog
 
 
 @pytest.fixture(autouse=True)
 def _no_blocking_dialogs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("app.views.pages.sales_page.QMessageBox.information", lambda *a, **k: None)
     monkeypatch.setattr("app.views.pages.sales_page.QMessageBox.warning", lambda *a, **k: None)
+    # Mission 5, §2.4 : par défaut, accepte immédiatement le tarif normal
+    # présélectionné (comportement identique à avant l'introduction de ce
+    # dialogue) — les tests qui exercent explicitement le choix
+    # Sous-traitant/Autre re-patchent ``exec`` eux-mêmes.
+    monkeypatch.setattr(
+        "app.views.pages.sales_page.TariffChoiceDialog.exec", lambda self: QDialog.DialogCode.Accepted
+    )
 
 
 def _build_page(stack) -> SalesPage:
     return SalesPage(stack.sales, stack.articles, stack.clients, stack.documents, stack.permissions)
 
 
-def _make_article(stack, reference="ART-1", stock_initial=Decimal("50")):
+def _make_article(stack, reference="ART-1", stock_initial=Decimal("50"), prix_vente=Decimal("150"), **tarif_kwargs):
     category = stack.categories.create_category(f"Cat-{reference}")
     return stack.articles.create_article(
         reference, "Article de test", category.id, "unité",
-        Decimal("100"), Decimal("150"), Decimal("0"), stock_initial=stock_initial,
+        Decimal("100"), prix_vente, Decimal("0"), stock_initial=stock_initial, **tarif_kwargs,
     )
 
 
@@ -917,6 +925,190 @@ def test_caisse_scan_location_article_shows_distinct_message_and_adds_nothing(qt
     assert title == "Article non vendable"
     assert "location" in message.lower()
     assert article.reference in message
+
+
+# -- choix du tarif à l'ajout d'une ligne (Mission 5, §2.4) --------------------
+
+
+def test_adding_article_defaults_to_normal_tariff(qtbot, login_as) -> None:
+    """Fixture ``_no_blocking_dialogs`` : accepte immédiatement le tarif
+    normal présélectionné par défaut (aucun changement de comportement
+    pour l'utilisateur qui ne modifie jamais son choix)."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, reference="ART-EAU", prix_vente=Decimal("150"))
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+
+    page.caisse_search_edit.setText("eau")
+    item = page.caisse_search_results.item(0)
+    page._on_caisse_search_result_activated(item)
+
+    assert len(page._caisse_lines) == 1
+    assert page._caisse_lines[0]["prix_unitaire"] == Decimal("150")
+    assert page._caisse_lines[0]["type_tarif"] == TypeTarif.NORMAL
+
+
+def test_adding_article_with_sous_traitant_tariff_choice(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(
+        stack, reference="ART-EAU", prix_vente=Decimal("500000"), prix_sous_traitant=Decimal("400000"),
+    )
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+
+    def fake_exec(self):
+        self.sous_traitant_radio.setChecked(True)
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr("app.views.pages.sales_page.TariffChoiceDialog.exec", fake_exec)
+
+    page.caisse_search_edit.setText("eau")
+    page._on_caisse_search_result_activated(page.caisse_search_results.item(0))
+
+    assert page._caisse_lines[0]["type_tarif"] == TypeTarif.SOUS_TRAITANT
+    assert page._caisse_lines[0]["prix_unitaire"] == Decimal("400000")
+
+
+def test_adding_article_with_autre_price_choice(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(
+        stack, reference="ART-EAU", prix_vente=Decimal("500000"), prix_sous_traitant=Decimal("400000"),
+        prix_autre_min=Decimal("350000"), prix_autre_max=Decimal("550000"),
+    )
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+
+    def fake_exec(self):
+        self.autre_radio.setChecked(True)
+        self.autre_montant_edit.setText("450000")
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr("app.views.pages.sales_page.TariffChoiceDialog.exec", fake_exec)
+
+    page.caisse_search_edit.setText("eau")
+    page._on_caisse_search_result_activated(page.caisse_search_results.item(0))
+
+    assert page._caisse_lines[0]["type_tarif"] == TypeTarif.AUTRE
+    assert page._caisse_lines[0]["prix_unitaire"] == Decimal("450000")
+
+
+def test_cancelling_tariff_choice_adds_no_line(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    _make_article(stack, reference="ART-EAU")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+
+    monkeypatch.setattr(
+        "app.views.pages.sales_page.TariffChoiceDialog.exec", lambda self: QDialog.DialogCode.Rejected
+    )
+
+    page.caisse_search_edit.setText("eau")
+    page._on_caisse_search_result_activated(page.caisse_search_results.item(0))
+
+    assert page._caisse_lines == []
+
+
+def test_scan_prompts_tariff_choice_too(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    article = stack.articles.create_article(
+        "ART-SCAN-TARIF", "Article scanné", stack.categories.create_category("Cat-ScanTarif").id, "unité",
+        Decimal("100"), Decimal("500000"), Decimal("0"), stock_initial=Decimal("10"),
+        code_barres="9998887776", prix_sous_traitant=Decimal("400000"),
+    )
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+
+    def fake_exec(self):
+        self.sous_traitant_radio.setChecked(True)
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr("app.views.pages.sales_page.TariffChoiceDialog.exec", fake_exec)
+
+    page.caisse_scan_edit.setText("9998887776")
+    page._on_caisse_scan_entered()
+
+    assert len(page._caisse_lines) == 1
+    assert page._caisse_lines[0]["type_tarif"] == TypeTarif.SOUS_TRAITANT
+    assert page._caisse_lines[0]["prix_unitaire"] == Decimal("400000")
+
+
+def test_double_click_on_price_cell_reopens_tariff_choice(qtbot, login_as, monkeypatch) -> None:
+    """§2.4 : « la modification du tarif doit être possible avant la
+    validation de la vente »."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(
+        stack, prix_vente=Decimal("500000"), prix_sous_traitant=Decimal("400000"),
+    )
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._add_caisse_line(article.id, "ART-1 — x", Decimal("1"), Decimal("500000"))
+
+    def fake_exec(self):
+        self.sous_traitant_radio.setChecked(True)
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr("app.views.pages.sales_page.TariffChoiceDialog.exec", fake_exec)
+
+    page._on_caisse_price_cell_double_clicked(0, 2)
+
+    assert page._caisse_lines[0]["type_tarif"] == TypeTarif.SOUS_TRAITANT
+    assert page._caisse_lines[0]["prix_unitaire"] == Decimal("400000")
+
+
+def test_double_click_on_non_price_column_does_nothing(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._add_caisse_line(article.id, "ART-1 — x", Decimal("1"), Decimal("150"))
+
+    page._on_caisse_price_cell_double_clicked(0, 1)  # colonne Quantité, jamais Prix (colonne 2)
+
+    assert page._caisse_lines[0]["prix_unitaire"] == Decimal("150")
+    assert page._caisse_lines[0]["type_tarif"] == TypeTarif.NORMAL
+
+
+def test_caisse_values_round_trip_preserves_type_tarif(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(
+        stack, prix_vente=Decimal("500000"), prix_sous_traitant=Decimal("400000"),
+    )
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._add_caisse_line(article.id, "ART-1 — x", Decimal("1"), Decimal("400000"), TypeTarif.SOUS_TRAITANT)
+
+    sale = stack.sales.create_sale(
+        date(2026, 1, 1),
+        [
+            VenteLigneInput(line["article_id"], line["quantite"], line["prix_unitaire"], line["type_tarif"])
+            for line in page._caisse_values()["lignes"]
+        ],
+    )
+
+    assert sale.lignes[0].type_tarif == TypeTarif.SOUS_TRAITANT
+    assert sale.lignes[0].prix_unitaire == Decimal("400000")
+
+
+def test_edit_initial_restores_type_tarif(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(
+        stack, prix_vente=Decimal("500000"), prix_sous_traitant=Decimal("400000"),
+    )
+    sale = stack.sales.create_sale(
+        date(2026, 1, 1),
+        [VenteLigneInput(article.id, Decimal("1"), Decimal("400000"), TypeTarif.SOUS_TRAITANT)],
+    )
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    initial = page._load_edit_initial(sale.id)
+
+    assert initial["lignes"][0]["type_tarif"] == TypeTarif.SOUS_TRAITANT
 
 
 def test_caisse_quantity_edit_updates_total_without_calling_service(qtbot, login_as, monkeypatch) -> None:

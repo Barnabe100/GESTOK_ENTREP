@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog
 
@@ -452,3 +454,98 @@ def test_values_returns_prix_vente_even_when_field_disabled(qtbot) -> None:
 
     assert dialog.prix_vente_edit.isEnabled() is False
     assert dialog.values()["prix_vente"] == "999"
+
+
+# -- Mission 5, §2/§3 : tarifs alternatifs de vente et de location -------------
+
+
+def test_alternative_tariff_fields_empty_by_default(qtbot) -> None:
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, _UNITES, is_edit=False)
+    qtbot.addWidget(dialog)
+
+    for field in (
+        dialog.prix_sous_traitant_edit, dialog.prix_autre_min_edit, dialog.prix_autre_max_edit,
+        dialog.tarif_location_sous_traitant_edit, dialog.tarif_location_autre_min_edit,
+        dialog.tarif_location_autre_max_edit,
+    ):
+        assert field.text() == ""
+
+
+def test_alternative_tariff_fields_prefilled_from_initial(qtbot) -> None:
+    initial = {
+        "reference": "ART-TARIF", "designation": "Article", "category_id": 1,
+        "prix_sous_traitant": Decimal("400000"), "prix_autre_min": Decimal("350000"),
+        "prix_autre_max": Decimal("550000"),
+        "tarif_location_sous_traitant": Decimal("800"), "tarif_location_autre_min": Decimal("700"),
+        "tarif_location_autre_max": Decimal("1100"),
+    }
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, _UNITES, initial, is_edit=True)
+    qtbot.addWidget(dialog)
+
+    assert dialog.prix_sous_traitant_edit.text() == "400000"
+    assert dialog.prix_autre_min_edit.text() == "350000"
+    assert dialog.prix_autre_max_edit.text() == "550000"
+    assert dialog.tarif_location_sous_traitant_edit.text() == "800"
+    assert dialog.tarif_location_autre_min_edit.text() == "700"
+    assert dialog.tarif_location_autre_max_edit.text() == "1100"
+
+
+def test_sale_tariff_fields_follow_prix_vente_enabled_state(qtbot) -> None:
+    """§2/§3 : les tarifs alternatifs de vente suivent le même état que le
+    prix de vente qu'ils complètent (désactivés en mode Location)."""
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, _UNITES, is_edit=False)
+    qtbot.addWidget(dialog)
+
+    assert dialog.prix_sous_traitant_edit.isEnabled() is True
+    assert dialog.prix_autre_min_edit.isEnabled() is True
+    assert dialog.prix_autre_max_edit.isEnabled() is True
+
+    index_location = dialog.mode_gestion_combo.findData(ModeGestionArticle.LOCATION)
+    dialog.mode_gestion_combo.setCurrentIndex(index_location)
+
+    assert dialog.prix_sous_traitant_edit.isEnabled() is False
+    assert dialog.prix_autre_min_edit.isEnabled() is False
+    assert dialog.prix_autre_max_edit.isEnabled() is False
+
+
+def test_rental_tariff_fields_follow_tarif_location_jour_enabled_state(qtbot) -> None:
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, _UNITES, is_edit=False)
+    qtbot.addWidget(dialog)
+
+    assert dialog.tarif_location_sous_traitant_edit.isEnabled() is False
+    assert dialog.tarif_location_autre_min_edit.isEnabled() is False
+    assert dialog.tarif_location_autre_max_edit.isEnabled() is False
+
+    index_location = dialog.mode_gestion_combo.findData(ModeGestionArticle.LOCATION)
+    dialog.mode_gestion_combo.setCurrentIndex(index_location)
+
+    assert dialog.tarif_location_sous_traitant_edit.isEnabled() is True
+    assert dialog.tarif_location_autre_min_edit.isEnabled() is True
+    assert dialog.tarif_location_autre_max_edit.isEnabled() is True
+
+
+def test_alternative_tariff_fields_never_cleared_by_mode_switch(qtbot) -> None:
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, _UNITES, is_edit=False)
+    qtbot.addWidget(dialog)
+    dialog.prix_sous_traitant_edit.setText("400000")
+
+    index_location = dialog.mode_gestion_combo.findData(ModeGestionArticle.LOCATION)
+    dialog.mode_gestion_combo.setCurrentIndex(index_location)
+    index_vente = dialog.mode_gestion_combo.findData(ModeGestionArticle.VENTE)
+    dialog.mode_gestion_combo.setCurrentIndex(index_vente)
+
+    assert dialog.prix_sous_traitant_edit.text() == "400000"
+
+
+def test_values_includes_alternative_tariff_fields(qtbot) -> None:
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, _UNITES, is_edit=False)
+    qtbot.addWidget(dialog)
+    dialog.prix_sous_traitant_edit.setText("400000")
+    dialog.prix_autre_min_edit.setText("350000")
+    dialog.prix_autre_max_edit.setText("550000")
+
+    values = dialog.values()
+
+    assert values["prix_sous_traitant"] == "400000"
+    assert values["prix_autre_min"] == "350000"
+    assert values["prix_autre_max"] == "550000"

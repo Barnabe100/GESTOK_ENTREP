@@ -65,7 +65,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.models.enums import ModeGestionArticle, StatutOperation
+from app.models.enums import ModeGestionArticle, StatutOperation, TypeTarif
 from app.services.articles.article_service import ArticleService
 from app.services.auth.permission_service import PermissionService
 from app.services.clients.client_service import ClientService
@@ -89,6 +89,7 @@ from app.views.common import (
 )
 from app.views.payment_form_dialog import PaymentFormDialog
 from app.views.sale_detail_dialog import SaleDetailDialog
+from app.views.tariff_choice_dialog import TariffChoiceDialog
 
 _COLUMNS = ["Numéro", "Date", "Client", "Créée par", "Total", "Statut"]
 
@@ -463,6 +464,7 @@ class SalesPage(QWidget):
                     "article_label": f"{ligne.article_reference} — {ligne.article_designation}",
                     "quantite": ligne.quantite,
                     "prix_unitaire": ligne.prix_unitaire,
+                    "type_tarif": ligne.type_tarif,
                 }
                 for ligne in sale.lignes
             ],
@@ -525,6 +527,7 @@ class SalesPage(QWidget):
                     article_id=line["article_id"],
                     quantite=line["quantite"],
                     prix_unitaire=line["prix_unitaire"],
+                    type_tarif=line.get("type_tarif", TypeTarif.NORMAL),
                 )
                 for line in values["lignes"]
             ]
@@ -849,6 +852,7 @@ class SalesPage(QWidget):
         self.caisse_search_results.itemDoubleClicked.connect(self._on_caisse_search_result_activated)
         self.caisse_scan_edit.returnPressed.connect(self._on_caisse_scan_entered)
         self.caisse_lines_table.itemChanged.connect(self._on_caisse_line_item_changed)
+        self.caisse_lines_table.cellDoubleClicked.connect(self._on_caisse_price_cell_double_clicked)
         self.caisse_remove_line_button.clicked.connect(self._on_caisse_remove_line_clicked)
 
         return panel
@@ -1032,7 +1036,11 @@ class SalesPage(QWidget):
         if data is None:
             return
         article_id, label, prix_vente = data
-        self._add_caisse_line(article_id, label, Decimal("1"), Decimal(str(prix_vente)))
+        choice = self._prompt_tariff_for_article(article_id, label)
+        if choice is None:
+            return
+        type_tarif, montant = choice
+        self._add_caisse_line(article_id, label, Decimal("1"), montant, type_tarif)
         self.caisse_search_edit.clear()
 
     # -- scan code-barres (lecteur USB « keyboard wedge ») -------------------
@@ -1052,7 +1060,11 @@ class SalesPage(QWidget):
             self._show_scan_rejection_message(code)
             return
         article_id, label, prix_vente = result
-        self._add_caisse_line(article_id, label, Decimal("1"), Decimal(str(prix_vente)))
+        choice = self._prompt_tariff_for_article(article_id, label)
+        if choice is None:
+            return
+        type_tarif, montant = choice
+        self._add_caisse_line(article_id, label, Decimal("1"), montant, type_tarif)
 
     def _show_scan_rejection_message(self, code: str) -> None:
         """Isolé de ``_on_caisse_scan_entered`` (Lot 19) : distingue un
@@ -1077,9 +1089,67 @@ class SalesPage(QWidget):
             f"Aucun article actif ne correspond au code-barres « {code} ».",
         )
 
+    # -- choix du tarif (Mission 5, §2.4) ------------------------------------
+
+    def _prompt_tariff_for_article(
+        self,
+        article_id: int,
+        article_label: str,
+        *,
+        initial_type: TypeTarif = TypeTarif.NORMAL,
+        initial_montant: Optional[Decimal] = None,
+    ) -> Optional[tuple[TypeTarif, Decimal]]:
+        """Ouvre le dialogue partagé de choix du tarif pour l'article donné
+        — prix normal présélectionné par défaut (``initial_type`` ne
+        s'écarte de ce défaut que lors d'une re-sélection sur une ligne déjà
+        choisie, voir ``_on_caisse_price_cell_double_clicked``). Renvoie
+        ``None`` si l'article est introuvable ou si l'utilisateur annule :
+        dans les deux cas, aucune ligne n'est ajoutée/modifiée."""
+        try:
+            article = self._article_service.get_article(article_id)
+        except AppError as exc:
+            QMessageBox.warning(self, "Opération refusée", str(exc))
+            return None
+        dialog = TariffChoiceDialog(
+            article_label, article.prix_vente, article.prix_sous_traitant,
+            article.prix_autre_min, article.prix_autre_max, self._currency_code,
+            initial_type=initial_type, initial_montant=initial_montant, parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return dialog.values()
+
+    def _on_caisse_price_cell_double_clicked(self, row: int, column: int) -> None:
+        """Mission 5, §2.4 : « la modification du tarif doit être possible
+        avant la validation » — la colonne Prix n'a jamais été éditable en
+        place dans ce tableau (contrairement à Quantité), donc ce double-clic
+        rouvre le même dialogue qu'à l'ajout, plutôt que d'introduire une
+        édition de texte libre qui contournerait la validation de
+        l'intervalle « Autre prix »."""
+        if column != 2 or row >= len(self._caisse_lines):
+            return
+        line = self._caisse_lines[row]
+        choice = self._prompt_tariff_for_article(
+            line["article_id"], line["article_label"],
+            initial_type=line.get("type_tarif", TypeTarif.NORMAL), initial_montant=line["prix_unitaire"],
+        )
+        if choice is None:
+            return
+        type_tarif, montant = choice
+        line["type_tarif"] = type_tarif
+        line["prix_unitaire"] = montant
+        self._refresh_caisse_lines_table()
+
     # -- gestion centralisée des lignes --------------------------------------
 
-    def _add_caisse_line(self, article_id: int, article_label: str, quantite: Decimal, prix_unitaire: Decimal) -> None:
+    def _add_caisse_line(
+        self,
+        article_id: int,
+        article_label: str,
+        quantite: Decimal,
+        prix_unitaire: Decimal,
+        type_tarif: TypeTarif = TypeTarif.NORMAL,
+    ) -> None:
         """Point d'entrée unique pour ajouter une ligne à la vente en cours
         de saisie, quelle que soit son origine (recherche ou scan) —
         centralise aussi le recalcul du total. N'appelle jamais de service
@@ -1092,6 +1162,7 @@ class SalesPage(QWidget):
                 "article_label": article_label,
                 "quantite": quantite,
                 "prix_unitaire": prix_unitaire,
+                "type_tarif": type_tarif,
             }
         )
         self._refresh_caisse_lines_table()
@@ -1206,7 +1277,8 @@ class SalesPage(QWidget):
         de la même ligne)."""
         values = self._caisse_values()
         lignes = tuple(
-            (line["article_id"], line["quantite"], line["prix_unitaire"]) for line in values["lignes"]
+            (line["article_id"], line["quantite"], line["prix_unitaire"], line.get("type_tarif", TypeTarif.NORMAL))
+            for line in values["lignes"]
         )
         return (values["date"], values["client_id"], lignes)
 

@@ -6,7 +6,7 @@ import pytest
 
 from app.config.settings import get_settings
 from app.db.session import session_scope
-from app.models.enums import ModeGestionArticle, StatutActifInactif, StatutLocation, TypeMouvement
+from app.models.enums import ModeGestionArticle, StatutActifInactif, StatutLocation, TypeMouvement, TypeTarif
 from app.models.rental import Location
 from app.services.rentals.location_service import LocationLigneInput
 from app.services.sales.sale_service import VenteLigneInput
@@ -19,13 +19,14 @@ def _make_category(stack, nom="Matériel"):
 
 def _make_rental_article(
     stack, reference="ART-LOC", stock_initial=Decimal("10"), tarif_jour=Decimal("500"), category_id=None,
+    **tarif_kwargs,
 ):
     if category_id is None:
         category_id = _make_category(stack, f"Cat-{reference}").id
     article = stack.articles.create_article(
         reference, "Article de location", category_id, "unité",
         Decimal("1000"), Decimal("0"), Decimal("0"),
-        stock_initial=stock_initial, tarif_location_jour=tarif_jour,
+        stock_initial=stock_initial, tarif_location_jour=tarif_jour, **tarif_kwargs,
     )
     stack.articles.switch_mode_gestion(article.id, ModeGestionArticle.LOCATION)
     return stack.articles.get_article(article.id)
@@ -916,3 +917,161 @@ def test_count_returns_in_period_counts_each_return_event_once(login_as) -> None
     )
 
     assert stack.rentals.count_returns_in_period(date(2026, 1, 1), date(2026, 1, 31)) == 2
+
+
+# -- tarifs de location : normal / sous-traitant / autre (Mission 5, §3) -------
+
+
+def test_create_location_defaults_to_normal_tariff(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack, tarif_jour=Decimal("500"))
+    client = _make_client(stack)
+
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("1"))]
+    )
+
+    assert location.lignes[0].type_tarif == TypeTarif.NORMAL
+
+
+def test_create_location_accepts_sous_traitant_tariff(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(
+        stack, tarif_jour=Decimal("1000"), tarif_location_sous_traitant=Decimal("800")
+    )
+    client = _make_client(stack)
+
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id,
+        [LocationLigneInput(article.id, Decimal("1"), Decimal("800"), TypeTarif.SOUS_TRAITANT)],
+    )
+
+    assert location.lignes[0].type_tarif == TypeTarif.SOUS_TRAITANT
+    assert location.lignes[0].tarif_jour == Decimal("800")
+
+
+def test_create_location_rejects_sous_traitant_tariff_when_not_configured(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack, tarif_jour=Decimal("1000"))
+    client = _make_client(stack)
+
+    with pytest.raises(ValidationError):
+        stack.rentals.create_location(
+            date(2026, 1, 1), client.id,
+            [LocationLigneInput(article.id, Decimal("1"), Decimal("800"), TypeTarif.SOUS_TRAITANT)],
+        )
+
+
+def test_create_location_accepts_autre_tariff_inside_interval(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(
+        stack, tarif_jour=Decimal("1000"), tarif_location_sous_traitant=Decimal("800"),
+        tarif_location_autre_min=Decimal("700"), tarif_location_autre_max=Decimal("1100"),
+    )
+    client = _make_client(stack)
+
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id,
+        [LocationLigneInput(article.id, Decimal("1"), Decimal("900"), TypeTarif.AUTRE)],
+    )
+
+    assert location.lignes[0].type_tarif == TypeTarif.AUTRE
+    assert location.lignes[0].tarif_jour == Decimal("900")
+
+
+def test_create_location_accepts_autre_tariff_at_inclusive_bounds(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(
+        stack, tarif_jour=Decimal("1000"), tarif_location_sous_traitant=Decimal("800"),
+        tarif_location_autre_min=Decimal("700"), tarif_location_autre_max=Decimal("1100"),
+    )
+    client = _make_client(stack)
+
+    low_bound = stack.rentals.create_location(
+        date(2026, 1, 1), client.id,
+        [LocationLigneInput(article.id, Decimal("1"), Decimal("700"), TypeTarif.AUTRE)],
+    )
+    high_bound = stack.rentals.create_location(
+        date(2026, 1, 1), client.id,
+        [LocationLigneInput(article.id, Decimal("1"), Decimal("1100"), TypeTarif.AUTRE)],
+    )
+
+    assert low_bound.lignes[0].tarif_jour == Decimal("700")
+    assert high_bound.lignes[0].tarif_jour == Decimal("1100")
+
+
+def test_create_location_rejects_autre_tariff_below_interval(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(
+        stack, tarif_jour=Decimal("1000"), tarif_location_sous_traitant=Decimal("800"),
+        tarif_location_autre_min=Decimal("700"), tarif_location_autre_max=Decimal("1100"),
+    )
+    client = _make_client(stack)
+
+    with pytest.raises(ValidationError):
+        stack.rentals.create_location(
+            date(2026, 1, 1), client.id,
+            [LocationLigneInput(article.id, Decimal("1"), Decimal("699"), TypeTarif.AUTRE)],
+        )
+
+
+def test_create_location_rejects_autre_tariff_above_interval(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(
+        stack, tarif_jour=Decimal("1000"), tarif_location_sous_traitant=Decimal("800"),
+        tarif_location_autre_min=Decimal("700"), tarif_location_autre_max=Decimal("1100"),
+    )
+    client = _make_client(stack)
+
+    with pytest.raises(ValidationError):
+        stack.rentals.create_location(
+            date(2026, 1, 1), client.id,
+            [LocationLigneInput(article.id, Decimal("1"), Decimal("1101"), TypeTarif.AUTRE)],
+        )
+
+
+def test_create_location_rejects_autre_tariff_when_no_interval_configured(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack, tarif_jour=Decimal("1000"))
+    client = _make_client(stack)
+
+    with pytest.raises(ValidationError):
+        stack.rentals.create_location(
+            date(2026, 1, 1), client.id,
+            [LocationLigneInput(article.id, Decimal("1"), Decimal("900"), TypeTarif.AUTRE)],
+        )
+
+
+def test_location_tariff_is_preserved_after_article_tariffs_change_later(login_as) -> None:
+    """§4 : la facturation déjà calculée (LocationRetour.montant_facture,
+    basé sur ``tarif_jour`` historisé) ne doit jamais varier si les tarifs
+    catalogue de l'article changent ensuite."""
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(
+        stack, tarif_jour=Decimal("1000"), tarif_location_sous_traitant=Decimal("800"),
+        tarif_location_autre_min=Decimal("700"), tarif_location_autre_max=Decimal("1100"),
+    )
+    client = _make_client(stack)
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id,
+        [LocationLigneInput(article.id, Decimal("2"), Decimal("900"), TypeTarif.AUTRE)],
+    )
+    confirmed = stack.rentals.confirm_location(location.id)
+    departed = stack.rentals.depart_location(confirmed.id, date(2026, 1, 1))
+    stack.rentals.return_location_line(
+        departed.id, departed.lignes[0].id, date(2026, 1, 3), quantite_bon_etat=Decimal("2"),
+    )
+
+    # L'article change complètement de tarification ensuite.
+    stack.articles.update_article(
+        article.id, article.reference, article.designation, article.category_id, article.unite,
+        article.prix_achat, article.prix_vente, Decimal("0"),
+        tarif_location_jour=Decimal("2000"), tarif_location_sous_traitant=Decimal("1800"),
+        tarif_location_autre_min=Decimal("1700"), tarif_location_autre_max=Decimal("2200"),
+    )
+
+    reloaded = stack.rentals.get_location(departed.id)
+    assert reloaded.lignes[0].type_tarif == TypeTarif.AUTRE
+    assert reloaded.lignes[0].tarif_jour == Decimal("900")
+    # 2 jours (01/01 -> 03/01) * 900 * 2 unités = 3600, jamais recalculé avec le nouveau tarif.
+    assert reloaded.lignes[0].montant_facture_total == Decimal("3600")

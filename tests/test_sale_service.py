@@ -3,7 +3,7 @@ from decimal import Decimal
 
 import pytest
 
-from app.models.enums import StatutOperation, TypeMouvement
+from app.models.enums import StatutOperation, TypeMouvement, TypeTarif
 from app.services.sales.sale_service import VenteLigneInput
 from app.services.stock.stock_service import StockService
 from app.utils.exceptions import ConflictError, NotFoundError, PermissionDeniedError, ValidationError
@@ -14,13 +14,13 @@ def _make_category(stack, nom="Boissons"):
 
 
 def _make_article(stack, reference="ART-0001", stock_initial=Decimal("0"), category_id=None,
-                   cmup=None, prix_vente=Decimal("150")):
+                   cmup=None, prix_vente=Decimal("150"), **tarif_kwargs):
     if category_id is None:
         category_id = _make_category(stack).id
     return stack.articles.create_article(
         reference, "Article de test", category_id, "unité",
         cmup if cmup is not None else Decimal("100"), prix_vente,
-        Decimal("0"), stock_initial=stock_initial,
+        Decimal("0"), stock_initial=stock_initial, **tarif_kwargs,
     )
 
 
@@ -1306,3 +1306,153 @@ def test_consultation_can_view_sales_but_not_create(login_as) -> None:
     assert stack.sales.list_sales() != []
     with pytest.raises(PermissionDeniedError):
         stack.sales.create_sale(date.today(), [])
+
+
+# -- tarifs de vente : normal / sous-traitant / autre (Mission 5, §2) ----------
+
+
+def test_create_sale_defaults_to_normal_tariff(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("10"), prix_vente=Decimal("150"))
+
+    sale = stack.sales.create_sale(
+        date.today(), [VenteLigneInput(article.id, Decimal("1"), Decimal("150"))]
+    )
+
+    assert sale.lignes[0].type_tarif == TypeTarif.NORMAL
+
+
+def test_create_sale_accepts_sous_traitant_tariff(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(
+        stack, stock_initial=Decimal("10"), prix_vente=Decimal("500000"),
+        prix_sous_traitant=Decimal("400000"),
+    )
+
+    sale = stack.sales.create_sale(
+        date.today(),
+        [VenteLigneInput(article.id, Decimal("1"), Decimal("400000"), TypeTarif.SOUS_TRAITANT)],
+    )
+
+    assert sale.lignes[0].type_tarif == TypeTarif.SOUS_TRAITANT
+    assert sale.lignes[0].prix_unitaire == Decimal("400000")
+
+
+def test_create_sale_rejects_sous_traitant_tariff_when_not_configured(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("10"), prix_vente=Decimal("500000"))
+
+    with pytest.raises(ValidationError):
+        stack.sales.create_sale(
+            date.today(),
+            [VenteLigneInput(article.id, Decimal("1"), Decimal("400000"), TypeTarif.SOUS_TRAITANT)],
+        )
+
+
+def test_create_sale_accepts_autre_price_inside_interval(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(
+        stack, stock_initial=Decimal("10"), prix_vente=Decimal("500000"),
+        prix_sous_traitant=Decimal("400000"), prix_autre_min=Decimal("350000"),
+        prix_autre_max=Decimal("550000"),
+    )
+
+    sale = stack.sales.create_sale(
+        date.today(),
+        [VenteLigneInput(article.id, Decimal("1"), Decimal("450000"), TypeTarif.AUTRE)],
+    )
+
+    assert sale.lignes[0].type_tarif == TypeTarif.AUTRE
+    assert sale.lignes[0].prix_unitaire == Decimal("450000")
+    assert sale.total == Decimal("450000")
+
+
+def test_create_sale_accepts_autre_price_at_inclusive_bounds(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(
+        stack, stock_initial=Decimal("10"), prix_vente=Decimal("500000"),
+        prix_sous_traitant=Decimal("400000"), prix_autre_min=Decimal("350000"),
+        prix_autre_max=Decimal("550000"),
+    )
+
+    low_bound = stack.sales.create_sale(
+        date.today(), [VenteLigneInput(article.id, Decimal("1"), Decimal("350000"), TypeTarif.AUTRE)]
+    )
+    high_bound = stack.sales.create_sale(
+        date.today(), [VenteLigneInput(article.id, Decimal("1"), Decimal("550000"), TypeTarif.AUTRE)]
+    )
+
+    assert low_bound.lignes[0].prix_unitaire == Decimal("350000")
+    assert high_bound.lignes[0].prix_unitaire == Decimal("550000")
+
+
+def test_create_sale_rejects_autre_price_below_interval(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(
+        stack, stock_initial=Decimal("10"), prix_vente=Decimal("500000"),
+        prix_sous_traitant=Decimal("400000"), prix_autre_min=Decimal("350000"),
+        prix_autre_max=Decimal("550000"),
+    )
+
+    with pytest.raises(ValidationError):
+        stack.sales.create_sale(
+            date.today(),
+            [VenteLigneInput(article.id, Decimal("1"), Decimal("349999"), TypeTarif.AUTRE)],
+        )
+
+
+def test_create_sale_rejects_autre_price_above_interval(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(
+        stack, stock_initial=Decimal("10"), prix_vente=Decimal("500000"),
+        prix_sous_traitant=Decimal("400000"), prix_autre_min=Decimal("350000"),
+        prix_autre_max=Decimal("550000"),
+    )
+
+    with pytest.raises(ValidationError):
+        stack.sales.create_sale(
+            date.today(),
+            [VenteLigneInput(article.id, Decimal("1"), Decimal("550001"), TypeTarif.AUTRE)],
+        )
+
+
+def test_create_sale_rejects_autre_price_when_no_interval_configured(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("10"), prix_vente=Decimal("500000"))
+
+    with pytest.raises(ValidationError):
+        stack.sales.create_sale(
+            date.today(),
+            [VenteLigneInput(article.id, Decimal("1"), Decimal("450000"), TypeTarif.AUTRE)],
+        )
+
+
+def test_sale_tariff_is_preserved_after_article_prices_change_later(login_as) -> None:
+    """§4 : une modification ultérieure des tarifs de l'article ne doit
+    jamais modifier une vente déjà validée — ``type_tarif`` et
+    ``prix_unitaire`` restent ceux réellement appliqués au moment de la
+    vente."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(
+        stack, stock_initial=Decimal("10"), prix_vente=Decimal("500000"),
+        prix_sous_traitant=Decimal("400000"), prix_autre_min=Decimal("350000"),
+        prix_autre_max=Decimal("550000"),
+    )
+    sale = stack.sales.create_sale(
+        date.today(),
+        [VenteLigneInput(article.id, Decimal("1"), Decimal("450000"), TypeTarif.AUTRE)],
+    )
+    validated = stack.sales.validate_sale(sale.id)
+
+    # L'article change complètement de tarification ensuite.
+    stack.articles.update_article(
+        article.id, article.reference, article.designation, article.category_id, article.unite,
+        article.prix_achat, Decimal("700000"), Decimal("0"),
+        prix_sous_traitant=Decimal("650000"), prix_autre_min=Decimal("600000"),
+        prix_autre_max=Decimal("800000"),
+    )
+
+    reloaded = stack.sales.get_sale(validated.id)
+    assert reloaded.lignes[0].type_tarif == TypeTarif.AUTRE
+    assert reloaded.lignes[0].prix_unitaire == Decimal("450000")
+    assert reloaded.total == Decimal("450000")

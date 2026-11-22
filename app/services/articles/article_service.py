@@ -86,6 +86,17 @@ class ArticleSummary:
     # n'a jamais été configuré pour la location.
     mode_gestion: ModeGestionArticle = ModeGestionArticle.VENTE
     tarif_location_jour: Optional[Decimal] = None
+    # Mission 5 (§2/§3) : tarifs alternatifs de vente et de location, tous
+    # None tant qu'ils n'ont jamais été configurés (aucun article existant
+    # avant cette mission n'en a). ``prix_autre_min``/``prix_autre_max``
+    # (et leurs équivalents location) ne sont significatifs qu'ensemble —
+    # voir ``_validate_tariff_interval``.
+    prix_sous_traitant: Optional[Decimal] = None
+    prix_autre_min: Optional[Decimal] = None
+    prix_autre_max: Optional[Decimal] = None
+    tarif_location_sous_traitant: Optional[Decimal] = None
+    tarif_location_autre_min: Optional[Decimal] = None
+    tarif_location_autre_max: Optional[Decimal] = None
 
     @property
     def en_rupture(self) -> bool:
@@ -124,6 +135,12 @@ class ArticleSummary:
             date_modification=article.date_modification,
             mode_gestion=article.mode_gestion,
             tarif_location_jour=article.tarif_location_jour,
+            prix_sous_traitant=article.prix_sous_traitant,
+            prix_autre_min=article.prix_autre_min,
+            prix_autre_max=article.prix_autre_max,
+            tarif_location_sous_traitant=article.tarif_location_sous_traitant,
+            tarif_location_autre_min=article.tarif_location_autre_min,
+            tarif_location_autre_max=article.tarif_location_autre_max,
         )
 
 
@@ -169,6 +186,50 @@ def _validate_optional_quantity(value: Optional[Decimal], field_label: str) -> O
     if value is None:
         return None
     return _validate_quantity(value, field_label)
+
+
+def _validate_tariff_interval(
+    *,
+    prix_normal: Optional[Decimal],
+    prix_sous_traitant: Optional[Decimal],
+    intervalle_min: Optional[Decimal],
+    intervalle_max: Optional[Decimal],
+    label: str,
+) -> None:
+    """Règle commune aux 3 tarifs de vente et aux 3 tarifs de location
+    (Mission 5, §2.2/§3) : ``intervalle_min``/``intervalle_max`` ne forment
+    jamais un prix fixe, mais l'intervalle autorisé pour un montant
+    personnalisé (« Autre prix »/« Autre tarif ») librement choisi ensuite
+    lors d'une vente/location — voir ``SaleService``/``LocationService``.
+
+    Règles formelles (bornes inclusives) :
+    - les deux bornes sont fournies ensemble, ou aucune (un intervalle
+      « à moitié configuré » n'a pas de sens) ;
+    - le prix sous-traitant doit être défini avant de configurer
+      l'intervalle (sert de référence au début de l'intervalle) ;
+    - début de l'intervalle <= prix sous-traitant ;
+    - fin de l'intervalle >= prix normal.
+    """
+    if (intervalle_min is None) != (intervalle_max is None):
+        raise ValidationError(
+            f"L'intervalle {label} doit être défini par ses deux bornes (début et fin), ou aucune des deux."
+        )
+    if intervalle_min is None:
+        return
+    if prix_sous_traitant is None:
+        raise ValidationError(
+            f"Le prix sous-traitant {label} doit être défini avant de configurer son intervalle."
+        )
+    if prix_normal is None:
+        raise ValidationError(f"Le prix normal {label} doit être défini avant de configurer son intervalle.")
+    if intervalle_min > intervalle_max:
+        raise ValidationError(f"Le début de l'intervalle {label} doit être inférieur ou égal à sa fin.")
+    if intervalle_min > prix_sous_traitant:
+        raise ValidationError(
+            f"Le début de l'intervalle {label} doit être inférieur ou égal au prix sous-traitant."
+        )
+    if intervalle_max < prix_normal:
+        raise ValidationError(f"La fin de l'intervalle {label} doit être supérieure ou égale au prix normal.")
 
 
 class ArticleService:
@@ -248,6 +309,12 @@ class ArticleService:
         code_barres: Optional[str] = None,
         stock_initial: Decimal = Decimal("0"),
         tarif_location_jour: Optional[Decimal] = None,
+        prix_sous_traitant: Optional[Decimal] = None,
+        prix_autre_min: Optional[Decimal] = None,
+        prix_autre_max: Optional[Decimal] = None,
+        tarif_location_sous_traitant: Optional[Decimal] = None,
+        tarif_location_autre_min: Optional[Decimal] = None,
+        tarif_location_autre_max: Optional[Decimal] = None,
     ) -> ArticleSummary:
         """Crée un article. ``stock_initial`` n'est pas une écriture directe du
         stock : s'il est positif, un mouvement d'ajustement traçable est créé
@@ -256,7 +323,12 @@ class ArticleService:
         l'absence de tout historique. ``mode_gestion`` démarre toujours à
         VENTE (voir ``switch_mode_gestion`` pour la bascule vers LOCATION,
         lot dédié) ; ``tarif_location_jour`` peut néanmoins être pré-rempli
-        dès la création, sans effet tant que l'article reste en mode VENTE."""
+        dès la création, sans effet tant que l'article reste en mode VENTE.
+
+        Mission 5 (§2/§3) : les tarifs alternatifs (sous-traitant, intervalle
+        « autre ») sont entièrement facultatifs à la création — aucune
+        valeur n'est jamais déduite automatiquement de ``prix_vente``/
+        ``tarif_location_jour`` (voir ``_validate_tariff_interval``)."""
         self._permissions.require_permission("ARTICLE_CREATE")
 
         reference = _validate_text(reference, "référence", MAX_REFERENCE_LENGTH)
@@ -273,6 +345,32 @@ class ArticleService:
         code_barres = _validate_optional_text(code_barres, "code-barres", MAX_BARCODE_LENGTH)
         stock_initial = _validate_quantity(stock_initial, "stock initial")
         tarif_location_jour = _validate_optional_money(tarif_location_jour, "tarif de location journalier")
+        prix_sous_traitant = _validate_optional_money(prix_sous_traitant, "prix sous-traitant")
+        prix_autre_min = _validate_optional_money(prix_autre_min, "début de l'intervalle (autre prix)")
+        prix_autre_max = _validate_optional_money(prix_autre_max, "fin de l'intervalle (autre prix)")
+        tarif_location_sous_traitant = _validate_optional_money(
+            tarif_location_sous_traitant, "tarif de location sous-traitant"
+        )
+        tarif_location_autre_min = _validate_optional_money(
+            tarif_location_autre_min, "début de l'intervalle (autre tarif de location)"
+        )
+        tarif_location_autre_max = _validate_optional_money(
+            tarif_location_autre_max, "fin de l'intervalle (autre tarif de location)"
+        )
+        _validate_tariff_interval(
+            prix_normal=prix_vente,
+            prix_sous_traitant=prix_sous_traitant,
+            intervalle_min=prix_autre_min,
+            intervalle_max=prix_autre_max,
+            label="de vente (autre prix)",
+        )
+        _validate_tariff_interval(
+            prix_normal=tarif_location_jour,
+            prix_sous_traitant=tarif_location_sous_traitant,
+            intervalle_min=tarif_location_autre_min,
+            intervalle_max=tarif_location_autre_max,
+            label="de location (autre tarif)",
+        )
 
         acting_user_id = self._acting_user_id()
 
@@ -323,6 +421,12 @@ class ArticleService:
                 code_barres=code_barres,
                 statut=StatutActifInactif.ACTIF,
                 tarif_location_jour=tarif_location_jour,
+                prix_sous_traitant=prix_sous_traitant,
+                prix_autre_min=prix_autre_min,
+                prix_autre_max=prix_autre_max,
+                tarif_location_sous_traitant=tarif_location_sous_traitant,
+                tarif_location_autre_min=tarif_location_autre_min,
+                tarif_location_autre_max=tarif_location_autre_max,
             )
             session.add(article)
             try:
@@ -366,13 +470,24 @@ class ArticleService:
         description=_UNSET,
         code_barres=_UNSET,
         tarif_location_jour=_UNSET,
+        prix_sous_traitant=_UNSET,
+        prix_autre_min=_UNSET,
+        prix_autre_max=_UNSET,
+        tarif_location_sous_traitant=_UNSET,
+        tarif_location_autre_min=_UNSET,
+        tarif_location_autre_max=_UNSET,
     ) -> ArticleSummary:
         """Modifie un article. N'accepte volontairement aucun paramètre
         ``stock_actuel`` ni ``cout_moyen_pondere`` : ces valeurs restent
         pilotées exclusivement par les opérations de stock, ni aucun
         paramètre ``mode_gestion`` (voir ``switch_mode_gestion``, auditée et
         historisée séparément). Les champs optionnels non fournis conservent
-        leur valeur actuelle."""
+        leur valeur actuelle — y compris les tarifs alternatifs (Mission 5,
+        §2/§3) : modifier ``prix_vente``/``tarif_location_jour`` seul, sans
+        toucher à l'intervalle existant, reste possible tant que l'intervalle
+        déjà en place reste cohérent avec la nouvelle valeur (sinon refusé
+        avec un message explicite — jamais un ajustement automatique et
+        silencieux de l'intervalle)."""
         self._permissions.require_permission("ARTICLE_UPDATE")
 
         reference = _validate_text(reference, "référence", MAX_REFERENCE_LENGTH)
@@ -391,6 +506,24 @@ class ArticleService:
             code_barres = _validate_optional_text(code_barres, "code-barres", MAX_BARCODE_LENGTH)
         if tarif_location_jour is not _UNSET:
             tarif_location_jour = _validate_optional_money(tarif_location_jour, "tarif de location journalier")
+        if prix_sous_traitant is not _UNSET:
+            prix_sous_traitant = _validate_optional_money(prix_sous_traitant, "prix sous-traitant")
+        if prix_autre_min is not _UNSET:
+            prix_autre_min = _validate_optional_money(prix_autre_min, "début de l'intervalle (autre prix)")
+        if prix_autre_max is not _UNSET:
+            prix_autre_max = _validate_optional_money(prix_autre_max, "fin de l'intervalle (autre prix)")
+        if tarif_location_sous_traitant is not _UNSET:
+            tarif_location_sous_traitant = _validate_optional_money(
+                tarif_location_sous_traitant, "tarif de location sous-traitant"
+            )
+        if tarif_location_autre_min is not _UNSET:
+            tarif_location_autre_min = _validate_optional_money(
+                tarif_location_autre_min, "début de l'intervalle (autre tarif de location)"
+            )
+        if tarif_location_autre_max is not _UNSET:
+            tarif_location_autre_max = _validate_optional_money(
+                tarif_location_autre_max, "fin de l'intervalle (autre tarif de location)"
+            )
 
         with session_scope(self._settings) as session:
             article_repo = ArticleRepository(session)
@@ -443,6 +576,48 @@ class ArticleService:
             if effective_stock_max is not None and effective_stock_max < stock_min:
                 raise ValidationError("Le stock maximum doit être supérieur ou égal au stock minimum.")
 
+            effective_tarif_location_jour = (
+                tarif_location_jour if tarif_location_jour is not _UNSET else article.tarif_location_jour
+            )
+            effective_prix_sous_traitant = (
+                prix_sous_traitant if prix_sous_traitant is not _UNSET else article.prix_sous_traitant
+            )
+            effective_prix_autre_min = (
+                prix_autre_min if prix_autre_min is not _UNSET else article.prix_autre_min
+            )
+            effective_prix_autre_max = (
+                prix_autre_max if prix_autre_max is not _UNSET else article.prix_autre_max
+            )
+            effective_tarif_location_sous_traitant = (
+                tarif_location_sous_traitant
+                if tarif_location_sous_traitant is not _UNSET
+                else article.tarif_location_sous_traitant
+            )
+            effective_tarif_location_autre_min = (
+                tarif_location_autre_min
+                if tarif_location_autre_min is not _UNSET
+                else article.tarif_location_autre_min
+            )
+            effective_tarif_location_autre_max = (
+                tarif_location_autre_max
+                if tarif_location_autre_max is not _UNSET
+                else article.tarif_location_autre_max
+            )
+            _validate_tariff_interval(
+                prix_normal=prix_vente,
+                prix_sous_traitant=effective_prix_sous_traitant,
+                intervalle_min=effective_prix_autre_min,
+                intervalle_max=effective_prix_autre_max,
+                label="de vente (autre prix)",
+            )
+            _validate_tariff_interval(
+                prix_normal=effective_tarif_location_jour,
+                prix_sous_traitant=effective_tarif_location_sous_traitant,
+                intervalle_min=effective_tarif_location_autre_min,
+                intervalle_max=effective_tarif_location_autre_max,
+                label="de location (autre tarif)",
+            )
+
             article.reference = reference
             article.designation = designation
             article.category_id = category_id
@@ -462,6 +637,18 @@ class ArticleService:
                 article.code_barres = code_barres
             if tarif_location_jour is not _UNSET:
                 article.tarif_location_jour = tarif_location_jour
+            if prix_sous_traitant is not _UNSET:
+                article.prix_sous_traitant = prix_sous_traitant
+            if prix_autre_min is not _UNSET:
+                article.prix_autre_min = prix_autre_min
+            if prix_autre_max is not _UNSET:
+                article.prix_autre_max = prix_autre_max
+            if tarif_location_sous_traitant is not _UNSET:
+                article.tarif_location_sous_traitant = tarif_location_sous_traitant
+            if tarif_location_autre_min is not _UNSET:
+                article.tarif_location_autre_min = tarif_location_autre_min
+            if tarif_location_autre_max is not _UNSET:
+                article.tarif_location_autre_max = tarif_location_autre_max
 
             try:
                 session.flush()

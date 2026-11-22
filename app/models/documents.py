@@ -7,7 +7,7 @@ from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
-from app.models.enums import StatutOperation, StatutPaiement
+from app.models.enums import StatutOperation, StatutPaiement, TypeTarif
 from app.models.mixins import TimestampMixin
 from app.models.types import MONEY, QUANTITY
 
@@ -17,6 +17,7 @@ _STATUT_OPERATION_TYPE = SAEnum(
 _STATUT_PAIEMENT_TYPE = SAEnum(
     StatutPaiement, native_enum=False, length=25, name="statut_paiement"
 )
+_TYPE_TARIF_TYPE = SAEnum(TypeTarif, native_enum=False, length=20, name="type_tarif")
 
 
 class Entree(TimestampMixin, Base):
@@ -170,6 +171,12 @@ class VenteLigne(Base):
     quantite: Mapped[Decimal] = mapped_column(QUANTITY, nullable=False)
     prix_unitaire: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
     sous_total: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    # Mission 5 (§4) : type de tarif réellement choisi — NORMAL pour toute
+    # ligne antérieure à cette mission (server_default, voir migration),
+    # jamais recalculé si les tarifs catalogue de l'article changent ensuite.
+    type_tarif: Mapped[TypeTarif] = mapped_column(
+        _TYPE_TARIF_TYPE, default=TypeTarif.NORMAL, nullable=False
+    )
 
     vente: Mapped["Vente"] = relationship("Vente", back_populates="lignes")
     article: Mapped["Article"] = relationship("Article")

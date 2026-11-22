@@ -334,6 +334,12 @@ class ArticlesPage(QWidget):
             "description": full.description,
             "tarif_location_jour": full.tarif_location_jour,
             "mode_gestion": full.mode_gestion,
+            "prix_sous_traitant": full.prix_sous_traitant,
+            "prix_autre_min": full.prix_autre_min,
+            "prix_autre_max": full.prix_autre_max,
+            "tarif_location_sous_traitant": full.tarif_location_sous_traitant,
+            "tarif_location_autre_min": full.tarif_location_autre_min,
+            "tarif_location_autre_max": full.tarif_location_autre_max,
         }
 
     def _open_form(
@@ -460,6 +466,27 @@ class ArticlesPage(QWidget):
             tarif_location_jour = parse_optional_decimal(
                 values.get("tarif_location_jour", ""), "tarif de location journalier"
             )
+            # Mission 5, §2/§3 : tarifs alternatifs — la validation croisée
+            # réelle (bornes, cohérence avec le prix normal/sous-traitant)
+            # vit entièrement dans ArticleService, jamais ici.
+            prix_sous_traitant = parse_optional_decimal(
+                values.get("prix_sous_traitant", ""), "prix sous-traitant"
+            )
+            prix_autre_min = parse_optional_decimal(
+                values.get("prix_autre_min", ""), "début de l'intervalle (autre prix)"
+            )
+            prix_autre_max = parse_optional_decimal(
+                values.get("prix_autre_max", ""), "fin de l'intervalle (autre prix)"
+            )
+            tarif_location_sous_traitant = parse_optional_decimal(
+                values.get("tarif_location_sous_traitant", ""), "tarif de location sous-traitant"
+            )
+            tarif_location_autre_min = parse_optional_decimal(
+                values.get("tarif_location_autre_min", ""), "début de l'intervalle (autre tarif de location)"
+            )
+            tarif_location_autre_max = parse_optional_decimal(
+                values.get("tarif_location_autre_max", ""), "fin de l'intervalle (autre tarif de location)"
+            )
             mode_gestion = values.get("mode_gestion")
             if mode_gestion == ModeGestionArticle.LOCATION and (
                 tarif_location_jour is None or tarif_location_jour <= 0
@@ -485,6 +512,12 @@ class ArticlesPage(QWidget):
                     code_barres=values["code_barres"],
                     stock_initial=stock_initial,
                     tarif_location_jour=tarif_location_jour,
+                    prix_sous_traitant=prix_sous_traitant,
+                    prix_autre_min=prix_autre_min,
+                    prix_autre_max=prix_autre_max,
+                    tarif_location_sous_traitant=tarif_location_sous_traitant,
+                    tarif_location_autre_min=tarif_location_autre_min,
+                    tarif_location_autre_max=tarif_location_autre_max,
                 )
                 action_label = "créé"
             else:
@@ -503,6 +536,12 @@ class ArticlesPage(QWidget):
                     description=values["description"],
                     code_barres=values["code_barres"],
                     tarif_location_jour=tarif_location_jour,
+                    prix_sous_traitant=prix_sous_traitant,
+                    prix_autre_min=prix_autre_min,
+                    prix_autre_max=prix_autre_max,
+                    tarif_location_sous_traitant=tarif_location_sous_traitant,
+                    tarif_location_autre_min=tarif_location_autre_min,
+                    tarif_location_autre_max=tarif_location_autre_max,
                 )
                 action_label = "modifié"
         except AppError as exc:

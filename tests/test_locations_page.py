@@ -2,32 +2,41 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QDialog, QMessageBox
 
-from app.models.enums import ModeGestionArticle, StatutLocation
+from app.models.enums import ModeGestionArticle, StatutLocation, TypeTarif
 from app.services.rentals.location_service import LocationLigneInput
 from app.views.pages.locations_page import (
     _CAISSE_QUANTITY_COLUMN,
     _CAISSE_TARIF_COLUMN,
     LocationsPage,
 )
+from app.views.tariff_choice_dialog import TariffChoiceDialog
 
 
 @pytest.fixture(autouse=True)
 def _no_blocking_dialogs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("app.views.pages.locations_page.QMessageBox.information", lambda *a, **k: None)
     monkeypatch.setattr("app.views.pages.locations_page.QMessageBox.warning", lambda *a, **k: None)
+    # Mission 5, §3.1 : accepte immédiatement le tarif normal présélectionné
+    # (comportement identique à avant l'introduction de ce dialogue) — voir
+    # le même principe dans tests/test_sales_page.py.
+    monkeypatch.setattr(
+        "app.views.pages.locations_page.TariffChoiceDialog.exec", lambda self: QDialog.DialogCode.Accepted
+    )
 
 
 def _build_page(stack) -> LocationsPage:
     return LocationsPage(stack.rentals, stack.articles, stack.clients, stack.permissions)
 
 
-def _make_rental_article(stack, reference="ART-LOC", stock_initial=Decimal("10"), tarif_jour=Decimal("500")):
+def _make_rental_article(
+    stack, reference="ART-LOC", stock_initial=Decimal("10"), tarif_jour=Decimal("500"), **tarif_kwargs
+):
     category = stack.categories.create_category(f"Cat-{reference}")
     article = stack.articles.create_article(
         reference, "Article de location", category.id, "unité",
-        Decimal("1000"), Decimal("0"), Decimal("0"),
+        Decimal("1000"), Decimal("0"), Decimal("0"), **tarif_kwargs,
         stock_initial=stock_initial, tarif_location_jour=tarif_jour,
     )
     stack.articles.switch_mode_gestion(article.id, ModeGestionArticle.LOCATION)
@@ -748,6 +757,155 @@ def test_caisse_scan_rejects_sale_mode_article(qtbot, login_as) -> None:
     page._on_caisse_scan_entered()
 
     assert page._caisse_lines == []
+
+
+# -- choix du tarif à l'ajout d'une ligne (Mission 5, §3.1) --------------------
+
+
+def test_adding_article_defaults_to_normal_tariff(qtbot, login_as) -> None:
+    """Fixture ``_no_blocking_dialogs`` : accepte immédiatement le tarif
+    normal présélectionné par défaut."""
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack, tarif_jour=Decimal("500"))
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+
+    page.caisse_search_edit.setText(article.reference)
+    item = page.caisse_search_results.item(0)
+    page._on_caisse_search_result_activated(item)
+
+    assert page._caisse_lines[0]["tarif_jour"] == Decimal("500")
+    assert page._caisse_lines[0]["type_tarif"] == TypeTarif.NORMAL
+
+
+def test_adding_article_with_sous_traitant_tariff_choice(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(
+        stack, tarif_jour=Decimal("1000"), tarif_location_sous_traitant=Decimal("800"),
+    )
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+
+    def fake_exec(self):
+        self.sous_traitant_radio.setChecked(True)
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr("app.views.pages.locations_page.TariffChoiceDialog.exec", fake_exec)
+
+    page.caisse_search_edit.setText(article.reference)
+    page._on_caisse_search_result_activated(page.caisse_search_results.item(0))
+
+    assert page._caisse_lines[0]["type_tarif"] == TypeTarif.SOUS_TRAITANT
+    assert page._caisse_lines[0]["tarif_jour"] == Decimal("800")
+
+
+def test_adding_article_with_autre_tariff_choice(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(
+        stack, tarif_jour=Decimal("1000"), tarif_location_sous_traitant=Decimal("800"),
+        tarif_location_autre_min=Decimal("700"), tarif_location_autre_max=Decimal("1100"),
+    )
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+
+    def fake_exec(self):
+        self.autre_radio.setChecked(True)
+        self.autre_montant_edit.setText("900")
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr("app.views.pages.locations_page.TariffChoiceDialog.exec", fake_exec)
+
+    page.caisse_search_edit.setText(article.reference)
+    page._on_caisse_search_result_activated(page.caisse_search_results.item(0))
+
+    assert page._caisse_lines[0]["type_tarif"] == TypeTarif.AUTRE
+    assert page._caisse_lines[0]["tarif_jour"] == Decimal("900")
+
+
+def test_cancelling_tariff_choice_adds_no_line(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+
+    monkeypatch.setattr(
+        "app.views.pages.locations_page.TariffChoiceDialog.exec", lambda self: QDialog.DialogCode.Rejected
+    )
+
+    page.caisse_search_edit.setText(article.reference)
+    page._on_caisse_search_result_activated(page.caisse_search_results.item(0))
+
+    assert page._caisse_lines == []
+
+
+def test_scan_prompts_tariff_choice_too(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(
+        stack, tarif_jour=Decimal("1000"), tarif_location_sous_traitant=Decimal("800"),
+    )
+    stack.articles.update_article(
+        article.id, article.reference, article.designation, article.category_id, article.unite,
+        article.prix_achat, article.prix_vente, article.stock_min, code_barres="1112223334",
+    )
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+
+    def fake_exec(self):
+        self.sous_traitant_radio.setChecked(True)
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr("app.views.pages.locations_page.TariffChoiceDialog.exec", fake_exec)
+
+    page.caisse_scan_edit.setText("1112223334")
+    page._on_caisse_scan_entered()
+
+    assert page._caisse_lines[0]["type_tarif"] == TypeTarif.SOUS_TRAITANT
+    assert page._caisse_lines[0]["tarif_jour"] == Decimal("800")
+
+
+def test_caisse_values_round_trip_preserves_type_tarif(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(
+        stack, tarif_jour=Decimal("1000"), tarif_location_sous_traitant=Decimal("800"),
+    )
+    client = stack.clients.create_client("Client")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._add_caisse_line(article.id, "ART — x", Decimal("1"), Decimal("800"), TypeTarif.SOUS_TRAITANT)
+
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id,
+        [
+            LocationLigneInput(line["article_id"], line["quantite"], line["tarif_jour"], line["type_tarif"])
+            for line in page._caisse_values()["lignes"]
+        ],
+    )
+
+    assert location.lignes[0].type_tarif == TypeTarif.SOUS_TRAITANT
+    assert location.lignes[0].tarif_jour == Decimal("800")
+
+
+def test_edit_initial_restores_type_tarif(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(
+        stack, tarif_jour=Decimal("1000"), tarif_location_sous_traitant=Decimal("800"),
+    )
+    client = stack.clients.create_client("Client")
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id,
+        [LocationLigneInput(article.id, Decimal("1"), Decimal("800"), TypeTarif.SOUS_TRAITANT)],
+    )
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    initial = page._load_edit_initial(location.id)
+
+    assert initial["lignes"][0]["type_tarif"] == TypeTarif.SOUS_TRAITANT
 
 
 def test_caisse_remove_line_clears_cart(qtbot, login_as) -> None:

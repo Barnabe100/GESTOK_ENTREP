@@ -222,6 +222,52 @@ def test_submit_form_creates_article_with_initial_stock(qtbot, login_as) -> None
     assert created.cout_moyen_pondere == Decimal("100")
 
 
+def test_submit_form_creates_article_with_alternative_tariffs(qtbot, login_as) -> None:
+    """Mission 5, §2/§3 : le formulaire transmet bien les 6 nouveaux champs
+    tarifaires au service, qui effectue la validation croisée réelle."""
+    stack, _ = login_as("Administrateur")
+    category = stack.categories.create_category("Matériel")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    values = {
+        "reference": "ART-TARIFSUBMIT", "designation": "Article", "category_id": category.id,
+        "fournisseur_principal_id": None, "unite": "unité",
+        "prix_achat": "200", "prix_vente": "500000", "stock_min": "0", "stock_max": "",
+        "emplacement": "", "code_barres": "", "description": "", "stock_initial": "0",
+        "prix_sous_traitant": "400000", "prix_autre_min": "350000", "prix_autre_max": "550000",
+    }
+
+    result = page._submit_form(None, values)
+    page.refresh()
+
+    assert result is True
+    created = stack.articles.list_articles(search="ART-TARIFSUBMIT")[0]
+    assert created.prix_sous_traitant == Decimal("400000")
+    assert created.prix_autre_min == Decimal("350000")
+    assert created.prix_autre_max == Decimal("550000")
+
+
+def test_submit_form_shows_error_on_invalid_tariff_interval(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    category = stack.categories.create_category("Matériel")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    values = {
+        "reference": "ART-TARIFBAD", "designation": "Article", "category_id": category.id,
+        "fournisseur_principal_id": None, "unite": "unité",
+        "prix_achat": "200", "prix_vente": "500000", "stock_min": "0", "stock_max": "",
+        "emplacement": "", "code_barres": "", "description": "", "stock_initial": "0",
+        "prix_sous_traitant": "400000", "prix_autre_min": "450000", "prix_autre_max": "550000",
+    }
+
+    result = page._submit_form(None, values)
+
+    assert result is False
+    assert stack.articles.list_articles(search="ART-TARIFBAD") == []
+
+
 def test_submit_form_shows_error_on_duplicate_reference(qtbot, login_as) -> None:
     stack, _ = login_as("Administrateur")
     category = stack.categories.create_category("Boissons")

@@ -981,3 +981,259 @@ def test_inactive_article_excluded_when_include_inactive_false(login_as) -> None
     references = {a.reference for a in active_only}
     assert "ART-VISIBLE" in references
     assert "ART-HIDDEN" not in references
+
+
+# -- tarifs de vente et de location (Mission 5, §2/§3) -------------------------
+
+
+def test_create_article_with_valid_sale_tariffs(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    category = _make_category(stack)
+
+    article = stack.articles.create_article(
+        "ART-TARIF1", "Article", category.id, "unité", Decimal("200"), Decimal("500000"), Decimal("0"),
+        prix_sous_traitant=Decimal("400000"),
+        prix_autre_min=Decimal("350000"),
+        prix_autre_max=Decimal("550000"),
+    )
+
+    assert article.prix_sous_traitant == Decimal("400000")
+    assert article.prix_autre_min == Decimal("350000")
+    assert article.prix_autre_max == Decimal("550000")
+
+
+def test_create_article_rejects_interval_start_above_sous_traitant(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    category = _make_category(stack)
+
+    try:
+        stack.articles.create_article(
+            "ART-TARIF2", "Article", category.id, "unité", Decimal("200"), Decimal("500000"), Decimal("0"),
+            prix_sous_traitant=Decimal("400000"),
+            prix_autre_min=Decimal("450000"),  # > prix_sous_traitant : invalide
+            prix_autre_max=Decimal("550000"),
+        )
+        assert False, "devait lever ValidationError"
+    except ValidationError:
+        pass
+
+
+def test_create_article_rejects_interval_end_below_normal(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    category = _make_category(stack)
+
+    try:
+        stack.articles.create_article(
+            "ART-TARIF3", "Article", category.id, "unité", Decimal("200"), Decimal("500000"), Decimal("0"),
+            prix_sous_traitant=Decimal("400000"),
+            prix_autre_min=Decimal("350000"),
+            prix_autre_max=Decimal("480000"),  # < prix_vente : invalide
+        )
+        assert False, "devait lever ValidationError"
+    except ValidationError:
+        pass
+
+
+def test_create_article_accepts_inclusive_bounds(login_as) -> None:
+    """Bornes inclusives : début == prix sous-traitant et fin == prix normal
+    sont des configurations valides, jamais refusées."""
+    stack, _ = login_as("Administrateur")
+    category = _make_category(stack)
+
+    article = stack.articles.create_article(
+        "ART-TARIF4", "Article", category.id, "unité", Decimal("200"), Decimal("500000"), Decimal("0"),
+        prix_sous_traitant=Decimal("400000"),
+        prix_autre_min=Decimal("400000"),  # == prix_sous_traitant
+        prix_autre_max=Decimal("500000"),  # == prix_vente
+    )
+
+    assert article.prix_autre_min == Decimal("400000")
+    assert article.prix_autre_max == Decimal("500000")
+
+
+def test_create_article_rejects_interval_without_sous_traitant(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    category = _make_category(stack)
+
+    try:
+        stack.articles.create_article(
+            "ART-TARIF5", "Article", category.id, "unité", Decimal("200"), Decimal("500000"), Decimal("0"),
+            prix_autre_min=Decimal("350000"),
+            prix_autre_max=Decimal("550000"),
+        )
+        assert False, "devait lever ValidationError"
+    except ValidationError:
+        pass
+
+
+def test_create_article_rejects_half_configured_interval(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    category = _make_category(stack)
+
+    try:
+        stack.articles.create_article(
+            "ART-TARIF6", "Article", category.id, "unité", Decimal("200"), Decimal("500000"), Decimal("0"),
+            prix_sous_traitant=Decimal("400000"),
+            prix_autre_min=Decimal("350000"),
+            # prix_autre_max manquant : invalide
+        )
+        assert False, "devait lever ValidationError"
+    except ValidationError:
+        pass
+
+
+def test_create_article_without_any_tariff_configuration_is_unaffected(login_as) -> None:
+    """Compatibilité ascendante (§6) : aucun tarif alternatif ne doit être
+    exigé, les six champs restent à None."""
+    stack, _ = login_as("Administrateur")
+    category = _make_category(stack)
+
+    article = stack.articles.create_article(
+        "ART-TARIF7", "Article", category.id, "unité", Decimal("200"), Decimal("500000"), Decimal("0"),
+    )
+
+    assert article.prix_sous_traitant is None
+    assert article.prix_autre_min is None
+    assert article.prix_autre_max is None
+    assert article.tarif_location_sous_traitant is None
+    assert article.tarif_location_autre_min is None
+    assert article.tarif_location_autre_max is None
+
+
+def test_update_article_rejects_price_increase_breaking_existing_interval(login_as) -> None:
+    """Augmenter prix_vente au-delà de la fin de l'intervalle déjà configuré
+    doit être refusé — jamais un ajustement automatique et silencieux de
+    l'intervalle (§4 : les anciennes opérations ne doivent jamais être
+    affectées, et la cohérence formelle doit toujours tenir)."""
+    stack, _ = login_as("Administrateur")
+    category = _make_category(stack)
+    created = stack.articles.create_article(
+        "ART-TARIF8", "Article", category.id, "unité", Decimal("200"), Decimal("500000"), Decimal("0"),
+        prix_sous_traitant=Decimal("400000"),
+        prix_autre_min=Decimal("350000"),
+        prix_autre_max=Decimal("550000"),
+    )
+
+    try:
+        stack.articles.update_article(
+            created.id, "ART-TARIF8", "Article", category.id, "unité",
+            Decimal("200"), Decimal("600000"), Decimal("0"),  # prix_vente > prix_autre_max existant
+        )
+        assert False, "devait lever ValidationError"
+    except ValidationError:
+        pass
+
+
+def test_update_article_can_adjust_interval_alongside_price_increase(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    category = _make_category(stack)
+    created = stack.articles.create_article(
+        "ART-TARIF9", "Article", category.id, "unité", Decimal("200"), Decimal("500000"), Decimal("0"),
+        prix_sous_traitant=Decimal("400000"),
+        prix_autre_min=Decimal("350000"),
+        prix_autre_max=Decimal("550000"),
+    )
+
+    updated = stack.articles.update_article(
+        created.id, "ART-TARIF9", "Article", category.id, "unité",
+        Decimal("200"), Decimal("600000"), Decimal("0"),
+        prix_autre_max=Decimal("650000"),
+    )
+
+    assert updated.prix_vente == Decimal("600000")
+    assert updated.prix_autre_max == Decimal("650000")
+
+
+def test_update_article_preserves_tariffs_when_not_provided(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    category = _make_category(stack)
+    created = stack.articles.create_article(
+        "ART-TARIF10", "Article", category.id, "unité", Decimal("200"), Decimal("500000"), Decimal("0"),
+        prix_sous_traitant=Decimal("400000"),
+        prix_autre_min=Decimal("350000"),
+        prix_autre_max=Decimal("550000"),
+    )
+
+    updated = stack.articles.update_article(
+        created.id, "ART-TARIF10", "Nouvelle désignation", category.id, "unité",
+        Decimal("200"), Decimal("500000"), Decimal("0"),
+    )
+
+    assert updated.prix_sous_traitant == Decimal("400000")
+    assert updated.prix_autre_min == Decimal("350000")
+    assert updated.prix_autre_max == Decimal("550000")
+
+
+def test_create_article_with_valid_rental_tariffs(login_as) -> None:
+    """Les tarifs de location sont gérés indépendamment des prix de vente
+    (§3) : un article peut avoir des intervalles de vente et de location
+    totalement différents, sans dérivation automatique de l'un vers l'autre."""
+    stack, _ = login_as("Administrateur")
+    category = _make_category(stack)
+
+    article = stack.articles.create_article(
+        "ART-LOCTARIF1", "Article", category.id, "unité", Decimal("200"), Decimal("500"), Decimal("0"),
+        tarif_location_jour=Decimal("1000"),
+        tarif_location_sous_traitant=Decimal("800"),
+        tarif_location_autre_min=Decimal("700"),
+        tarif_location_autre_max=Decimal("1100"),
+    )
+
+    assert article.tarif_location_jour == Decimal("1000")
+    assert article.tarif_location_sous_traitant == Decimal("800")
+    assert article.tarif_location_autre_min == Decimal("700")
+    assert article.tarif_location_autre_max == Decimal("1100")
+    # Les tarifs de vente ne sont jamais déduits des tarifs de location.
+    assert article.prix_sous_traitant is None
+
+
+def test_create_article_rejects_rental_interval_start_above_sous_traitant(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    category = _make_category(stack)
+
+    try:
+        stack.articles.create_article(
+            "ART-LOCTARIF2", "Article", category.id, "unité", Decimal("200"), Decimal("500"), Decimal("0"),
+            tarif_location_jour=Decimal("1000"),
+            tarif_location_sous_traitant=Decimal("800"),
+            tarif_location_autre_min=Decimal("900"),  # > sous-traitant : invalide
+            tarif_location_autre_max=Decimal("1100"),
+        )
+        assert False, "devait lever ValidationError"
+    except ValidationError:
+        pass
+
+
+def test_create_article_rejects_rental_interval_end_below_normal(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    category = _make_category(stack)
+
+    try:
+        stack.articles.create_article(
+            "ART-LOCTARIF3", "Article", category.id, "unité", Decimal("200"), Decimal("500"), Decimal("0"),
+            tarif_location_jour=Decimal("1000"),
+            tarif_location_sous_traitant=Decimal("800"),
+            tarif_location_autre_min=Decimal("700"),
+            tarif_location_autre_max=Decimal("900"),  # < tarif_location_jour : invalide
+        )
+        assert False, "devait lever ValidationError"
+    except ValidationError:
+        pass
+
+
+def test_create_article_rejects_rental_interval_without_tarif_normal(login_as) -> None:
+    """Sans ``tarif_location_jour`` défini, l'intervalle de location ne
+    peut pas être configuré (rien à comparer à sa fin)."""
+    stack, _ = login_as("Administrateur")
+    category = _make_category(stack)
+
+    try:
+        stack.articles.create_article(
+            "ART-LOCTARIF4", "Article", category.id, "unité", Decimal("200"), Decimal("500"), Decimal("0"),
+            tarif_location_sous_traitant=Decimal("800"),
+            tarif_location_autre_min=Decimal("700"),
+            tarif_location_autre_max=Decimal("1100"),
+        )
+        assert False, "devait lever ValidationError"
+    except ValidationError:
+        pass

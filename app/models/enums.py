@@ -17,6 +17,21 @@ class StatutOperation(str, enum.Enum):
     ANNULEE = "ANNULEE"
 
 
+class TypeTarif(str, enum.Enum):
+    """Type de tarif réellement appliqué sur une ligne de vente ou de
+    location (voir ``app.models.catalog.Article`` pour les 3 tarifs
+    configurables au niveau article) : NORMAL (``prix_vente``/
+    ``tarif_location_jour``), SOUS_TRAITANT (tarif réduit préconfiguré) ou
+    AUTRE (montant librement choisi dans l'intervalle configuré pour
+    l'article). Conservé tel quel sur la ligne après validation — jamais
+    recalculé si le tarif catalogue de l'article change ensuite, à
+    l'identique de ``VenteLigne.prix_unitaire``/``LocationLigne.tarif_jour``."""
+
+    NORMAL = "NORMAL"
+    SOUS_TRAITANT = "SOUS_TRAITANT"
+    AUTRE = "AUTRE"
+
+
 class StatutInventaire(str, enum.Enum):
     BROUILLON = "BROUILLON"
     VALIDE = "VALIDE"
