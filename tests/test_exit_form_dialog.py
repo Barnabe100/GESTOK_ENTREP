@@ -1,7 +1,6 @@
 from datetime import date
 from decimal import Decimal
 
-import pytest
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import QDateEdit, QDialog
 
@@ -38,28 +37,6 @@ def test_dialog_shows_required_field_legend(qtbot) -> None:
     qtbot.addWidget(dialog)
 
     assert_has_required_field_legend(dialog)
-
-
-class _FakeLineDialog:
-    """Remplace ExitLineFormDialog dans les tests pour éviter tout dialogue
-    modal bloquant, à l'identique du monkeypatch de QMessageBox ailleurs."""
-
-    result_values = {"article_id": 10, "quantite": "5"}
-    accepted = True
-
-    def __init__(self, articles, initial=None, parent=None) -> None:
-        pass
-
-    def exec(self):
-        return QDialog.DialogCode.Accepted if self.accepted else QDialog.DialogCode.Rejected
-
-    def values(self):
-        return self.result_values
-
-
-@pytest.fixture(autouse=True)
-def _no_blocking_message_boxes(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("app.views.exit_form_dialog.QMessageBox.warning", lambda *a, **k: None)
 
 
 def test_dialog_uses_qdateedit_with_calendar_popup(qtbot) -> None:
@@ -147,39 +124,70 @@ def test_dialog_prefills_lines_preserve_real_decimal_quantity(qtbot) -> None:
     assert dialog.lines_table.item(0, 1).text() == "2,5"
 
 
-def test_add_line_appends_row_using_cmup_from_articles_list(qtbot, monkeypatch) -> None:
-    monkeypatch.setattr("app.views.exit_form_dialog.ExitLineFormDialog", _FakeLineDialog)
+# -- Mission 5.3 : sélection d'article par recherche en direct ----------------
+#
+# Remplace l'ancien ExitLineFormDialog (dialogue séparé par ligne) — voir
+# ArticleSearchPanel, partagé avec entry_form_dialog.py.
+
+
+def test_search_panel_shows_all_articles_with_cmup(qtbot) -> None:
     dialog = ExitFormDialog(_MOTIFS, _ARTICLES)
     qtbot.addWidget(dialog)
 
-    dialog._on_add_line_clicked()
+    assert dialog.article_search_panel.results_list.count() == len(_ARTICLES)
+    assert "500" in dialog.article_search_panel.results_list.item(0).text()
+
+
+def test_double_clicking_search_result_adds_line_using_cmup_from_articles_list(qtbot) -> None:
+    dialog = ExitFormDialog(_MOTIFS, _ARTICLES)
+    qtbot.addWidget(dialog)
+
+    dialog._on_article_activated(10)
 
     assert dialog.lines_table.rowCount() == 1
     values = dialog.values()
     assert len(values["lignes"]) == 1
     assert values["lignes"][0]["article_id"] == 10
-    assert values["lignes"][0]["quantite"] == Decimal("5")
+    assert values["lignes"][0]["quantite"] == Decimal("1")
     assert values["lignes"][0]["cout_unitaire"] == Decimal("500")
 
 
-def test_add_line_rejects_non_positive_quantity_and_reopens(qtbot, monkeypatch) -> None:
-    calls = {"n": 0}
-
-    class _FirstBadThenGood(_FakeLineDialog):
-        def values(self):
-            calls["n"] += 1
-            if calls["n"] == 1:
-                return {"article_id": 10, "quantite": "0"}
-            return {"article_id": 10, "quantite": "5"}
-
-    monkeypatch.setattr("app.views.exit_form_dialog.ExitLineFormDialog", _FirstBadThenGood)
+def test_quantity_editable_in_place_updates_line_and_total(qtbot) -> None:
     dialog = ExitFormDialog(_MOTIFS, _ARTICLES)
     qtbot.addWidget(dialog)
+    dialog._on_article_activated(10)
 
-    dialog._on_add_line_clicked()
+    item = dialog.lines_table.item(0, 1)
+    item.setText("5")
 
-    assert calls["n"] == 2
-    assert dialog.lines_table.rowCount() == 1
+    assert dialog.values()["lignes"][0]["quantite"] == Decimal("5")
+    assert "2500" in dialog.total_label.text()
+
+
+def test_non_positive_quantity_edit_is_rejected_and_reverted(qtbot) -> None:
+    dialog = ExitFormDialog(_MOTIFS, _ARTICLES)
+    qtbot.addWidget(dialog)
+    dialog._on_article_activated(10)
+
+    item = dialog.lines_table.item(0, 1)
+    item.setText("0")
+
+    assert dialog.values()["lignes"][0]["quantite"] == Decimal("1")
+    assert dialog.lines_table.item(0, 1).text() == "1"
+    assert "strictement positive" in dialog.error_label.text()
+
+
+def test_cmup_column_stays_read_only(qtbot) -> None:
+    """Règle importante de la mission : aucune règle de valorisation/CMUP
+    n'est changée — le Coût (CMUP) ne doit jamais devenir éditable."""
+    from PySide6.QtCore import Qt as _Qt
+
+    dialog = ExitFormDialog(_MOTIFS, _ARTICLES)
+    qtbot.addWidget(dialog)
+    dialog._on_article_activated(10)
+
+    cout_item = dialog.lines_table.item(0, 2)
+    assert not (cout_item.flags() & _Qt.ItemFlag.ItemIsEditable)
 
 
 def test_remove_line_deletes_selected_row(qtbot) -> None:

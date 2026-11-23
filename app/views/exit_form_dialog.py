@@ -7,6 +7,17 @@ CMUP courant affiché à titre indicatif) mais la validation métier définitive
 (existence/statut de l'article et du motif, quantité, disponibilité du stock)
 reste de la responsabilité d'``ExitService``, appelé par :class:`ExitsPage` à
 la soumission.
+
+Mission 5.3 : la sélection d'article reprend l'ergonomie déjà en place dans
+les écrans de caisse Ventes/Locations (recherche en direct, voir
+:class:`ArticleSearchPanel`, partagé avec ``entry_form_dialog.py``) plutôt
+qu'un dialogue séparé par ligne. Seule la quantité devient éditable
+directement dans le tableau (même délégué ``QuantityEditDelegate`` que les
+tableaux de caisse) — le coût (CMUP) reste strictement en lecture seule,
+jamais modifiable ici : aucune règle de valorisation/CMUP n'est changée.
+``ExitLineFormDialog`` n'est plus utilisé par ce formulaire mais n'est pas
+supprimé, à l'identique de ``SaleLineFormDialog``/``LocationLineFormDialog``
+après le lot « Écran de caisse ».
 """
 from __future__ import annotations
 
@@ -14,16 +25,16 @@ from datetime import date
 from decimal import Decimal
 from typing import Optional
 
-from PySide6.QtCore import QDate
+from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import (
     QComboBox,
     QDateEdit,
     QDialog,
     QFormLayout,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -34,15 +45,17 @@ from PySide6.QtWidgets import (
 
 from app.utils.exceptions import ValidationError
 from app.utils.quantity import format_quantity
+from app.views.article_search_panel import ArticleSearchPanel
 from app.views.common import (
     build_required_field_legend,
     date_to_qdate,
     parse_decimal,
     required_label,
 )
-from app.views.exit_line_form_dialog import ExitLineFormDialog
+from app.views.design_system import QuantityEditDelegate
 
 _LINE_COLUMNS = ["Article", "Quantité", "Coût (CMUP)", "Montant"]
+_QUANTITY_COLUMN = 1
 
 
 class ExitFormDialog(QDialog):
@@ -101,6 +114,16 @@ class ExitFormDialog(QDialog):
 
         layout.addWidget(build_required_field_legend(self))
 
+        # Mission 5.3 : recherche en direct plutôt qu'un dialogue séparé par
+        # ligne (``ExitLineFormDialog``, désormais inutilisé) — double-clic
+        # sur un résultat pour ajouter directement la ligne, exactement
+        # comme le panneau gauche de la caisse Ventes/Locations.
+        self.article_search_panel = ArticleSearchPanel(
+            [(article_id, f"{label}  —  CMUP {cmup}") for article_id, label, cmup in articles], self
+        )
+        self.article_search_panel.article_activated.connect(self._on_article_activated)
+        layout.addWidget(self.article_search_panel)
+
         layout.addWidget(QLabel("Lignes", self))
 
         self.lines_table = QTableWidget(0, len(_LINE_COLUMNS), self)
@@ -109,14 +132,27 @@ class ExitFormDialog(QDialog):
         self.lines_table.horizontalHeader().setStretchLastSection(True)
         self.lines_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.lines_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
-        self.lines_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        # Mission 5.3 : seule la Quantité devient éditable en place (même
+        # déclencheur/délégué que les tableaux de caisse) — le Coût (CMUP)
+        # reste en lecture seule, aucune règle de valorisation/CMUP changée.
+        self.lines_table.setEditTriggers(
+            QTableWidget.EditTrigger.DoubleClicked | QTableWidget.EditTrigger.EditKeyPressed
+        )
+        lines_header = self.lines_table.horizontalHeader()
+        lines_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        lines_header.setSectionResizeMode(_QUANTITY_COLUMN, QHeaderView.ResizeMode.Interactive)
+        self.lines_table.setColumnWidth(_QUANTITY_COLUMN, 95)
+        lines_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+        self.lines_table.setColumnWidth(2, 120)
+        self.lines_table.verticalHeader().setDefaultSectionSize(36)
+        self._quantity_delegate = QuantityEditDelegate(self.lines_table)
+        self.lines_table.setItemDelegateForColumn(_QUANTITY_COLUMN, self._quantity_delegate)
+        self.lines_table.itemChanged.connect(self._on_line_item_changed)
         layout.addWidget(self.lines_table)
 
         lines_button_row = QHBoxLayout()
-        self.add_line_button = QPushButton("Ajouter une ligne", self)
         self.remove_line_button = QPushButton("Supprimer la ligne", self)
         self.remove_line_button.setProperty("variant", "danger")
-        lines_button_row.addWidget(self.add_line_button)
         lines_button_row.addWidget(self.remove_line_button)
         lines_button_row.addStretch(1)
         layout.addLayout(lines_button_row)
@@ -147,7 +183,6 @@ class ExitFormDialog(QDialog):
         self.cancel_button.clicked.connect(self.reject)
         self.save_button.clicked.connect(self._on_save_clicked)
         self.validate_button.clicked.connect(self._on_validate_clicked)
-        self.add_line_button.clicked.connect(self._on_add_line_clicked)
         self.remove_line_button.clicked.connect(self._on_remove_line_clicked)
 
         self._refresh_lines_table()
@@ -163,54 +198,89 @@ class ExitFormDialog(QDialog):
     # -- gestion des lignes ---------------------------------------------------
 
     def _refresh_lines_table(self) -> None:
+        # Mission 5.3 : la Quantité est désormais éditable en place —
+        # ``blockSignals`` évite que la reconstruction ci-dessous ne
+        # redéclenche ``_on_line_item_changed`` pour chaque cellule
+        # repeuplée (même principe que
+        # ``SalesPage._refresh_caisse_lines_table``).
+        self.lines_table.blockSignals(True)
         self.lines_table.setRowCount(len(self._lines))
         total = Decimal("0")
         for row, line in enumerate(self._lines):
-            self.lines_table.setItem(row, 0, QTableWidgetItem(line["article_label"]))
-            self.lines_table.setItem(row, 1, QTableWidgetItem(format_quantity(line["quantite"])))
-            self.lines_table.setItem(row, 2, QTableWidgetItem(str(line["cout_unitaire"])))
+            article_item = QTableWidgetItem(line["article_label"])
+            article_item.setFlags(article_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.lines_table.setItem(row, 0, article_item)
+
+            quantite_item = QTableWidgetItem(format_quantity(line["quantite"]))
+            quantite_item.setFlags(quantite_item.flags() | Qt.ItemFlag.ItemIsEditable)
+            quantite_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.lines_table.setItem(row, _QUANTITY_COLUMN, quantite_item)
+
+            # Coût (CMUP) : jamais modifiable ici, aucune règle de
+            # valorisation/CMUP changée — strictement informatif, à
+            # l'identique d'avant ce correctif.
+            cout_item = QTableWidgetItem(str(line["cout_unitaire"]))
+            cout_item.setFlags(cout_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.lines_table.setItem(row, 2, cout_item)
+
             try:
                 montant = Decimal(str(line["quantite"])) * Decimal(str(line["cout_unitaire"]))
             except Exception:
                 montant = Decimal("0")
             total += montant
-            self.lines_table.setItem(row, 3, QTableWidgetItem(str(montant)))
+            montant_item = QTableWidgetItem(str(montant))
+            montant_item.setFlags(montant_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.lines_table.setItem(row, 3, montant_item)
+        self.lines_table.blockSignals(False)
         self.total_label.setText(f"Total : {total}")
 
-    def _on_add_line_clicked(self) -> None:
-        while True:
-            dialog = ExitLineFormDialog(self._articles, parent=self)
-            if dialog.exec() != QDialog.DialogCode.Accepted:
-                return
-            values = dialog.values()
-            try:
-                if values["article_id"] is None:
-                    raise ValidationError("Veuillez sélectionner un article.")
-                quantite = parse_decimal(values["quantite"], "quantité")
-                if quantite <= 0:
-                    raise ValidationError("La quantité doit être strictement positive.")
-            except ValidationError as exc:
-                QMessageBox.warning(self, "Ligne invalide", str(exc))
-                continue
+    def _on_article_activated(self, article_id: int) -> None:
+        """Mission 5.3 : point d'entrée unique pour ajouter une ligne,
+        appelé sur double-clic d'un résultat de ``article_search_panel`` —
+        quantité 1 et CMUP courant de l'article, à l'identique de ce que
+        préremplissait l'ancien ``ExitLineFormDialog``. Le CMUP reste
+        ensuite en lecture seule (voir ``_refresh_lines_table``) ; seule la
+        quantité est librement modifiable directement dans le tableau."""
+        article_label = "?"
+        cout_unitaire = Decimal("0")
+        for aid, label, cmup in self._articles:
+            if aid == article_id:
+                article_label = label
+                cout_unitaire = Decimal(str(cmup))
+                break
+        self._lines.append(
+            {
+                "article_id": article_id,
+                "article_label": article_label,
+                "quantite": Decimal("1"),
+                "cout_unitaire": cout_unitaire,
+            }
+        )
+        self._refresh_lines_table()
+        self.article_search_panel.clear_search()
 
-            article_label = "?"
-            cout_unitaire = Decimal("0")
-            for article_id, label, cmup in self._articles:
-                if article_id == values["article_id"]:
-                    article_label = label
-                    cout_unitaire = Decimal(str(cmup))
-                    break
-
-            self._lines.append(
-                {
-                    "article_id": values["article_id"],
-                    "article_label": article_label,
-                    "quantite": quantite,
-                    "cout_unitaire": cout_unitaire,
-                }
-            )
+    def _on_line_item_changed(self, item: QTableWidgetItem) -> None:
+        """Mission 5.3 : point d'entrée unique pour toute modification de
+        quantité saisie directement dans le tableau — une valeur invalide
+        est refusée avec un message clair et la cellule reprend sa valeur
+        précédente, jamais de ligne laissée dans un état incohérent (même
+        principe que ``SalesPage._on_caisse_line_item_changed``)."""
+        if item.column() != _QUANTITY_COLUMN:
+            return
+        row = item.row()
+        if row >= len(self._lines):
+            return
+        try:
+            nouvelle_quantite = parse_decimal(item.text(), "quantité")
+            if nouvelle_quantite <= 0:
+                raise ValidationError("La quantité doit être strictement positive.")
+        except ValidationError as exc:
+            self.set_error(str(exc))
             self._refresh_lines_table()
             return
+        self.set_error("")
+        self._lines[row]["quantite"] = nouvelle_quantite
+        self._refresh_lines_table()
 
     def _on_remove_line_clicked(self) -> None:
         selected = self.lines_table.selectionModel().selectedRows()
