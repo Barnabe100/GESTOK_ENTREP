@@ -947,3 +947,99 @@ def test_delete_unite_from_form_unknown_label_returns_none(qtbot, login_as) -> N
     result = page._delete_unite_from_form("Unité qui n'existe pas")
 
     assert result is None
+
+
+# -- Mission 5.2, Problème C : _open_form ne recrée plus le dialogue --------------
+#
+# ``run_modal_form`` (ancien mécanisme) recréait un nouveau dialogue à
+# chaque tentative ratée — fermeture visible puis réouverture. ``_open_form``
+# construit désormais un seul ``ArticleFormDialog`` et lui fournit
+# ``on_submit`` : ces tests vérifient que cette fonction relaie fidèlement
+# le résultat (et, en cas d'échec, le message et le ou les champs en cause)
+# de ``_submit_form`` — sans changer son comportement ni sa signature
+# ``bool``, déjà couverts par les tests ``test_submit_form_*`` ci-dessus.
+
+
+class _FakeArticleFormDialog:
+    """Remplace ``ArticleFormDialog`` pour capturer ``on_submit`` sans
+    ouvrir de dialogue modal — ``exec`` renvoie toujours Rejected, ce test
+    ne portant que sur la fonction transmise, jamais sur l'affichage."""
+
+    last_on_submit = None
+
+    def __init__(self, *args, **kwargs) -> None:
+        type(self).last_on_submit = kwargs["on_submit"]
+
+    def exec(self):
+        from PySide6.QtWidgets import QDialog
+
+        return QDialog.DialogCode.Rejected
+
+
+def test_open_form_on_submit_reports_success(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    category = stack.categories.create_category("Cat-M52-OK")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    monkeypatch.setattr("app.views.pages.articles_page.ArticleFormDialog", _FakeArticleFormDialog)
+
+    page._open_form(None, [(category.id, category.nom)], [], ["unité"], {})
+    values = {
+        "reference": "ART-M52-OK", "designation": "Article", "category_id": category.id,
+        "fournisseur_principal_id": None, "unite": "unité",
+        "prix_achat": "1", "prix_vente": "2", "stock_min": "0", "stock_max": "",
+        "emplacement": "", "code_barres": "", "description": "", "stock_initial": "0",
+    }
+
+    result = _FakeArticleFormDialog.last_on_submit(values)
+
+    assert result.success is True
+    assert stack.articles.list_articles(search="ART-M52-OK") != []
+
+
+def test_open_form_on_submit_reports_message_and_field_on_duplicate_reference(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    category = stack.categories.create_category("Cat-M52-DUP")
+    stack.articles.create_article(
+        "ART-M52-DUP", "Existant", category.id, "unité", Decimal("1"), Decimal("2"), Decimal("0")
+    )
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    monkeypatch.setattr("app.views.pages.articles_page.ArticleFormDialog", _FakeArticleFormDialog)
+
+    page._open_form(None, [(category.id, category.nom)], [], ["unité"], {})
+    values = {
+        "reference": "ART-M52-DUP", "designation": "Doublon", "category_id": category.id,
+        "fournisseur_principal_id": None, "unite": "unité",
+        "prix_achat": "1", "prix_vente": "2", "stock_min": "0", "stock_max": "",
+        "emplacement": "", "code_barres": "", "description": "", "stock_initial": "0",
+    }
+
+    result = _FakeArticleFormDialog.last_on_submit(values)
+
+    assert result.success is False
+    assert "déjà utilisée" in result.message
+    assert result.fields == ("reference",)
+
+
+def test_open_form_on_submit_reports_field_for_incoherent_tariff_interval(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    category = stack.categories.create_category("Cat-M52-TARIF")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    monkeypatch.setattr("app.views.pages.articles_page.ArticleFormDialog", _FakeArticleFormDialog)
+
+    page._open_form(None, [(category.id, category.nom)], [], ["unité"], {})
+    values = {
+        "reference": "ART-M52-TARIF", "designation": "Article", "category_id": category.id,
+        "fournisseur_principal_id": None, "unite": "unité",
+        "prix_achat": "200", "prix_vente": "500000", "stock_min": "0", "stock_max": "",
+        "emplacement": "", "code_barres": "", "description": "", "stock_initial": "0",
+        "prix_sous_traitant": "400000", "prix_autre_min": "450000", "prix_autre_max": "550000",
+    }
+
+    result = _FakeArticleFormDialog.last_on_submit(values)
+
+    assert result.success is False
+    assert "prix sous-traitant" in result.message
+    assert "prix_autre_min" in result.fields

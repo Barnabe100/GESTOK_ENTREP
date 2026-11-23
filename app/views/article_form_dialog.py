@@ -43,11 +43,28 @@ Entièrement facultatifs (laissés vides, aucun tarif alternatif n'est
 configuré) et soumis au même activation/désactivation par mode de gestion
 que les champs existants qu'ils complètent (``prix_vente``/
 ``tarif_location_jour``) — jamais vidés, seulement désactivés dans le mode
-où ils sont sans objet. La validation croisée réelle (bornes, cohérence
-avec le prix normal/sous-traitant) vit entièrement dans ``ArticleService`` :
-ce formulaire ne fait que collecter la saisie. Le contenu du formulaire est
-désormais placé dans une zone défilante : les six nouveaux champs
-auraient autrement rendu le dialogue trop haut pour un écran 1366×768.
+où ils sont sans objet. La validation côté serveur (``ArticleService``) reste
+seule autoritaire et obligatoire ; ce formulaire ne fait que collecter la
+saisie. Le contenu du formulaire est désormais placé dans une zone
+défilante : les six nouveaux champs auraient autrement rendu le dialogue
+trop haut pour un écran 1366×768.
+
+Mission 5.2 (Problème B) : les deux bornes de chaque intervalle « Autre
+prix »/« Autre tarif location » sont regroupées sur une seule ligne
+(« Autre prix : [début] à [fin] »), plutôt que deux lignes de formulaire
+distinctes — présentation plus compacte, sans changer les noms de champs.
+
+Mission 5.2 (Problème C) : ce formulaire appelle désormais
+``ArticleService.validate_tariff_interval`` (même fonction que le service,
+jamais une réimplémentation) pendant la saisie, pour avertir immédiatement
+d'une incohérence tarifaire près du champ concerné — purement indicatif,
+cette validation ne remplace jamais celle, obligatoire, du service au
+moment de l'enregistrement. Au clic sur « Enregistrer », ``on_submit``
+(fourni par ``ArticlesPage``) est appelé AVANT tout ``accept()`` : le
+dialogue ne se ferme que si l'enregistrement réussit réellement, jamais
+sur une erreur de validation (voir ``_on_save_clicked``) — c'est ce qui
+évite l'ancien effet de fermeture/réouverture (``run_modal_form``
+recréait un nouveau dialogue à chaque tentative ratée).
 """
 from __future__ import annotations
 
@@ -70,8 +87,17 @@ from PySide6.QtWidgets import (
 )
 
 from app.models.enums import ModeGestionArticle
+from app.services.articles.article_service import validate_tariff_interval
+from app.utils.exceptions import ValidationError
 from app.utils.quantity import format_quantity
-from app.views.common import build_required_field_legend, format_decimal_for_input, required_label
+from app.views.common import (
+    FormSubmitResult,
+    build_required_field_legend,
+    format_decimal_for_input,
+    parse_optional_decimal,
+    required_label,
+)
+from app.views.design_system import refresh_style
 
 _DEFAULT_UNITE = "Pièce"
 
@@ -91,6 +117,7 @@ class ArticleFormDialog(QDialog):
         is_edit: bool = False,
         on_create_unite: Optional[Callable[[], Optional[str]]] = None,
         on_delete_unite: Optional[Callable[[str], Optional[tuple[list[str], Optional[str]]]]] = None,
+        on_submit: Optional[Callable[[dict], FormSubmitResult]] = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -98,18 +125,17 @@ class ArticleFormDialog(QDialog):
         self.is_edit = is_edit
         self._on_create_unite = on_create_unite
         self._on_delete_unite = on_delete_unite
+        # Mission 5.2, Problème C : si fourni, appelé AVANT tout ``accept()``
+        # — voir ``_on_save_clicked``. ``None`` préserve exactement l'ancien
+        # comportement (accepte toujours), pour les appelants/tests qui ne
+        # branchent aucune validation de service sur ce dialogue.
+        self._on_submit = on_submit
+        self._highlighted_widgets: list[QWidget] = []
 
         self.setWindowTitle("Article")
         self.setModal(True)
-        # Formulaire en deux colonnes (§6 de la finition ergonomique) :
-        # réduit sensiblement la hauteur du dialogue par rapport à l'ancienne
-        # colonne unique, qui imposait beaucoup de défilement. 760px laisse
-        # assez de place aux libellés longs (« Tarif de location (par
-        # jour) ») sans écraser les champs — reste très confortable même à
-        # 1366×768 pour un dialogue modal, jamais une largeur fixe
-        # (redimensionnement plus étroit toujours possible).
-        self.setMinimumWidth(760)
-        self.resize(820, 700)
+        self.setMinimumWidth(820)
+        self.resize(880, 700)
 
         layout = QVBoxLayout(self)
 
@@ -125,6 +151,18 @@ class ArticleFormDialog(QDialog):
         left_form.setSpacing(10)
         right_form = QFormLayout()
         right_form.setSpacing(10)
+        # Mission 5.2, Problème A : sur Windows, certains libellés longs
+        # (« Tarif de location sous-traitant », « Stock actuel (piloté par
+        # le système) »...) forçaient chaque colonne — et donc le dialogue
+        # entier, via la zone défilante ci-dessous — à exiger une largeur
+        # minimale supérieure à ce que la fenêtre proposait, provoquant un
+        # défilement horizontal. ``WrapLongRows`` (plutôt qu'un simple
+        # agrandissement de la fenêtre, qui ne règle rien structurellement)
+        # fait passer l'étiquette au-dessus du champ sur les lignes trop
+        # étroites, bornant la largeur minimale de chaque colonne à celle du
+        # champ lui-même plutôt qu'à « étiquette + champ » côte à côte.
+        left_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        right_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         columns_row.addLayout(left_form, 1)
         columns_row.addLayout(right_form, 1)
 
@@ -206,21 +244,41 @@ class ArticleFormDialog(QDialog):
         )
         left_form.addRow("Tarif de location sous-traitant", self.tarif_location_sous_traitant_edit)
 
+        # Mission 5.2, Problème B : les deux bornes regroupées sur une seule
+        # ligne (« Autre tarif location : [début] à [fin] ») plutôt que deux
+        # lignes de formulaire distinctes — mêmes champs, mêmes noms
+        # (``tarif_location_autre_min``/``tarif_location_autre_max``),
+        # seule la présentation change.
         self.tarif_location_autre_min_edit = QLineEdit(self)
         self.tarif_location_autre_min_edit.setPlaceholderText("Facultatif")
+        self.tarif_location_autre_min_edit.setMaximumWidth(130)
         self.tarif_location_autre_min_edit.setText(
             _as_text(initial.get("tarif_location_autre_min"))
             if initial.get("tarif_location_autre_min") is not None else ""
         )
-        left_form.addRow("Autre tarif location — début intervalle", self.tarif_location_autre_min_edit)
-
         self.tarif_location_autre_max_edit = QLineEdit(self)
         self.tarif_location_autre_max_edit.setPlaceholderText("Facultatif")
+        self.tarif_location_autre_max_edit.setMaximumWidth(130)
         self.tarif_location_autre_max_edit.setText(
             _as_text(initial.get("tarif_location_autre_max"))
             if initial.get("tarif_location_autre_max") is not None else ""
         )
-        left_form.addRow("Autre tarif location — fin intervalle", self.tarif_location_autre_max_edit)
+        tarif_location_autre_row = QHBoxLayout()
+        tarif_location_autre_row.addWidget(self.tarif_location_autre_min_edit)
+        tarif_location_autre_row.addWidget(QLabel("à", self))
+        tarif_location_autre_row.addWidget(self.tarif_location_autre_max_edit)
+        tarif_location_autre_row.addStretch(1)
+        left_form.addRow("Autre tarif location", tarif_location_autre_row)
+
+        # Avertissement de cohérence (Mission 5.2, Problème C, §A) : affiché
+        # près du groupe concerné pendant la saisie, jamais pour un champ
+        # facultatif resté vide (voir ``_apply_tariff_group_validity``) —
+        # purement indicatif, la validation du service reste seule
+        # obligatoire au moment de l'enregistrement.
+        self.location_tariff_warning_label = QLabel("", self)
+        self.location_tariff_warning_label.setStyleSheet("color: #B54708; font-size: 11px;")
+        self.location_tariff_warning_label.setWordWrap(True)
+        left_form.addRow(self.location_tariff_warning_label)
 
         self.stock_min_edit = QLineEdit(self)
         self.stock_min_edit.setText(
@@ -255,19 +313,31 @@ class ArticleFormDialog(QDialog):
         )
         right_form.addRow("Prix sous-traitant", self.prix_sous_traitant_edit)
 
+        # Mission 5.2, Problème B : même regroupement que « Autre tarif
+        # location » ci-dessus — « Autre prix : [début] à [fin] ».
         self.prix_autre_min_edit = QLineEdit(self)
         self.prix_autre_min_edit.setPlaceholderText("Facultatif")
+        self.prix_autre_min_edit.setMaximumWidth(130)
         self.prix_autre_min_edit.setText(
             _as_text(initial.get("prix_autre_min")) if initial.get("prix_autre_min") is not None else ""
         )
-        right_form.addRow("Autre prix — début intervalle", self.prix_autre_min_edit)
-
         self.prix_autre_max_edit = QLineEdit(self)
         self.prix_autre_max_edit.setPlaceholderText("Facultatif")
+        self.prix_autre_max_edit.setMaximumWidth(130)
         self.prix_autre_max_edit.setText(
             _as_text(initial.get("prix_autre_max")) if initial.get("prix_autre_max") is not None else ""
         )
-        right_form.addRow("Autre prix — fin intervalle", self.prix_autre_max_edit)
+        prix_autre_row = QHBoxLayout()
+        prix_autre_row.addWidget(self.prix_autre_min_edit)
+        prix_autre_row.addWidget(QLabel("à", self))
+        prix_autre_row.addWidget(self.prix_autre_max_edit)
+        prix_autre_row.addStretch(1)
+        right_form.addRow("Autre prix", prix_autre_row)
+
+        self.sale_tariff_warning_label = QLabel("", self)
+        self.sale_tariff_warning_label.setStyleSheet("color: #B54708; font-size: 11px;")
+        self.sale_tariff_warning_label.setWordWrap(True)
+        right_form.addRow(self.sale_tariff_warning_label)
 
         self.stock_max_edit = QLineEdit(self)
         self.stock_max_edit.setText(
@@ -302,10 +372,55 @@ class ArticleFormDialog(QDialog):
         self.code_barres_edit.setText(initial.get("code_barres", "") or "")
         right_form.addRow("Code-barres", self.code_barres_edit)
 
+        # Mission 5.2, Problème C : une seule table de correspondance
+        # champ -> widget, utilisée à la fois pour mettre en évidence le
+        # champ visé par une erreur de validation (voir
+        # ``_highlight_invalid_fields``) et, implicitement, pour documenter
+        # l'ensemble des clés attendues par ``values()``.
+        self._field_widgets: dict[str, QWidget] = {
+            "reference": self.reference_edit,
+            "designation": self.designation_edit,
+            "category_id": self.category_combo,
+            "fournisseur_principal_id": self.supplier_combo,
+            "unite": self.unite_combo,
+            "prix_achat": self.prix_achat_edit,
+            "prix_vente": self.prix_vente_edit,
+            "stock_min": self.stock_min_edit,
+            "stock_max": self.stock_max_edit,
+            "emplacement": self.emplacement_edit,
+            "code_barres": self.code_barres_edit,
+            "tarif_location_jour": self.tarif_location_jour_edit,
+            "prix_sous_traitant": self.prix_sous_traitant_edit,
+            "prix_autre_min": self.prix_autre_min_edit,
+            "prix_autre_max": self.prix_autre_max_edit,
+            "tarif_location_sous_traitant": self.tarif_location_sous_traitant_edit,
+            "tarif_location_autre_min": self.tarif_location_autre_min_edit,
+            "tarif_location_autre_max": self.tarif_location_autre_max_edit,
+        }
+        if self.stock_initial_edit is not None:
+            self._field_widgets["stock_initial"] = self.stock_initial_edit
+
         # Appelé une fois les deux colonnes construites (lit à la fois
         # tarif_location_jour_edit — colonne gauche — et prix_vente_edit —
         # colonne droite).
         self._update_price_fields_state()
+
+        # Mission 5.2, Problème C, §A : avertissement de cohérence affiché
+        # dès la saisie, jamais seulement au clic sur Enregistrer — voir
+        # ``_apply_tariff_group_validity``. Les deux groupes (vente/location)
+        # restent entièrement indépendants, comme la règle métier elle-même.
+        for edit in (
+            self.prix_vente_edit, self.prix_sous_traitant_edit,
+            self.prix_autre_min_edit, self.prix_autre_max_edit,
+        ):
+            edit.textChanged.connect(self._revalidate_sale_tariffs)
+        for edit in (
+            self.tarif_location_jour_edit, self.tarif_location_sous_traitant_edit,
+            self.tarif_location_autre_min_edit, self.tarif_location_autre_max_edit,
+        ):
+            edit.textChanged.connect(self._revalidate_location_tariffs)
+        self._revalidate_sale_tariffs()
+        self._revalidate_location_tariffs()
 
         content_layout.addLayout(columns_row)
 
@@ -343,7 +458,10 @@ class ArticleFormDialog(QDialog):
         layout.addLayout(button_row)
 
         self.cancel_button.clicked.connect(self.reject)
-        self.save_button.clicked.connect(self.accept)
+        # Mission 5.2, Problème C : plus jamais connecté directement à
+        # ``self.accept`` — voir ``_on_save_clicked``, qui n'accepte (et donc
+        # ne ferme) le dialogue qu'après un ``on_submit`` réellement réussi.
+        self.save_button.clicked.connect(self._on_save_clicked)
 
     @staticmethod
     def _select_combo_data(combo: QComboBox, data) -> None:
@@ -424,6 +542,122 @@ class ArticleFormDialog(QDialog):
             self.tarif_location_autre_max_edit,
         ):
             edit.setEnabled(is_location)
+        # Un changement de mode peut rendre pertinent un avertissement
+        # jusqu'ici masqué par un champ désactivé (ou l'inverse) — toujours
+        # recalculé ici, jamais laissé dans un état obsolète.
+        self._revalidate_sale_tariffs()
+        self._revalidate_location_tariffs()
+
+    # -- Mission 5.2, Problème C, §A : avertissement pendant la saisie --------------
+    #
+    # Purement indicatif : réutilise ``ArticleService.validate_tariff_interval``
+    # (jamais une réimplémentation des règles) pour prévenir l'utilisateur au
+    # plus tôt, mais ne remplace jamais la validation obligatoire du service
+    # au moment de l'enregistrement (voir ``_on_save_clicked``).
+
+    def _revalidate_sale_tariffs(self) -> None:
+        self._apply_tariff_group_validity(
+            normal_edit=self.prix_vente_edit,
+            sous_traitant_edit=self.prix_sous_traitant_edit,
+            min_edit=self.prix_autre_min_edit,
+            max_edit=self.prix_autre_max_edit,
+            label="de vente (autre prix)",
+            warning_label=self.sale_tariff_warning_label,
+        )
+
+    def _revalidate_location_tariffs(self) -> None:
+        self._apply_tariff_group_validity(
+            normal_edit=self.tarif_location_jour_edit,
+            sous_traitant_edit=self.tarif_location_sous_traitant_edit,
+            min_edit=self.tarif_location_autre_min_edit,
+            max_edit=self.tarif_location_autre_max_edit,
+            label="de location (autre tarif)",
+            warning_label=self.location_tariff_warning_label,
+        )
+
+    def _apply_tariff_group_validity(
+        self,
+        *,
+        normal_edit: QLineEdit,
+        sous_traitant_edit: QLineEdit,
+        min_edit: QLineEdit,
+        max_edit: QLineEdit,
+        label: str,
+        warning_label: QLabel,
+    ) -> None:
+        edits = (normal_edit, sous_traitant_edit, min_edit, max_edit)
+        for edit in edits:
+            edit.setProperty("valid", None)
+            refresh_style(edit)
+        try:
+            normal = parse_optional_decimal(normal_edit.text(), "prix normal")
+            sous_traitant = parse_optional_decimal(sous_traitant_edit.text(), "prix sous-traitant")
+            intervalle_min = parse_optional_decimal(min_edit.text(), "début de l'intervalle")
+            intervalle_max = parse_optional_decimal(max_edit.text(), "fin de l'intervalle")
+        except ValidationError:
+            # Format de nombre invalide : ce n'est pas une incohérence
+            # tarifaire — chaque champ numérique reste responsable de son
+            # propre contrôle de saisie ; pas de double message ici.
+            warning_label.setText("")
+            return
+        try:
+            validate_tariff_interval(
+                prix_normal=normal, prix_sous_traitant=sous_traitant,
+                intervalle_min=intervalle_min, intervalle_max=intervalle_max, label=label,
+            )
+        except ValidationError as exc:
+            message = str(exc)
+            warning_label.setText(message)
+            invalid_edits = [min_edit, max_edit]
+            if "sous-traitant" in message:
+                invalid_edits.insert(0, sous_traitant_edit)
+            if "prix normal" in message:
+                invalid_edits.insert(0, normal_edit)
+            for edit in invalid_edits:
+                edit.setProperty("valid", False)
+                refresh_style(edit)
+            return
+        warning_label.setText("")
+
+    # -- Mission 5.2, Problème C, §B : validation au clic sur Enregistrer -----------
+
+    def _on_save_clicked(self) -> None:
+        self._clear_field_highlight()
+        if self._on_submit is None:
+            self.accept()
+            return
+        result = self._on_submit(self.values())
+        if result.success:
+            self.accept()
+            return
+        self.set_error(result.message)
+        self._highlight_invalid_fields(result.fields)
+
+    def _clear_field_highlight(self) -> None:
+        for widget in self._highlighted_widgets:
+            widget.setProperty("valid", None)
+            refresh_style(widget)
+        self._highlighted_widgets = []
+
+    def _highlight_invalid_fields(self, fields: tuple[str, ...]) -> None:
+        """Mission 5.2, Problème C, §B (points 5/6) : met en évidence
+        chaque champ concerné et place le curseur sur le premier d'entre
+        eux — jamais de fermeture du dialogue, jamais de perte de saisie
+        (voir ``_on_save_clicked``, qui n'appelle ``accept()`` qu'en cas de
+        succès)."""
+        focused = False
+        for key in fields:
+            widget = self._field_widgets.get(key)
+            if widget is None:
+                continue
+            widget.setProperty("valid", False)
+            refresh_style(widget)
+            self._highlighted_widgets.append(widget)
+            if not focused:
+                widget.setFocus()
+                if isinstance(widget, QLineEdit):
+                    widget.selectAll()
+                focused = True
 
     def values(self) -> dict:
         return {

@@ -49,6 +49,7 @@ from app.views.article_form_dialog import ArticleFormDialog
 from app.views.article_mode_gestion_dialog import ArticleModeGestionDialog
 from app.views.article_unite_dialog import ArticleUniteDialog
 from app.views.common import (
+    FormSubmitResult,
     confirm_action,
     parse_decimal,
     parse_optional_decimal,
@@ -74,6 +75,63 @@ _MODE_GESTION_LABELS = {
     ModeGestionArticle.LOCATION: "Location",
 }
 
+# Mission 5.2, Problème C (§B, points 5/6) : associe le libellé de champ
+# utilisé par ``parse_decimal``/``parse_optional_decimal`` (repris tel quel
+# entre guillemets « » dans leurs messages, voir ``app.views.common``) à la
+# clé correspondante de ``ArticleFormDialog.values()`` — seul moyen, sans
+# dupliquer la validation elle-même, de savoir quel champ visuel mettre en
+# évidence pour un message d'erreur donné.
+_FIELD_LABEL_TO_KEY = {
+    "prix d'achat": "prix_achat",
+    "prix de vente": "prix_vente",
+    "stock minimum": "stock_min",
+    "stock maximum": "stock_max",
+    "stock initial": "stock_initial",
+    "tarif de location journalier": "tarif_location_jour",
+    "prix sous-traitant": "prix_sous_traitant",
+    "début de l'intervalle (autre prix)": "prix_autre_min",
+    "fin de l'intervalle (autre prix)": "prix_autre_max",
+    "tarif de location sous-traitant": "tarif_location_sous_traitant",
+    "début de l'intervalle (autre tarif de location)": "tarif_location_autre_min",
+    "fin de l'intervalle (autre tarif de location)": "tarif_location_autre_max",
+    "emplacement": "emplacement",
+    "code-barres": "code_barres",
+}
+
+
+def _fields_for_validation_error(message: str) -> list[str]:
+    """Meilleur effort (mission 5.2, §4.C.6 : « si possible ») pour
+    retrouver le ou les champs visés par un message de ``ValidationError``/
+    ``ConflictError`` levé par ``ArticleService`` ou par l'étape de
+    conversion de ``_submit_form`` — jamais une resaisie des règles
+    métier : uniquement un rattachement du message déjà produit à un ou
+    plusieurs champs du formulaire."""
+    for label, key in _FIELD_LABEL_TO_KEY.items():
+        if f"« {label} »" in message:
+            return [key]
+    if "est déjà utilisée" in message:
+        return ["reference"]
+    if "catégorie" in message.lower():
+        return ["category_id"]
+    if "fournisseur" in message.lower():
+        return ["fournisseur_principal_id"]
+    if "strictement positif est requis pour le mode Location" in message:
+        return ["tarif_location_jour"]
+    is_location_interval = "de location (autre tarif)" in message
+    is_sale_interval = "de vente (autre prix)" in message
+    if is_sale_interval or is_location_interval:
+        fields = (
+            ["tarif_location_autre_min", "tarif_location_autre_max"]
+            if is_location_interval
+            else ["prix_autre_min", "prix_autre_max"]
+        )
+        if "sous-traitant" in message:
+            fields = (["tarif_location_sous_traitant"] if is_location_interval else ["prix_sous_traitant"]) + fields
+        if "prix normal" in message:
+            fields = (["tarif_location_jour"] if is_location_interval else ["prix_vente"]) + fields
+        return fields
+    return []
+
 
 class ArticlesPage(QWidget):
     def __init__(
@@ -92,6 +150,13 @@ class ArticlesPage(QWidget):
         self._unite_article_service = unite_article_service
         self._permissions = permission_service
         self._currency_code = get_effective_currency()
+        # Mission 5.2, Problème C : alimentés par ``_submit_form`` à chaque
+        # échec de validation, lus juste après par ``_open_form`` pour
+        # transmettre au dialogue le champ (ou les champs) à mettre en
+        # évidence — sans changer la signature ni le comportement déjà
+        # testés de ``_submit_form`` lui-même (toujours un simple ``bool``).
+        self._last_submit_error_message: str = ""
+        self._last_submit_error_fields: tuple[str, ...] = ()
 
         layout = QVBoxLayout(self)
 
@@ -350,26 +415,37 @@ class ArticlesPage(QWidget):
         unites: list[str],
         initial: dict,
     ) -> None:
-        state = {"values": initial, "unites": unites}
+        """Mission 5.2, Problème C : n'utilise plus ``run_modal_form``, qui
+        recrée un nouveau dialogue à chaque tentative ratée (fermeture
+        visible puis réouverture — voir le diagnostic du rapport de
+        mission). Un seul ``ArticleFormDialog`` est construit ; sa propre
+        validation interne (``on_submit``, voir ``ArticleFormDialog.
+        _on_save_clicked``) décide d'accepter ou non — le dialogue ne se
+        ferme donc que sur un enregistrement réellement réussi ou une
+        annulation volontaire, jamais sur une erreur de validation."""
 
-        def factory() -> ArticleFormDialog:
-            return ArticleFormDialog(
-                categories,
-                suppliers,
-                state["unites"],
-                state["values"],
-                is_edit=(article_id is not None),
-                on_create_unite=self._create_unite_from_form,
-                on_delete_unite=self._delete_unite_from_form,
-                parent=self,
+        def on_submit(values: dict) -> FormSubmitResult:
+            if self._submit_form(article_id, values):
+                return FormSubmitResult(success=True)
+            return FormSubmitResult(
+                success=False,
+                message=self._last_submit_error_message,
+                fields=self._last_submit_error_fields,
             )
 
-        def submit(dialog: ArticleFormDialog) -> bool:
-            state["values"] = dialog.values()
-            return self._submit_form(article_id, state["values"])
-
-        run_modal_form(factory, submit)
-        self.refresh()
+        dialog = ArticleFormDialog(
+            categories,
+            suppliers,
+            unites,
+            initial,
+            is_edit=(article_id is not None),
+            on_create_unite=self._create_unite_from_form,
+            on_delete_unite=self._delete_unite_from_form,
+            on_submit=on_submit,
+            parent=self,
+        )
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.refresh()
 
     def _create_unite_from_form(self) -> Optional[str]:
         """Callback ``on_create_unite`` du bouton « Nouveau » (§7.3) —
@@ -546,6 +622,8 @@ class ArticlesPage(QWidget):
                 action_label = "modifié"
         except AppError as exc:
             QMessageBox.warning(self, "Opération refusée", str(exc))
+            self._last_submit_error_message = str(exc)
+            self._last_submit_error_fields = tuple(_fields_for_validation_error(str(exc)))
             return False
 
         if mode_gestion is None or mode_gestion == document.mode_gestion:

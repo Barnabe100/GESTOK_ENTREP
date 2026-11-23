@@ -90,7 +90,7 @@ class ArticleSummary:
     # None tant qu'ils n'ont jamais été configurés (aucun article existant
     # avant cette mission n'en a). ``prix_autre_min``/``prix_autre_max``
     # (et leurs équivalents location) ne sont significatifs qu'ensemble —
-    # voir ``_validate_tariff_interval``.
+    # voir ``validate_tariff_interval``.
     prix_sous_traitant: Optional[Decimal] = None
     prix_autre_min: Optional[Decimal] = None
     prix_autre_max: Optional[Decimal] = None
@@ -188,7 +188,7 @@ def _validate_optional_quantity(value: Optional[Decimal], field_label: str) -> O
     return _validate_quantity(value, field_label)
 
 
-def _validate_tariff_interval(
+def validate_tariff_interval(
     *,
     prix_normal: Optional[Decimal],
     prix_sous_traitant: Optional[Decimal],
@@ -331,7 +331,7 @@ class ArticleService:
         Mission 5 (§2/§3) : les tarifs alternatifs (sous-traitant, intervalle
         « autre ») sont entièrement facultatifs à la création — aucune
         valeur n'est jamais déduite automatiquement de ``prix_vente``/
-        ``tarif_location_jour`` (voir ``_validate_tariff_interval``)."""
+        ``tarif_location_jour`` (voir ``validate_tariff_interval``)."""
         self._permissions.require_permission("ARTICLE_CREATE")
 
         reference = _validate_text(reference, "référence", MAX_REFERENCE_LENGTH)
@@ -360,14 +360,14 @@ class ArticleService:
         tarif_location_autre_max = _validate_optional_money(
             tarif_location_autre_max, "fin de l'intervalle (autre tarif de location)"
         )
-        _validate_tariff_interval(
+        validate_tariff_interval(
             prix_normal=prix_vente,
             prix_sous_traitant=prix_sous_traitant,
             intervalle_min=prix_autre_min,
             intervalle_max=prix_autre_max,
             label="de vente (autre prix)",
         )
-        _validate_tariff_interval(
+        validate_tariff_interval(
             prix_normal=tarif_location_jour,
             prix_sous_traitant=tarif_location_sous_traitant,
             intervalle_min=tarif_location_autre_min,
@@ -606,14 +606,14 @@ class ArticleService:
                 if tarif_location_autre_max is not _UNSET
                 else article.tarif_location_autre_max
             )
-            _validate_tariff_interval(
+            validate_tariff_interval(
                 prix_normal=prix_vente,
                 prix_sous_traitant=effective_prix_sous_traitant,
                 intervalle_min=effective_prix_autre_min,
                 intervalle_max=effective_prix_autre_max,
                 label="de vente (autre prix)",
             )
-            _validate_tariff_interval(
+            validate_tariff_interval(
                 prix_normal=effective_tarif_location_jour,
                 prix_sous_traitant=effective_tarif_location_sous_traitant,
                 intervalle_min=effective_tarif_location_autre_min,

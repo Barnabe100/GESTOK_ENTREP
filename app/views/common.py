@@ -7,6 +7,7 @@ modal).
 """
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Callable, Optional, Protocol, TypeVar
@@ -15,6 +16,24 @@ from PySide6.QtCore import QDate
 from PySide6.QtWidgets import QDialog, QLabel, QMessageBox, QWidget
 
 from app.utils.exceptions import ValidationError
+
+
+@dataclass
+class FormSubmitResult:
+    """Résultat d'une tentative de soumission d'un formulaire modal qui
+    valide avant de se fermer (Mission 5.2, Problème C) — par opposition à
+    :func:`run_modal_form`, qui recrée un nouveau dialogue à chaque
+    nouvelle tentative (fermeture puis réouverture visible, inadapté à un
+    formulaire qu'on veut voir rester ouvert sur erreur).
+
+    ``fields`` identifie le ou les champs en cause (clés du dictionnaire
+    renvoyé par ``dialog.values()``), pour que le dialogue puisse les mettre
+    en évidence et positionner le curseur sur le premier — ``()`` si
+    l'origine de l'erreur ne peut pas être rattachée à un champ précis."""
+
+    success: bool
+    message: str = ""
+    fields: tuple[str, ...] = field(default_factory=tuple)
 
 # Convention unique de l'application pour signaler un champ obligatoire dans
 # un formulaire : un « * » accolé au libellé, plus cette légende commune —

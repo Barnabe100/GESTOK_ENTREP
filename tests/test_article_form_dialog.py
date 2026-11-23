@@ -1,10 +1,11 @@
 from decimal import Decimal
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QDialog
+from PySide6.QtWidgets import QDialog, QScrollArea
 
 from app.models.enums import ModeGestionArticle
 from app.views.article_form_dialog import ArticleFormDialog
+from app.views.common import FormSubmitResult
 from tests.ui_test_helpers import (
     assert_field_is_marked_required,
     assert_field_is_not_marked_required,
@@ -549,3 +550,233 @@ def test_values_includes_alternative_tariff_fields(qtbot) -> None:
     assert values["prix_sous_traitant"] == "400000"
     assert values["prix_autre_min"] == "350000"
     assert values["prix_autre_max"] == "550000"
+
+
+# -- Mission 5.2, Problème A : disposition en deux colonnes sans défilement ----------
+
+
+def test_dialog_does_not_require_horizontal_scroll_at_1366x768(qtbot) -> None:
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, _UNITES, is_edit=False)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.resize(min(dialog.width(), 1366), min(dialog.height(), 768))
+    qtbot.wait(10)
+
+    scroll_area = dialog.findChild(QScrollArea)
+    assert scroll_area is not None
+    assert scroll_area.horizontalScrollBar().isVisible() is False
+
+
+def test_dialog_does_not_require_horizontal_scroll_at_1920x1080(qtbot) -> None:
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, _UNITES, is_edit=False)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.resize(min(dialog.width(), 1920), min(dialog.height(), 1080))
+    qtbot.wait(10)
+
+    scroll_area = dialog.findChild(QScrollArea)
+    assert scroll_area.horizontalScrollBar().isVisible() is False
+
+
+def test_buttons_remain_accessible_at_1366x768(qtbot) -> None:
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, _UNITES, is_edit=False)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.resize(min(dialog.width(), 1366), min(dialog.height(), 768))
+
+    assert dialog.save_button.isVisible() is True
+    assert dialog.cancel_button.isVisible() is True
+
+
+def test_edit_mode_also_fits_without_horizontal_scroll(qtbot) -> None:
+    """Le formulaire de modification doit garantir la même présentation que
+    celui d'ajout (§2 de la mission)."""
+    initial = {
+        "reference": "ART-EDIT", "designation": "Article en modification", "category_id": 1,
+        "stock_actuel": Decimal("12"), "cout_moyen_pondere": Decimal("450"),
+    }
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, _UNITES, initial, is_edit=True)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.resize(min(dialog.width(), 1366), min(dialog.height(), 768))
+    qtbot.wait(10)
+
+    scroll_area = dialog.findChild(QScrollArea)
+    assert scroll_area.horizontalScrollBar().isVisible() is False
+
+
+# -- Mission 5.2, Problème B : regroupement « Autre prix »/« Autre tarif location » --
+
+
+def test_autre_prix_fields_are_on_the_same_row(qtbot) -> None:
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, _UNITES, is_edit=False)
+    qtbot.addWidget(dialog)
+
+    assert dialog.prix_autre_min_edit.y() == dialog.prix_autre_max_edit.y()
+
+
+def test_autre_tarif_location_fields_are_on_the_same_row(qtbot) -> None:
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, _UNITES, is_edit=False)
+    qtbot.addWidget(dialog)
+
+    assert dialog.tarif_location_autre_min_edit.y() == dialog.tarif_location_autre_max_edit.y()
+
+
+# -- Mission 5.2, Problème C, §A : avertissement pendant la saisie -------------------
+
+
+def test_no_warning_when_optional_tariff_fields_left_empty(qtbot) -> None:
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, _UNITES, is_edit=False)
+    qtbot.addWidget(dialog)
+
+    assert dialog.sale_tariff_warning_label.text() == ""
+    assert dialog.location_tariff_warning_label.text() == ""
+
+
+def test_warning_appears_for_incoherent_sale_interval_while_typing(qtbot) -> None:
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, _UNITES, is_edit=False)
+    qtbot.addWidget(dialog)
+    dialog.prix_vente_edit.setText("500000")
+
+    dialog.prix_autre_min_edit.setText("350000")
+    dialog.prix_autre_max_edit.setText("450000")  # < prix de vente : incohérent
+
+    assert "prix normal" in dialog.sale_tariff_warning_label.text()
+    assert dialog.prix_autre_max_edit.property("valid") is False
+
+
+def test_warning_disappears_once_sale_interval_becomes_valid(qtbot) -> None:
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, _UNITES, is_edit=False)
+    qtbot.addWidget(dialog)
+    dialog.prix_vente_edit.setText("500000")
+    dialog.prix_autre_min_edit.setText("350000")
+    dialog.prix_autre_max_edit.setText("450000")
+    assert dialog.sale_tariff_warning_label.text() != ""
+
+    dialog.prix_autre_max_edit.setText("550000")  # corrige l'incohérence
+
+    assert dialog.sale_tariff_warning_label.text() == ""
+    assert dialog.prix_autre_max_edit.property("valid") is None
+
+
+def test_warning_appears_for_incoherent_location_interval_while_typing(qtbot) -> None:
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, _UNITES, is_edit=False)
+    qtbot.addWidget(dialog)
+    index_location = dialog.mode_gestion_combo.findData(ModeGestionArticle.LOCATION)
+    dialog.mode_gestion_combo.setCurrentIndex(index_location)
+    dialog.tarif_location_jour_edit.setText("500")
+
+    dialog.tarif_location_autre_min_edit.setText("600")
+    dialog.tarif_location_autre_max_edit.setText("400")  # début > fin
+
+    assert "inférieur ou égal à sa fin" in dialog.location_tariff_warning_label.text()
+
+
+def test_sale_and_location_warnings_remain_independent(qtbot) -> None:
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, _UNITES, is_edit=False)
+    qtbot.addWidget(dialog)
+    dialog.prix_vente_edit.setText("500000")
+    dialog.prix_autre_min_edit.setText("350000")
+    dialog.prix_autre_max_edit.setText("450000")  # incohérent côté vente
+
+    assert dialog.sale_tariff_warning_label.text() != ""
+    assert dialog.location_tariff_warning_label.text() == ""
+
+
+# -- Mission 5.2, Problème C, §B : validation au clic sur Enregistrer ----------------
+
+
+def test_on_save_clicked_accepts_when_on_submit_succeeds(qtbot) -> None:
+    dialog = ArticleFormDialog(
+        _CATEGORIES, _SUPPLIERS, _UNITES, is_edit=False,
+        on_submit=lambda values: FormSubmitResult(success=True),
+    )
+    qtbot.addWidget(dialog)
+
+    dialog._on_save_clicked()
+
+    assert dialog.result() == QDialog.DialogCode.Accepted
+
+
+def test_on_save_clicked_keeps_dialog_open_on_failure(qtbot) -> None:
+    """RÈGLE ABSOLUE (Mission 5.2, §4.C) : une erreur de validation ne doit
+    jamais fermer le dialogue — ``_on_save_clicked`` ne doit jamais appeler
+    ``accept()`` quand ``on_submit`` échoue."""
+    dialog = ArticleFormDialog(
+        _CATEGORIES, _SUPPLIERS, _UNITES, is_edit=False,
+        on_submit=lambda values: FormSubmitResult(
+            success=False, message="La référence « ART-1 » est déjà utilisée.", fields=("reference",)
+        ),
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.reference_edit.setText("ART-1")
+    assert dialog.isVisible() is True
+
+    dialog._on_save_clicked()
+
+    assert dialog.result() != QDialog.DialogCode.Accepted
+    assert dialog.isVisible() is True
+
+
+def test_on_save_clicked_preserves_entered_values_on_failure(qtbot) -> None:
+    dialog = ArticleFormDialog(
+        _CATEGORIES, _SUPPLIERS, _UNITES, is_edit=False,
+        on_submit=lambda values: FormSubmitResult(success=False, message="Erreur", fields=()),
+    )
+    qtbot.addWidget(dialog)
+    dialog.reference_edit.setText("ART-CONSERVE")
+    dialog.designation_edit.setText("Désignation conservée")
+
+    dialog._on_save_clicked()
+
+    assert dialog.reference_edit.text() == "ART-CONSERVE"
+    assert dialog.designation_edit.text() == "Désignation conservée"
+
+
+def test_on_save_clicked_shows_message_and_highlights_field_on_failure(qtbot) -> None:
+    dialog = ArticleFormDialog(
+        _CATEGORIES, _SUPPLIERS, _UNITES, is_edit=False,
+        on_submit=lambda values: FormSubmitResult(
+            success=False, message="La référence « ART-1 » est déjà utilisée.", fields=("reference",)
+        ),
+    )
+    qtbot.addWidget(dialog)
+
+    dialog._on_save_clicked()
+
+    assert "déjà utilisée" in dialog.error_label.text()
+    assert dialog.reference_edit.property("valid") is False
+
+
+def test_on_save_clicked_clears_previous_highlight_on_new_attempt(qtbot) -> None:
+    attempts = {"count": 0}
+
+    def on_submit(values: dict) -> FormSubmitResult:
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            return FormSubmitResult(success=False, message="Erreur 1", fields=("reference",))
+        return FormSubmitResult(success=True)
+
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, _UNITES, is_edit=False, on_submit=on_submit)
+    qtbot.addWidget(dialog)
+
+    dialog._on_save_clicked()
+    assert dialog.reference_edit.property("valid") is False
+
+    dialog.reference_edit.setText("ART-CORRIGE")
+    dialog._on_save_clicked()
+
+    assert dialog.result() == QDialog.DialogCode.Accepted
+    assert dialog.reference_edit.property("valid") is None
+
+
+def test_on_save_clicked_without_on_submit_still_accepts(qtbot) -> None:
+    """Non-régression : un appelant qui ne fournit pas ``on_submit``
+    (ancienne signature) retrouve exactement l'ancien comportement."""
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, _UNITES, is_edit=False)
+    qtbot.addWidget(dialog)
+
+    dialog._on_save_clicked()
+
+    assert dialog.result() == QDialog.DialogCode.Accepted
