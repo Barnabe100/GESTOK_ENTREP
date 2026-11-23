@@ -135,7 +135,6 @@ class ArticleFormDialog(QDialog):
         self.setWindowTitle("Article")
         self.setModal(True)
         self.setMinimumWidth(820)
-        self.resize(880, 700)
 
         layout = QVBoxLayout(self)
 
@@ -462,6 +461,21 @@ class ArticleFormDialog(QDialog):
         # ``self.accept`` — voir ``_on_save_clicked``, qui n'accepte (et donc
         # ne ferme) le dialogue qu'après un ``on_submit`` réellement réussi.
         self.save_button.clicked.connect(self._on_save_clicked)
+
+        # Correction ergonomique (après Mission 5.2) : une hauteur fixe
+        # (``resize(880, 700)``) décidée avant la construction du contenu
+        # dépassait largement le besoin réel (~450-500 px selon le mode) —
+        # combinée à ``scroll_area.setWidgetResizable(True)`` (qui étire le
+        # contenu pour remplir toute la hauteur disponible) et au
+        # ``addStretch(1)`` ci-dessus, l'écart se traduisait par un grand
+        # espace vide entre la Description et le pied de formulaire. La
+        # largeur reste fixée explicitement (`setMinimumWidth` ne suffit
+        # pas à lui seul à choisir une largeur confortable) ; la hauteur,
+        # elle, est désormais calculée à partir du contenu réellement
+        # construit — jamais une valeur devinée à l'avance — en gardant une
+        # marge raisonnable pour accueillir un message d'erreur sans
+        # redimensionnement.
+        self.resize(880, self.sizeHint().height() + 60)
 
     @staticmethod
     def _select_combo_data(combo: QComboBox, data) -> None:

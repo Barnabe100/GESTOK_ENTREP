@@ -588,6 +588,84 @@ def test_buttons_remain_accessible_at_1366x768(qtbot) -> None:
     assert dialog.cancel_button.isVisible() is True
 
 
+# -- Correction ergonomique : plus de grand espace vide sous la Description ---------
+
+
+def test_dialog_height_has_no_large_empty_gap_below_description(qtbot) -> None:
+    """Avant ce correctif, le dialogue était redimensionné à une hauteur
+    fixe (700px) décidée avant la construction du contenu, bien supérieure
+    au besoin réel (~400px) : combinée à ``setWidgetResizable(True)``,
+    l'écart se traduisait par un grand espace vide entre la Description et
+    le pied de formulaire. La zone défilante ne doit plus être étirée de
+    plus de quelques pixels au-delà de la hauteur naturelle de son contenu."""
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, _UNITES, is_edit=False)
+    qtbot.addWidget(dialog)
+    dialog.show()
+
+    scroll_area = dialog.findChild(QScrollArea)
+    content = scroll_area.widget()
+    assert scroll_area.height() - content.sizeHint().height() < 30
+
+
+def test_edit_mode_dialog_height_has_no_large_empty_gap(qtbot) -> None:
+    initial = {
+        "reference": "ART-EDIT", "designation": "Article", "category_id": 1,
+        "stock_actuel": Decimal("10"), "cout_moyen_pondere": Decimal("100"),
+    }
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, _UNITES, initial, is_edit=True)
+    qtbot.addWidget(dialog)
+    dialog.show()
+
+    scroll_area = dialog.findChild(QScrollArea)
+    content = scroll_area.widget()
+    assert scroll_area.height() - content.sizeHint().height() < 30
+
+
+def test_dialog_is_noticeably_shorter_than_before_the_fix(qtbot) -> None:
+    """Non-régression explicite : l'ancienne hauteur fixe (700px) ne doit
+    plus jamais être atteinte pour un contenu aussi compact."""
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, _UNITES, is_edit=False)
+    qtbot.addWidget(dialog)
+    dialog.show()
+
+    assert dialog.height() < 600
+
+
+def test_description_immediately_follows_the_input_columns(qtbot) -> None:
+    """§4 de la correction : la description reste juste après les colonnes
+    de champs, jamais séparée par un grand espace vide."""
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, _UNITES, is_edit=False)
+    qtbot.addWidget(dialog)
+    dialog.show()
+
+    last_row_bottom = max(
+        dialog.stock_min_edit.geometry().bottom(), dialog.code_barres_edit.geometry().bottom()
+    )
+    gap = dialog.description_edit.geometry().top() - last_row_bottom
+    assert 0 <= gap < 40
+
+
+def test_buttons_still_accessible_after_validation_error(qtbot) -> None:
+    """§7 de la correction : les boutons restent accessibles et le message
+    d'erreur visible après un échec de validation, sans redimensionnement
+    manuel — non-régression de la Mission 5.2, Problème C."""
+    dialog = ArticleFormDialog(
+        _CATEGORIES, _SUPPLIERS, _UNITES, is_edit=False,
+        on_submit=lambda values: FormSubmitResult(
+            success=False, message="La référence « ART-1 » est déjà utilisée.", fields=("reference",)
+        ),
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+
+    dialog._on_save_clicked()
+
+    assert dialog.save_button.isVisible() is True
+    assert dialog.cancel_button.isVisible() is True
+    assert dialog.error_label.isVisible() is True
+    assert "déjà utilisée" in dialog.error_label.text()
+
+
 def test_edit_mode_also_fits_without_horizontal_scroll(qtbot) -> None:
     """Le formulaire de modification doit garantir la même présentation que
     celui d'ajout (§2 de la mission)."""
