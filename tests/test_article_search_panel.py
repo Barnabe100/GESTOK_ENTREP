@@ -74,3 +74,59 @@ def test_set_articles_updates_results(qtbot) -> None:
 
     assert panel.results_list.count() == 1
     assert "ART-003" in panel.results_list.item(0).text()
+
+
+# -- Mission 5.4, Évolution A.1 : 5 résultats visibles sans défilement --------------
+
+_MANY_ARTICLES = [(i, f"ART-{i:03d} — Article {i}") for i in range(1, 11)]
+
+
+def test_results_list_height_fits_five_rows(qtbot) -> None:
+    panel = ArticleSearchPanel(_MANY_ARTICLES)
+    qtbot.addWidget(panel)
+    panel.show()
+
+    row_height = panel.results_list.sizeHintForRow(0)
+    assert row_height > 0
+    # Hauteur fixe pour 5 lignes (+ petite marge) — ni plus ni moins, voir
+    # apply_comfortable_list_height.
+    assert panel.results_list.height() == 5 * row_height + 6
+
+
+def test_no_vertical_scroll_with_five_or_fewer_results(qtbot) -> None:
+    panel = ArticleSearchPanel(_MANY_ARTICLES[:5])
+    qtbot.addWidget(panel)
+    panel.show()
+
+    assert panel.results_list.count() == 5
+    assert panel.results_list.verticalScrollBar().isVisible() is False
+
+
+def test_vertical_scroll_available_beyond_five_results(qtbot) -> None:
+    panel = ArticleSearchPanel(_MANY_ARTICLES)
+    qtbot.addWidget(panel)
+    panel.show()
+
+    assert panel.results_list.count() == 10
+    assert panel.results_list.verticalScrollBar().isVisible() is True
+
+
+def test_live_filtering_still_works_with_larger_list(qtbot) -> None:
+    panel = ArticleSearchPanel(_MANY_ARTICLES)
+    qtbot.addWidget(panel)
+
+    panel.search_edit.setText("005")
+
+    assert panel.results_list.count() == 1
+    assert "ART-005" in panel.results_list.item(0).text()
+
+
+def test_double_click_still_adds_article_with_larger_list(qtbot) -> None:
+    panel = ArticleSearchPanel(_MANY_ARTICLES)
+    qtbot.addWidget(panel)
+    received = []
+    panel.article_activated.connect(received.append)
+
+    panel._on_item_activated(panel.results_list.item(7))
+
+    assert received == [8]

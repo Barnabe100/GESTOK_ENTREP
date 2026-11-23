@@ -1,6 +1,9 @@
 from datetime import datetime, timezone
 from decimal import Decimal
 
+import pytest
+from PySide6.QtWidgets import QTableWidget
+
 from app.models.enums import StatutOperation, TypeMouvement
 from app.services.sales.sale_service import VenteLigneSummary, VenteSummary
 from app.services.stock.movement_summary import MouvementSummary
@@ -311,3 +314,154 @@ def test_statut_paiement_label_reflects_non_payee_status(qtbot) -> None:
 
     assert dialog.statut_paiement_label.text() == "Non payée"
     assert "color" in dialog.statut_paiement_label.styleSheet()
+
+
+# -- Mission 5.4, Évolution C : hauteur compacte des 3 tableaux ---------------------
+#
+# Même traitement que ``location_detail_dialog.py`` (Évolution B) : 2 lignes
+# de données visibles par défaut (plus l'en-tête), toutes les données
+# restant chargées (``rowCount`` jamais tronqué), le défilement vertical du
+# tableau donnant accès au reste.
+
+from app.services.sales.sale_service import PaiementSummary
+
+
+def _make_lignes(n: int) -> list[VenteLigneSummary]:
+    return [
+        VenteLigneSummary(
+            id=i, article_id=i, article_reference=f"ART-{i}", article_designation=f"Article {i}",
+            quantite=Decimal("1"), prix_unitaire=Decimal("100"), sous_total=Decimal("100"),
+        )
+        for i in range(1, n + 1)
+    ]
+
+
+def _make_movements(n: int) -> list[MouvementSummary]:
+    return [_make_movement(id=i) for i in range(1, n + 1)]
+
+
+class _FakeSaleServiceWithPayments:
+    """Fournit uniquement ce que ``_refresh_payment_section`` utilise —
+    aucune base de test complète nécessaire pour ce seul besoin."""
+
+    def __init__(self, sale: VenteSummary, payments: list[PaiementSummary]) -> None:
+        self._sale = sale
+        self._payments = payments
+
+    def get_sale(self, sale_id: int) -> VenteSummary:
+        return self._sale
+
+    def list_payments(self, sale_id: int) -> list[PaiementSummary]:
+        return self._payments
+
+    def can_manage_sale(self, sale_id: int, permission: str) -> bool:
+        return False
+
+
+def _make_payments(n: int) -> list[PaiementSummary]:
+    now = datetime.now(timezone.utc)
+    return [
+        PaiementSummary(
+            id=i, vente_id=1, montant=Decimal("100"), date_heure=now,
+            mode_paiement=None, reference=None, user_id=1, username="admin", commentaire=None,
+        )
+        for i in range(1, n + 1)
+    ]
+
+
+def _build_dialog_with_payments(sale, payments):
+    sale_service = _FakeSaleServiceWithPayments(sale, payments)
+    return SaleDetailDialog(sale, [], "XOF", _StubReceiptService(), _StubPermissions(), sale_service=sale_service)
+
+
+@pytest.mark.parametrize("n_lines", [0, 1, 2, 5])
+def test_lines_table_height_grows_only_up_to_two_rows(qtbot, n_lines) -> None:
+    dialog = _build_dialog(_make_sale(lignes=_make_lignes(n_lines), total=Decimal(str(100 * n_lines))))
+    qtbot.addWidget(dialog)
+
+    lines_table = dialog.findChildren(QTableWidget)[0]
+    assert lines_table.rowCount() == n_lines
+    displayed_rows = min(n_lines, 2)
+    header_height = lines_table.horizontalHeader().sizeHint().height() or 32
+    assert lines_table.height() == header_height + displayed_rows * 34 + 12
+    assert lines_table.horizontalScrollBar().isVisible() is False
+
+
+def test_lines_table_scrolls_vertically_beyond_two_rows(qtbot) -> None:
+    dialog = _build_dialog(_make_sale(lignes=_make_lignes(6), total=Decimal("600")))
+    qtbot.addWidget(dialog)
+    dialog.show()
+
+    lines_table = dialog.findChildren(QTableWidget)[0]
+    assert lines_table.rowCount() == 6
+    assert lines_table.verticalScrollBar().isVisible() is True
+
+
+def test_lines_table_column_widths_preserved_after_height_change(qtbot) -> None:
+    dialog = _build_dialog(_make_sale(lignes=_make_lignes(3), total=Decimal("300")))
+    qtbot.addWidget(dialog)
+
+    lines_table = dialog.findChildren(QTableWidget)[0]
+    assert lines_table.columnWidth(1) == 110
+    assert lines_table.columnWidth(2) == 150
+
+
+@pytest.mark.parametrize("n_payments", [0, 1, 2, 4])
+def test_payments_table_height_capped_at_two_rows(qtbot, n_payments) -> None:
+    sale = _make_sale(statut=StatutOperation.VALIDEE)
+    dialog = _build_dialog_with_payments(sale, _make_payments(n_payments))
+    qtbot.addWidget(dialog)
+
+    assert dialog.payments_table.rowCount() == n_payments
+    displayed_rows = min(n_payments, 2)
+    header_height = dialog.payments_table.horizontalHeader().sizeHint().height() or 32
+    assert dialog.payments_table.height() == header_height + displayed_rows * 34 + 12
+
+
+def test_payments_table_scrolls_vertically_beyond_two_rows(qtbot) -> None:
+    sale = _make_sale(statut=StatutOperation.VALIDEE)
+    dialog = _build_dialog_with_payments(sale, _make_payments(5))
+    qtbot.addWidget(dialog)
+    dialog.show()
+
+    assert dialog.payments_table.rowCount() == 5
+    assert dialog.payments_table.verticalScrollBar().isVisible() is True
+
+
+@pytest.mark.parametrize("n_movements", [0, 1, 2, 4])
+def test_movements_table_height_capped_at_two_rows(qtbot, n_movements) -> None:
+    movements = _make_movements(n_movements)
+    dialog = _build_dialog(_make_sale(statut=StatutOperation.VALIDEE), movements)
+    qtbot.addWidget(dialog)
+
+    if n_movements == 0:
+        assert dialog.movements_table is None
+        return
+    assert dialog.movements_table.rowCount() == n_movements
+    displayed_rows = min(n_movements, 2)
+    header_height = dialog.movements_table.horizontalHeader().sizeHint().height() or 32
+    assert dialog.movements_table.height() == header_height + displayed_rows * 34 + 12
+
+
+def test_movements_table_scrolls_vertically_beyond_two_rows(qtbot) -> None:
+    dialog = _build_dialog(_make_sale(statut=StatutOperation.VALIDEE), _make_movements(6))
+    qtbot.addWidget(dialog)
+    dialog.show()
+
+    assert dialog.movements_table.rowCount() == 6
+    assert dialog.movements_table.verticalScrollBar().isVisible() is True
+
+
+def test_no_horizontal_scroll_on_any_table_at_1366x768(qtbot) -> None:
+    dialog = _build_dialog(
+        _make_sale(lignes=_make_lignes(3), statut=StatutOperation.VALIDEE, total=Decimal("300")),
+        _make_movements(3),
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.resize(min(dialog.width(), 1366), min(dialog.height(), 768))
+    qtbot.wait(10)
+
+    tables = [dialog.findChildren(QTableWidget)[0], dialog.payments_table, dialog.movements_table]
+    for table in tables:
+        assert table.horizontalScrollBar().isVisible() is False

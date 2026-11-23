@@ -24,6 +24,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.views.design_system import apply_comfortable_list_height
+
 
 class ArticleSearchPanel(QWidget):
     """``articles`` : liste de tuples ``(article_id, libellé affiché déjà
@@ -52,11 +54,14 @@ class ArticleSearchPanel(QWidget):
         search_row.addWidget(self.search_edit)
         layout.addLayout(search_row)
 
-        # Même hauteur maximale que ``caisse_search_results`` (Ventes/
-        # Locations) : assez de lignes visibles sans occuper une place
-        # disproportionnée dans un dialogue par ailleurs compact.
+        # Mission 5.4, Évolution A.1 : 5 résultats visibles simultanément
+        # sans défilement (recette Windows) — hauteur fixe plutôt qu'un
+        # simple plafond, pour ne pas non plus réduire l'espace laissé au
+        # tableau des lignes en dessous. Le défilement vertical reste
+        # fonctionnel au-delà de 5 résultats. Hauteur calée sur
+        # ``_refresh_results`` (voir ``apply_comfortable_list_height``),
+        # jamais devinée ici avant qu'aucun élément n'existe.
         self.results_list = QListWidget(self)
-        self.results_list.setMaximumHeight(140)
         layout.addWidget(self.results_list)
 
         self.search_edit.textChanged.connect(self._refresh_results)
@@ -91,10 +96,12 @@ class ArticleSearchPanel(QWidget):
         if not candidates and normalized:
             empty_item = QListWidgetItem("Aucun article ne correspond à la recherche.", self.results_list)
             empty_item.setFlags(empty_item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+            apply_comfortable_list_height(self.results_list, visible_rows=5)
             return
         for article_id, label in candidates:
             item = QListWidgetItem(label, self.results_list)
             item.setData(Qt.ItemDataRole.UserRole, article_id)
+        apply_comfortable_list_height(self.results_list, visible_rows=5)
 
     def _on_item_activated(self, item: QListWidgetItem) -> None:
         article_id = item.data(Qt.ItemDataRole.UserRole)

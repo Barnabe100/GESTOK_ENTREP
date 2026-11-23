@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLayout,
     QLineEdit,
+    QListWidget,
     QSizePolicy,
     QStyledItemDelegate,
     QTableWidget,
@@ -92,6 +93,62 @@ def apply_comfortable_row_height(
     table.verticalHeader().setDefaultSectionSize(row_height)
     header_height = table.horizontalHeader().sizeHint().height() or 32
     table.setMinimumHeight(header_height + visible_rows * row_height + 12)
+
+
+def apply_compact_row_height(
+    table: QTableWidget, visible_rows: int = 2, row_height: int = 34
+) -> None:
+    """L'inverse d'``apply_comfortable_row_height`` (Mission 5.4, Évolutions
+    B/C) : plafonne la hauteur visible d'un tableau de consultation à
+    ``visible_rows`` lignes de données (plus l'en-tête), plutôt que de
+    garantir un plancher — pour les fenêtres de détails (vente, location)
+    dont les tableaux (lignes, paiements, mouvements, retours) pouvaient
+    occuper une hauteur disproportionnée dès qu'un historique s'allonge.
+
+    Le défilement vertical propre du tableau reste entièrement fonctionnel
+    au-delà de ce plafond (jamais une donnée supprimée ou masquée
+    définitivement) : seule la hauteur affichée par défaut change. Hauteur
+    fixe (min = max) plutôt qu'un simple plafond, pour un rendu déterministe
+    — jamais tributaire de l'espace que le layout voudrait par ailleurs lui
+    laisser prendre.
+
+    À rappeler après toute modification du nombre de lignes
+    (``setRowCount``) : la hauteur est calculée sur le nombre de lignes
+    *réellement* chargées (jusqu'à ``visible_rows``), pas seulement sur
+    ``visible_rows`` lui-même — un tableau vide ou à une seule ligne
+    n'occupe donc jamais une hauteur excessive."""
+    table.verticalHeader().setDefaultSectionSize(row_height)
+    header_height = table.horizontalHeader().sizeHint().height() or 32
+    displayed_rows = min(table.rowCount(), visible_rows)
+    height = header_height + displayed_rows * row_height + 12
+    table.setMinimumHeight(height)
+    table.setMaximumHeight(height)
+
+
+def apply_comfortable_list_height(
+    list_widget: QListWidget, visible_rows: int = 5, fallback_row_height: int = 24
+) -> None:
+    """Même principe qu'``apply_comfortable_row_height``, pour un
+    ``QListWidget`` plutôt qu'un ``QTableWidget`` (Mission 5.4, Évolution A :
+    panneau de recherche d'article des Entrées/Sorties, voir
+    ``ArticleSearchPanel``) — sans en-tête, donc une simple hauteur fixe
+    pour ``visible_rows`` lignes, ni plus (pour ne pas réduire l'espace
+    laissé au tableau des lignes en dessous) ni moins (pour que les
+    ``visible_rows`` résultats soient visibles sans défilement). Le
+    défilement vertical reste fonctionnel au-delà.
+
+    La hauteur réelle d'une ligne de ``QListWidget`` dépend de la police et
+    du style natifs (donc de la plateforme) — jamais une valeur fixe
+    devinée à l'avance : ``sizeHintForRow(0)`` lit la hauteur réellement
+    utilisée par au moins un élément déjà présent, ``fallback_row_height``
+    ne servant que si la liste est encore entièrement vide (avant toute
+    population). À rappeler après chaque repeuplement de la liste
+    (ex. ``_refresh_results``), pour rester calé sur la police effective
+    même si elle ne peut être connue qu'une fois le premier élément rendu."""
+    row_height = list_widget.sizeHintForRow(0)
+    if row_height <= 0:
+        row_height = fallback_row_height
+    list_widget.setFixedHeight(visible_rows * row_height + 6)
 
 
 class QuantityEditDelegate(QStyledItemDelegate):

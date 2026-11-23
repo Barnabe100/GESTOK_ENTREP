@@ -45,7 +45,7 @@ from app.utils.pdf_export import build_page_layout, export_document_to_pdf
 from app.utils.quantity import format_quantity
 from app.views.cancellation_reason_dialog import CancellationReasonDialog
 from app.views.common import build_required_field_legend, parse_decimal, required_label
-from app.views.design_system import MultiColumnForm, apply_comfortable_row_height
+from app.views.design_system import MultiColumnForm, apply_compact_row_height
 from app.views.location_caution_dialog import LocationCautionDialog
 from app.views.location_payment_form_dialog import LocationPaymentFormDialog
 from app.views.location_return_form_dialog import LocationReturnFormDialog
@@ -168,7 +168,9 @@ class LocationDetailDialog(QDialog):
         self.lines_table.setAlternatingRowColors(True)
         self.lines_table.setHorizontalHeaderLabels(_LINE_COLUMNS)
         self.lines_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        apply_comfortable_row_height(self.lines_table, visible_rows=4)
+        # Mission 5.4, Évolution B : hauteur recalculée dans ``_refresh``
+        # (voir plus bas), après chaque chargement réel des lignes — pas ici,
+        # où la table est encore vide à la construction.
         # Mission 5, §5 : largeurs explicites (même principe que les
         # tableaux de caisse Ventes/Locations) — seule la colonne Article
         # s'étire, les cinq colonnes numériques/monétaires gardent une
@@ -186,7 +188,7 @@ class LocationDetailDialog(QDialog):
         self.retours_table.setAlternatingRowColors(True)
         self.retours_table.setHorizontalHeaderLabels(_RETOUR_COLUMNS)
         self.retours_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        apply_comfortable_row_height(self.retours_table, visible_rows=4)
+        # Mission 5.4, Évolution B : idem, recalculée dans ``_refresh``.
         retours_header = self.retours_table.horizontalHeader()
         retours_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         for col, width in ((0, 100), (2, 105), (3, 115), (4, 125), (5, 140)):
@@ -211,7 +213,7 @@ class LocationDetailDialog(QDialog):
         self.payments_table.setHorizontalHeaderLabels(_PAYMENT_COLUMNS)
         self.payments_table.horizontalHeader().setStretchLastSection(True)
         self.payments_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        apply_comfortable_row_height(self.payments_table, visible_rows=4)
+        # Mission 5.4, Évolution B : idem, recalculée dans ``_refresh``.
         # Mission 5, §5 : la colonne Date, dimensionnée par défaut sur la
         # largeur de son seul en-tête, tronquait systématiquement
         # « AAAA-MM-JJ HH:MM » — largeur explicite, comme les autres
@@ -333,6 +335,12 @@ class LocationDetailDialog(QDialog):
             self.lines_table.setItem(
                 row, 6, QTableWidgetItem(format_money(ligne.montant_facture_total, self._currency_code))
             )
+        # Mission 5.4, Évolution B : 2 lignes de données visibles par défaut
+        # (plus l'en-tête) — toutes les lignes restent chargées, le
+        # défilement vertical du tableau donnant accès aux autres ; recalculé
+        # ici car la hauteur dépend du nombre réel de lignes (voir
+        # ``apply_compact_row_height``).
+        apply_compact_row_height(self.lines_table, visible_rows=2)
 
         retours = [(ligne, retour) for ligne in location.lignes for retour in ligne.retours]
         retours.sort(key=lambda pair: pair[1].date_heure)
@@ -344,6 +352,7 @@ class LocationDetailDialog(QDialog):
             self.retours_table.setItem(row, 3, QTableWidgetItem(format_quantity(retour.quantite_immobilisee)))
             self.retours_table.setItem(row, 4, QTableWidgetItem(format_money(retour.montant_facture, self._currency_code)))
             self.retours_table.setItem(row, 5, QTableWidgetItem(retour.username))
+        apply_compact_row_height(self.retours_table, visible_rows=2)
 
         self._payment_form.clear()
         self._payment_form.add_row(
@@ -363,6 +372,7 @@ class LocationDetailDialog(QDialog):
             self.payments_table.setItem(row, 2, QTableWidgetItem(paiement.mode_paiement or "—"))
             self.payments_table.setItem(row, 3, QTableWidgetItem(paiement.reference or "—"))
             self.payments_table.setItem(row, 4, QTableWidgetItem(paiement.username))
+        apply_compact_row_height(self.payments_table, visible_rows=2)
 
         self._clear_form(self._caution_form)
         self._caution_form.addRow(

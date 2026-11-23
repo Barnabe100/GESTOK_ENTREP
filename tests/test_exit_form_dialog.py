@@ -207,6 +207,69 @@ def test_remove_line_deletes_selected_row(qtbot) -> None:
     assert dialog.values()["lignes"][0]["article_id"] == 20
 
 
+# -- Mission 5.4, Évolution A.2 : compteur dynamique "Lignes (n)" -------------------
+
+
+def test_lines_label_starts_at_zero(qtbot) -> None:
+    dialog = ExitFormDialog(_MOTIFS, _ARTICLES)
+    qtbot.addWidget(dialog)
+
+    assert dialog.lines_label.text() == "Lignes (0)"
+
+
+def test_lines_label_reflects_prefilled_lines(qtbot) -> None:
+    initial = {
+        "lignes": [
+            {"article_id": 10, "article_label": "ART-1", "quantite": Decimal("10"), "cout_unitaire": Decimal("500")},
+        ]
+    }
+    dialog = ExitFormDialog(_MOTIFS, _ARTICLES, initial)
+    qtbot.addWidget(dialog)
+
+    assert dialog.lines_label.text() == "Lignes (1)"
+
+
+def test_lines_label_increments_after_add(qtbot) -> None:
+    dialog = ExitFormDialog(_MOTIFS, _ARTICLES)
+    qtbot.addWidget(dialog)
+
+    dialog._on_article_activated(10)
+    assert dialog.lines_label.text() == "Lignes (1)"
+
+    dialog._on_article_activated(20)
+    assert dialog.lines_label.text() == "Lignes (2)"
+
+
+def test_lines_label_decrements_after_remove(qtbot) -> None:
+    dialog = ExitFormDialog(_MOTIFS, _ARTICLES)
+    qtbot.addWidget(dialog)
+    dialog._on_article_activated(10)
+    dialog._on_article_activated(20)
+    dialog.lines_table.selectRow(0)
+
+    dialog._on_remove_line_clicked()
+
+    assert dialog.lines_label.text() == "Lignes (1)"
+
+
+def test_lines_label_stays_consistent_across_multiple_operations(qtbot) -> None:
+    dialog = ExitFormDialog(_MOTIFS, _ARTICLES)
+    qtbot.addWidget(dialog)
+
+    dialog._on_article_activated(10)
+    dialog._on_article_activated(20)
+    dialog._on_article_activated(10)
+    assert dialog.lines_label.text() == "Lignes (3)"
+
+    dialog.lines_table.selectRow(1)
+    dialog._on_remove_line_clicked()
+    assert dialog.lines_label.text() == "Lignes (2)"
+
+    dialog.lines_table.selectRow(0)
+    dialog._on_remove_line_clicked()
+    assert dialog.lines_label.text() == "Lignes (1)"
+
+
 def test_save_button_accepts(qtbot) -> None:
     dialog = ExitFormDialog(_MOTIFS, _ARTICLES)
     qtbot.addWidget(dialog)

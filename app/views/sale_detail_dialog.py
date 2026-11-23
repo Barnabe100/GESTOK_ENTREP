@@ -42,7 +42,7 @@ from app.utils.money import format_money
 from app.utils.pdf_export import build_page_layout, export_document_to_pdf
 from app.utils.quantity import format_quantity
 from app.views.cancellation_reason_dialog import CancellationReasonDialog
-from app.views.design_system import MultiColumnForm, apply_comfortable_row_height
+from app.views.design_system import MultiColumnForm, apply_compact_row_height
 
 _LINE_COLUMNS = ["Article", "Quantité", "Prix unitaire", "Montant"]
 _MOVEMENT_COLUMNS = ["Date/heure", "Type", "Quantité", "Stock avant", "Stock après", "Utilisateur"]
@@ -192,6 +192,13 @@ class SaleDetailDialog(QDialog):
             lines_table.setItem(row, 1, QTableWidgetItem(format_quantity(ligne.quantite)))
             lines_table.setItem(row, 2, QTableWidgetItem(format_money(ligne.prix_unitaire, currency_code)))
             lines_table.setItem(row, 3, QTableWidgetItem(format_money(ligne.sous_total, currency_code)))
+        # Mission 5.4, Évolution C : 2 lignes de données visibles par défaut
+        # (plus l'en-tête) — toutes les lignes restent chargées, le
+        # défilement vertical du tableau donnant accès aux autres. Les
+        # lignes d'une vente ne changent jamais après construction (aucun
+        # rafraîchissement ultérieur ne modifie ``rowCount``), un seul appel
+        # suffit ici.
+        apply_compact_row_height(lines_table, visible_rows=2)
         lines_layout.addWidget(lines_table)
 
         total_label = QLabel(f"Total : {format_money(sale.total, currency_code)}", lines_group)
@@ -224,13 +231,9 @@ class SaleDetailDialog(QDialog):
         self.payments_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.payments_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.payments_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        # Mission 4, §2.1 : au moins 4 paiements visibles sans défilement
-        # interne au tableau (le défilement reste porté par le
-        # ``scroll_area`` englobant, voir plus bas) — sans quoi le tableau
-        # retombait sur son sizeHint par défaut (~192 px), ne laissant
-        # apparaître qu'une seule ligne de paiement malgré un historique
-        # plus long.
-        apply_comfortable_row_height(self.payments_table, visible_rows=4)
+        # Mission 5.4, Évolution C : hauteur recalculée dans
+        # ``_refresh_payment_section`` (après chaque chargement réel des
+        # paiements) — pas ici, où le tableau est encore vide.
         # Mission 5.1, Correction B : largeurs explicites (même principe que
         # ``location_detail_dialog.py``) — la colonne Date, dimensionnée par
         # défaut sur la largeur de son seul en-tête, tronquait systématiquement
@@ -439,6 +442,7 @@ class SaleDetailDialog(QDialog):
             self.payments_table.setItem(row, 2, QTableWidgetItem(paiement.mode_paiement or "—"))
             self.payments_table.setItem(row, 3, QTableWidgetItem(paiement.reference or "—"))
             self.payments_table.setItem(row, 4, QTableWidgetItem(paiement.username))
+        apply_compact_row_height(self.payments_table, visible_rows=2)
 
         # Le statut peut avoir changé (annulation) : les contrôles de reçu et
         # d'annulation dépendent tous deux de ``sale.statut``, donc toujours
@@ -525,6 +529,11 @@ class SaleDetailDialog(QDialog):
             table.setItem(row, 3, QTableWidgetItem(format_quantity(mouvement.stock_avant)))
             table.setItem(row, 4, QTableWidgetItem(format_quantity(mouvement.stock_apres)))
             table.setItem(row, 5, QTableWidgetItem(mouvement.username))
+        # Mission 5.4, Évolution C : seul point de passage commun à la
+        # construction initiale (``_build_movements_group``) et au
+        # rafraîchissement après annulation (``_refresh_movements_section``)
+        # — toujours recalculé ici, jamais figé à la construction.
+        apply_compact_row_height(table, visible_rows=2)
 
     def _build_movements_group(self, movements: list[MouvementSummary]) -> None:
         movements_group = QGroupBox("Mouvements de stock générés", self._content)
@@ -533,7 +542,9 @@ class SaleDetailDialog(QDialog):
         movements_table.setAlternatingRowColors(True)
         movements_table.setHorizontalHeaderLabels(_MOVEMENT_COLUMNS)
         movements_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        apply_comfortable_row_height(movements_table, visible_rows=4)
+        # Mission 5.4, Évolution C : hauteur recalculée dans
+        # ``_populate_movements_table`` (appelée juste après), pas ici où
+        # le tableau est encore vide.
         # Mission 5.1, Correction B : largeurs explicites — seule la
         # colonne Utilisateur (texte variable) s'étire, les autres gardent
         # une largeur fixe confortable (même principe que les tableaux de

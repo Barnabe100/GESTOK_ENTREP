@@ -880,3 +880,167 @@ def test_print_location_receipt_refused_before_depart(qtbot, login_as, monkeypat
     result = dialog._print_location_receipt()
 
     assert result is False
+
+
+# -- Mission 5.4, Évolution B : hauteur compacte des 3 tableaux ---------------------
+#
+# Chaque tableau n'affiche initialement que 2 lignes de données (plus son
+# en-tête) : toutes les données restent chargées (``rowCount`` reflète
+# toujours le nombre réel), seule la hauteur affichée change — le
+# défilement vertical du tableau donne accès au reste.
+
+
+def _make_location_with_n_lines(stack, client, n: int):
+    articles = [_make_rental_article(stack, reference=f"ART-LOC-{i}") for i in range(n)]
+    return stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("1")) for article in articles]
+    )
+
+
+@pytest.mark.parametrize("n_lines", [0, 1, 2, 5])
+def test_lines_table_height_grows_only_up_to_two_rows(qtbot, login_as, n_lines) -> None:
+    stack, _ = login_as("Administrateur")
+    client = _make_client(stack)
+    location = _make_location_with_n_lines(stack, client, n_lines)
+
+    dialog = _build_dialog(stack, location)
+    qtbot.addWidget(dialog)
+
+    assert dialog.lines_table.rowCount() == n_lines  # aucune donnée jamais tronquée
+    displayed_rows = min(n_lines, 2)
+    header_height = dialog.lines_table.horizontalHeader().sizeHint().height() or 32
+    expected_height = header_height + displayed_rows * 34 + 12
+    assert dialog.lines_table.height() == expected_height
+    assert dialog.lines_table.horizontalScrollBar().isVisible() is False
+
+
+def test_lines_table_scrolls_vertically_beyond_two_rows(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    client = _make_client(stack)
+    location = _make_location_with_n_lines(stack, client, 6)
+
+    dialog = _build_dialog(stack, location)
+    qtbot.addWidget(dialog)
+    dialog.show()
+
+    assert dialog.lines_table.rowCount() == 6
+    assert dialog.lines_table.verticalScrollBar().isVisible() is True
+
+
+def test_lines_table_column_widths_preserved_after_height_change(qtbot, login_as) -> None:
+    """Évolution B : « conserver la largeur des colonnes » — inchangée par
+    le plafonnement de hauteur."""
+    stack, _ = login_as("Administrateur")
+    client = _make_client(stack)
+    location = _make_location_with_n_lines(stack, client, 3)
+
+    dialog = _build_dialog(stack, location)
+    qtbot.addWidget(dialog)
+
+    assert dialog.lines_table.columnWidth(1) == 95
+    assert dialog.lines_table.columnWidth(2) == 130
+
+
+def _make_location_with_n_retours(stack, client, n: int):
+    if n == 0:
+        # Une location sans ligne ne peut pas être confirmée (règle métier
+        # existante, non modifiée) — un brouillon sans ligne a de toute
+        # façon structurellement 0 retour, inutile d'aller plus loin.
+        return stack.rentals.create_location(date(2026, 1, 1), client.id, [])
+    articles = [_make_rental_article(stack, reference=f"ART-RET-{i}") for i in range(n)]
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("1")) for article in articles]
+    )
+    stack.rentals.confirm_location(location.id)
+    stack.rentals.depart_location(location.id, date(2026, 1, 1))
+    reloaded = stack.rentals.get_location(location.id)
+    for ligne in reloaded.lignes:
+        stack.rentals.return_location_line(
+            location.id, ligne.id, date(2026, 1, 2), quantite_bon_etat=Decimal("1"),
+        )
+    return stack.rentals.get_location(location.id)
+
+
+@pytest.mark.parametrize("n_retours", [0, 1, 2, 4])
+def test_retours_table_height_capped_at_two_rows(qtbot, login_as, n_retours) -> None:
+    stack, _ = login_as("Administrateur")
+    client = _make_client(stack)
+    location = _make_location_with_n_retours(stack, client, n_retours)
+
+    dialog = _build_dialog(stack, location)
+    qtbot.addWidget(dialog)
+
+    assert dialog.retours_table.rowCount() == n_retours
+    displayed_rows = min(n_retours, 2)
+    header_height = dialog.retours_table.horizontalHeader().sizeHint().height() or 32
+    assert dialog.retours_table.height() == header_height + displayed_rows * 34 + 12
+
+
+def test_retours_table_scrolls_vertically_beyond_two_rows(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    client = _make_client(stack)
+    location = _make_location_with_n_retours(stack, client, 5)
+
+    dialog = _build_dialog(stack, location)
+    qtbot.addWidget(dialog)
+    dialog.show()
+
+    assert dialog.retours_table.rowCount() == 5
+    assert dialog.retours_table.verticalScrollBar().isVisible() is True
+
+
+def _make_location_with_n_payments(stack, client, n: int):
+    article = _make_rental_article(stack, tarif_jour=Decimal("10000"))
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("1"))]
+    )
+    stack.rentals.confirm_location(location.id)
+    stack.rentals.depart_location(location.id, date(2026, 1, 1))
+    ligne_id = stack.rentals.get_location(location.id).lignes[0].id
+    stack.rentals.return_location_line(location.id, ligne_id, date(2026, 1, 2), quantite_bon_etat=Decimal("1"))
+    for _ in range(n):
+        stack.rentals.record_payment(location.id, Decimal("100"))
+    return stack.rentals.get_location(location.id)
+
+
+@pytest.mark.parametrize("n_payments", [0, 1, 2, 4])
+def test_payments_table_height_capped_at_two_rows(qtbot, login_as, n_payments) -> None:
+    stack, _ = login_as("Administrateur")
+    client = _make_client(stack)
+    location = _make_location_with_n_payments(stack, client, n_payments)
+
+    dialog = _build_dialog(stack, location)
+    qtbot.addWidget(dialog)
+
+    assert dialog.payments_table.rowCount() == n_payments
+    displayed_rows = min(n_payments, 2)
+    header_height = dialog.payments_table.horizontalHeader().sizeHint().height() or 32
+    assert dialog.payments_table.height() == header_height + displayed_rows * 34 + 12
+
+
+def test_payments_table_scrolls_vertically_beyond_two_rows(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    client = _make_client(stack)
+    location = _make_location_with_n_payments(stack, client, 5)
+
+    dialog = _build_dialog(stack, location)
+    qtbot.addWidget(dialog)
+    dialog.show()
+
+    assert dialog.payments_table.rowCount() == 5
+    assert dialog.payments_table.verticalScrollBar().isVisible() is True
+
+
+def test_no_horizontal_scroll_on_any_table_at_1366x768(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    client = _make_client(stack)
+    location = _make_location_with_n_lines(stack, client, 3)
+
+    dialog = _build_dialog(stack, location)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.resize(min(dialog.width(), 1366), min(dialog.height(), 768))
+    qtbot.wait(10)
+
+    for table in (dialog.lines_table, dialog.retours_table, dialog.payments_table):
+        assert table.horizontalScrollBar().isVisible() is False

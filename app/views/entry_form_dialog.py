@@ -78,7 +78,11 @@ class EntryFormDialog(QDialog):
 
         self.setWindowTitle("Entrée de stock")
         self.setModal(True)
-        self.setMinimumWidth(560)
+        # Mission 5.4, Évolution A.1 : un peu plus large qu'avant (560px)
+        # pour lire confortablement référence + désignation + prix dans la
+        # liste de résultats de ``article_search_panel`` ci-dessous, sans
+        # jamais nécessiter de défilement horizontal.
+        self.setMinimumWidth(640)
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
@@ -122,7 +126,11 @@ class EntryFormDialog(QDialog):
         self.article_search_panel.article_activated.connect(self._on_article_activated)
         layout.addWidget(self.article_search_panel)
 
-        layout.addWidget(QLabel("Lignes", self))
+        # Mission 5.4, Évolution A.2 : compteur dynamique, actualisé par
+        # ``_refresh_lines_table`` — reflète toujours le nombre réel de
+        # lignes du tableau, jamais le nombre d'articles du catalogue.
+        self.lines_label = QLabel("Lignes (0)", self)
+        layout.addWidget(self.lines_label)
 
         self.lines_table = QTableWidget(0, len(_LINE_COLUMNS), self)
         self.lines_table.setAlternatingRowColors(True)
@@ -230,6 +238,11 @@ class EntryFormDialog(QDialog):
             self.lines_table.setItem(row, 3, montant_item)
         self.lines_table.blockSignals(False)
         self.total_label.setText(f"Total : {total}")
+        # Mission 5.4, Évolution A.2 : reflète toujours le nombre réel de
+        # lignes du tableau — recalculé ici, seul point de passage commun à
+        # l'ajout (``_on_article_activated``) et à la suppression
+        # (``_on_remove_line_clicked``).
+        self.lines_label.setText(f"Lignes ({len(self._lines)})")
 
     def _on_article_activated(self, article_id: int) -> None:
         """Mission 5.3 : point d'entrée unique pour ajouter une ligne,
