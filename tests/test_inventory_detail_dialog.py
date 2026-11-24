@@ -93,3 +93,63 @@ def test_detail_dialog_handles_no_lines(qtbot) -> None:
     dialog = InventoryDetailDialog(_make_inventory(lignes=[]), [])
     qtbot.addWidget(dialog)
     assert dialog is not None
+
+
+# -- Mission 5.5, Évolution B : en-tête multi-colonnes + tableaux compacts --------
+
+
+def test_header_section_uses_multi_column_form(qtbot) -> None:
+    from PySide6.QtWidgets import QFormLayout
+
+    dialog = InventoryDetailDialog(_make_inventory(), [])
+    qtbot.addWidget(dialog)
+
+    assert len(dialog.findChildren(QFormLayout)) == 3
+
+
+def test_header_section_shows_all_required_fields_somewhere(qtbot) -> None:
+    from PySide6.QtWidgets import QLabel
+
+    inventory = _make_inventory()
+    dialog = InventoryDetailDialog(inventory, [])
+    qtbot.addWidget(dialog)
+
+    texts = {label.text() for label in dialog.findChildren(QLabel)}
+    for expected in (inventory.numero, str(inventory.date), "admin", "Brouillon", "-3"):
+        assert expected in texts
+
+
+def test_lines_and_movements_tables_cap_at_two_visible_rows(qtbot) -> None:
+    from PySide6.QtWidgets import QTableWidget
+
+    lignes = [
+        InventaireLigneSummary(
+            id=i, article_id=10 + i, article_reference=f"ART-{i}", article_designation="X",
+            stock_theorique=Decimal("10"), stock_physique=Decimal("10"), ecart=Decimal("0"),
+        )
+        for i in range(4)
+    ]
+    movements = [_make_movement(id=i) for i in range(4)]
+    dialog = InventoryDetailDialog(_make_inventory(lignes=lignes), movements)
+    qtbot.addWidget(dialog)
+
+    tables = dialog.findChildren(QTableWidget)
+    lines_table, movements_table = tables[0], tables[1]
+    assert lines_table.rowCount() == 4
+    assert movements_table.rowCount() == 4
+
+    header_height = lines_table.horizontalHeader().sizeHint().height() or 32
+    expected = header_height + 2 * 34 + 12
+    assert lines_table.maximumHeight() == expected
+    assert movements_table.maximumHeight() == expected
+
+
+def test_tables_never_disable_vertical_scrollbar(qtbot) -> None:
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QTableWidget
+
+    dialog = InventoryDetailDialog(_make_inventory(), [_make_movement()])
+    qtbot.addWidget(dialog)
+
+    for table in dialog.findChildren(QTableWidget):
+        assert table.verticalScrollBarPolicy() != Qt.ScrollBarPolicy.ScrollBarAlwaysOff

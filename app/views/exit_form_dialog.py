@@ -52,7 +52,7 @@ from app.views.common import (
     parse_decimal,
     required_label,
 )
-from app.views.design_system import QuantityEditDelegate
+from app.views.design_system import QuantityEditDelegate, apply_compact_row_height
 
 _LINE_COLUMNS = ["Article", "Quantité", "Coût (CMUP)", "Montant"]
 _QUANTITY_COLUMN = 1
@@ -152,7 +152,6 @@ class ExitFormDialog(QDialog):
         self.lines_table.setColumnWidth(_QUANTITY_COLUMN, 95)
         lines_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
         self.lines_table.setColumnWidth(2, 120)
-        self.lines_table.verticalHeader().setDefaultSectionSize(36)
         self._quantity_delegate = QuantityEditDelegate(self.lines_table)
         self.lines_table.setItemDelegateForColumn(_QUANTITY_COLUMN, self._quantity_delegate)
         self.lines_table.itemChanged.connect(self._on_line_item_changed)
@@ -240,6 +239,11 @@ class ExitFormDialog(QDialog):
             montant_item.setFlags(montant_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.lines_table.setItem(row, 3, montant_item)
         self.lines_table.blockSignals(False)
+        # Mission 5.5, Évolution A : 2 lignes de données visibles par défaut
+        # (plus l'en-tête), défilement vertical au-delà — même utilitaire
+        # que les tableaux de consultation (Mission 5.4), rappelé ici à
+        # chaque changement du nombre de lignes.
+        apply_compact_row_height(self.lines_table, visible_rows=2)
         self.total_label.setText(f"Total : {total}")
         # Mission 5.4, Évolution A.2 : reflète toujours le nombre réel de
         # lignes du tableau — recalculé ici, seul point de passage commun à

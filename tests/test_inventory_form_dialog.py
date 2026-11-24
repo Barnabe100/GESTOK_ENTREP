@@ -1,11 +1,10 @@
 from datetime import date
 from decimal import Decimal
 
-import pytest
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import QDateEdit, QDialog
 
-from app.views.inventory_form_dialog import InventoryFormDialog
+from app.views.inventory_form_dialog import _STOCK_PHYSIQUE_COLUMN, InventoryFormDialog
 from tests.ui_test_helpers import assert_field_is_marked_required, assert_has_required_field_legend
 
 _ARTICLES = [(10, "ART-1 — Eau", "100"), (20, "ART-2 — Riz", "50")]
@@ -23,29 +22,6 @@ def test_dialog_shows_required_field_legend(qtbot) -> None:
     qtbot.addWidget(dialog)
 
     assert_has_required_field_legend(dialog)
-
-
-class _FakeLineDialog:
-    """Remplace InventoryLineFormDialog dans les tests pour éviter tout
-    dialogue modal bloquant, à l'identique du monkeypatch de QMessageBox
-    ailleurs."""
-
-    result_values = {"article_id": 10, "stock_physique": "97"}
-    accepted = True
-
-    def __init__(self, articles, initial=None, parent=None) -> None:
-        pass
-
-    def exec(self):
-        return QDialog.DialogCode.Accepted if self.accepted else QDialog.DialogCode.Rejected
-
-    def values(self):
-        return self.result_values
-
-
-@pytest.fixture(autouse=True)
-def _no_blocking_message_boxes(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("app.views.inventory_form_dialog.QMessageBox.warning", lambda *a, **k: None)
 
 
 def test_dialog_uses_qdateedit_with_calendar_popup(qtbot) -> None:
@@ -136,53 +112,75 @@ def test_dialog_prefills_lines_preserve_real_decimal_precision(qtbot) -> None:
     assert dialog.values()["lignes"][0]["stock_physique"] == Decimal("12.000")
 
 
-def test_add_line_appends_row_using_stock_theorique_from_articles_list(qtbot, monkeypatch) -> None:
-    monkeypatch.setattr("app.views.inventory_form_dialog.InventoryLineFormDialog", _FakeLineDialog)
+# -- Mission 5.5, Évolution C : recherche en direct (ArticleSearchPanel) ----------
+
+
+def test_double_clicking_search_result_adds_line_with_stock_theorique_as_default_stock_physique(qtbot) -> None:
+    """Le stock compté démarre toujours au stock théorique (écart nul) —
+    jamais une valeur devinée au hasard — puis reste librement modifiable
+    directement dans le tableau."""
     dialog = InventoryFormDialog(_ARTICLES)
     qtbot.addWidget(dialog)
 
-    dialog._on_add_line_clicked()
+    dialog._on_article_activated(10)
 
     assert dialog.lines_table.rowCount() == 1
     values = dialog.values()
     assert len(values["lignes"]) == 1
     assert values["lignes"][0]["article_id"] == 10
     assert values["lignes"][0]["stock_theorique"] == Decimal("100")
-    assert values["lignes"][0]["stock_physique"] == Decimal("97")
+    assert values["lignes"][0]["stock_physique"] == Decimal("100")
+    assert dialog.lines_table.item(0, 3).text() == "0"
 
 
-def test_add_line_rejects_negative_stock_physique_and_reopens(qtbot, monkeypatch) -> None:
-    calls = {"n": 0}
+def test_double_clicking_search_result_clears_search_text(qtbot) -> None:
+    dialog = InventoryFormDialog(_ARTICLES)
+    qtbot.addWidget(dialog)
+    dialog.article_search_panel.search_edit.setText("Eau")
 
-    class _FirstBadThenGood(_FakeLineDialog):
-        def values(self):
-            calls["n"] += 1
-            if calls["n"] == 1:
-                return {"article_id": 10, "stock_physique": "-1"}
-            return {"article_id": 10, "stock_physique": "97"}
+    dialog._on_article_activated(10)
 
-    monkeypatch.setattr("app.views.inventory_form_dialog.InventoryLineFormDialog", _FirstBadThenGood)
+    assert dialog.article_search_panel.search_edit.text() == ""
+
+
+def test_search_panel_shows_five_results_without_scrolling(qtbot) -> None:
+    many_articles = [(i, f"ART-{i} — Désignation {i}", "10") for i in range(8)]
+    dialog = InventoryFormDialog(many_articles)
+    qtbot.addWidget(dialog)
+
+    row_height = dialog.article_search_panel.results_list.sizeHintForRow(0)
+    assert dialog.article_search_panel.results_list.height() == 5 * row_height + 6
+
+
+def test_search_panel_filters_results_live(qtbot) -> None:
     dialog = InventoryFormDialog(_ARTICLES)
     qtbot.addWidget(dialog)
 
-    dialog._on_add_line_clicked()
+    dialog.article_search_panel.search_edit.setText("Riz")
 
-    assert calls["n"] == 2
-    assert dialog.lines_table.rowCount() == 1
+    labels = [
+        dialog.article_search_panel.results_list.item(i).text()
+        for i in range(dialog.article_search_panel.results_list.count())
+    ]
+    assert len(labels) == 1
+    assert "Riz" in labels[0]
 
 
-def test_add_line_accepts_zero_stock_physique(qtbot, monkeypatch) -> None:
-    class _ZeroLine(_FakeLineDialog):
-        result_values = {"article_id": 10, "stock_physique": "0"}
-
-    monkeypatch.setattr("app.views.inventory_form_dialog.InventoryLineFormDialog", _ZeroLine)
-    dialog = InventoryFormDialog(_ARTICLES)
+def test_search_panel_and_scan_do_not_interfere(qtbot) -> None:
+    """La recherche manuelle et le scan coexistent sans conflit : chacun
+    n'ajoute une ligne qu'en passant par le même point d'entrée unique
+    (``_on_article_activated``), sans jamais partager ou réinitialiser
+    l'état de l'autre."""
+    dialog = InventoryFormDialog(_ARTICLES, on_lookup_barcode=lambda code: (20, "ART-2 — Riz", "50"))
     qtbot.addWidget(dialog)
 
-    dialog._on_add_line_clicked()
+    dialog._on_article_activated(10)
+    qtbot.keyClicks(dialog.scan_edit, "1234567890123")
+    qtbot.keyClick(dialog.scan_edit, Qt.Key.Key_Return)
 
-    assert dialog.lines_table.rowCount() == 1
-    assert dialog.values()["lignes"][0]["stock_physique"] == Decimal("0")
+    assert dialog.lines_table.rowCount() == 2
+    values = dialog.values()
+    assert {ligne["article_id"] for ligne in values["lignes"]} == {10, 20}
 
 
 # -- scan code-barres (lecteur USB « keyboard wedge ») -----------------------------
@@ -199,49 +197,101 @@ def test_scan_disabled_without_lookup_callback(qtbot) -> None:
     assert dialog.scan_edit.isEnabled() is False
 
 
-def test_scan_known_barcode_preselects_article_in_line_dialog(qtbot, monkeypatch) -> None:
-    captured_initial = {}
-
-    class _CapturingLineDialog(_FakeLineDialog):
-        def __init__(self, articles, initial=None, parent=None) -> None:
-            captured_initial.update(initial or {})
-            super().__init__(articles, initial, parent)
-
-    monkeypatch.setattr("app.views.inventory_form_dialog.InventoryLineFormDialog", _CapturingLineDialog)
+def test_scan_known_barcode_adds_line_directly(qtbot) -> None:
+    """Mission 5.5, Évolution C : le scan n'ouvre plus de formulaire
+    intermédiaire — un code reconnu ajoute directement la ligne, comme un
+    double-clic sur un résultat de recherche."""
     dialog = InventoryFormDialog(_ARTICLES, on_lookup_barcode=lambda code: (10, "ART-1 — Eau", "100"))
     qtbot.addWidget(dialog)
 
     qtbot.keyClicks(dialog.scan_edit, "1234567890123")
     qtbot.keyClick(dialog.scan_edit, Qt.Key.Key_Return)
 
-    assert captured_initial.get("article_id") == 10
     assert dialog.lines_table.rowCount() == 1
+    assert dialog.values()["lignes"][0]["article_id"] == 10
+    assert dialog.values()["lignes"][0]["stock_physique"] == Decimal("100")
     assert dialog.scan_edit.text() == ""
 
 
-def test_scan_unknown_barcode_opens_no_line_dialog_and_warns(qtbot, monkeypatch) -> None:
+def test_scan_unknown_barcode_adds_no_line_and_warns(qtbot, monkeypatch) -> None:
     warnings: list[tuple] = []
     monkeypatch.setattr(
         "app.views.inventory_form_dialog.QMessageBox.warning",
         lambda *args, **kwargs: warnings.append(args),
     )
-    line_dialog_calls = {"n": 0}
-
-    class _ShouldNotOpen(_FakeLineDialog):
-        def __init__(self, articles, initial=None, parent=None) -> None:
-            line_dialog_calls["n"] += 1
-            super().__init__(articles, initial, parent)
-
-    monkeypatch.setattr("app.views.inventory_form_dialog.InventoryLineFormDialog", _ShouldNotOpen)
     dialog = InventoryFormDialog(_ARTICLES, on_lookup_barcode=lambda code: None)
     qtbot.addWidget(dialog)
 
     qtbot.keyClicks(dialog.scan_edit, "0000000000000")
     qtbot.keyClick(dialog.scan_edit, Qt.Key.Key_Return)
 
-    assert line_dialog_calls["n"] == 0
     assert dialog.lines_table.rowCount() == 0
     assert len(warnings) == 1
+
+
+# -- Mission 5.5, Évolution C : stock compté éditable, théorique/écart lecture seule --
+
+
+def test_stock_theorique_cell_is_not_editable(qtbot) -> None:
+    dialog = InventoryFormDialog(_ARTICLES)
+    qtbot.addWidget(dialog)
+    dialog._on_article_activated(10)
+
+    item = dialog.lines_table.item(0, 1)
+    assert not (item.flags() & Qt.ItemFlag.ItemIsEditable)
+
+
+def test_ecart_cell_is_not_editable(qtbot) -> None:
+    dialog = InventoryFormDialog(_ARTICLES)
+    qtbot.addWidget(dialog)
+    dialog._on_article_activated(10)
+
+    item = dialog.lines_table.item(0, 3)
+    assert not (item.flags() & Qt.ItemFlag.ItemIsEditable)
+
+
+def test_stock_physique_cell_is_editable(qtbot) -> None:
+    dialog = InventoryFormDialog(_ARTICLES)
+    qtbot.addWidget(dialog)
+    dialog._on_article_activated(10)
+
+    item = dialog.lines_table.item(0, _STOCK_PHYSIQUE_COLUMN)
+    assert bool(item.flags() & Qt.ItemFlag.ItemIsEditable)
+
+
+def test_editing_stock_physique_updates_line_and_recomputes_ecart(qtbot) -> None:
+    dialog = InventoryFormDialog(_ARTICLES)
+    qtbot.addWidget(dialog)
+    dialog._on_article_activated(10)
+
+    dialog.lines_table.item(0, _STOCK_PHYSIQUE_COLUMN).setText("97")
+
+    assert dialog.values()["lignes"][0]["stock_physique"] == Decimal("97")
+    assert dialog.values()["lignes"][0]["stock_theorique"] == Decimal("100")  # jamais modifié
+    assert dialog.lines_table.item(0, 3).text() == "-3"
+
+
+def test_editing_stock_physique_to_zero_is_accepted(qtbot) -> None:
+    dialog = InventoryFormDialog(_ARTICLES)
+    qtbot.addWidget(dialog)
+    dialog._on_article_activated(10)
+
+    dialog.lines_table.item(0, _STOCK_PHYSIQUE_COLUMN).setText("0")
+
+    assert dialog.values()["lignes"][0]["stock_physique"] == Decimal("0")
+    assert dialog.lines_table.item(0, 3).text() == "-100"
+
+
+def test_editing_stock_physique_to_negative_is_rejected_and_reverted(qtbot) -> None:
+    dialog = InventoryFormDialog(_ARTICLES)
+    qtbot.addWidget(dialog)
+    dialog._on_article_activated(10)
+
+    dialog.lines_table.item(0, _STOCK_PHYSIQUE_COLUMN).setText("-1")
+
+    assert dialog.values()["lignes"][0]["stock_physique"] == Decimal("100")  # valeur précédente conservée
+    assert dialog.lines_table.item(0, _STOCK_PHYSIQUE_COLUMN).text() == "100"
+    assert "négatif" in dialog.error_label.text()
 
 
 def test_remove_line_deletes_selected_row(qtbot) -> None:
@@ -259,6 +309,80 @@ def test_remove_line_deletes_selected_row(qtbot) -> None:
 
     assert dialog.lines_table.rowCount() == 1
     assert dialog.values()["lignes"][0]["article_id"] == 20
+
+
+# -- Mission 5.5, Évolution C : compteur dynamique "Lignes (n)" -------------------
+
+
+def test_lines_label_starts_at_zero(qtbot) -> None:
+    dialog = InventoryFormDialog(_ARTICLES)
+    qtbot.addWidget(dialog)
+
+    assert dialog.lines_label.text() == "Lignes (0)"
+
+
+def test_lines_label_increments_after_add_and_decrements_after_remove(qtbot) -> None:
+    dialog = InventoryFormDialog(_ARTICLES)
+    qtbot.addWidget(dialog)
+
+    dialog._on_article_activated(10)
+    assert dialog.lines_label.text() == "Lignes (1)"
+
+    dialog._on_article_activated(20)
+    assert dialog.lines_label.text() == "Lignes (2)"
+
+    dialog.lines_table.selectRow(0)
+    dialog._on_remove_line_clicked()
+    assert dialog.lines_label.text() == "Lignes (1)"
+
+
+# -- Mission 5.5, Évolution C : tableau compact (2 lignes visibles) --------------
+
+
+def _header_height(table) -> int:
+    return table.horizontalHeader().sizeHint().height() or 32
+
+
+def test_lines_table_has_header_only_height_with_no_lines(qtbot) -> None:
+    dialog = InventoryFormDialog(_ARTICLES)
+    qtbot.addWidget(dialog)
+
+    assert dialog.lines_table.maximumHeight() == _header_height(dialog.lines_table) + 12
+
+
+def test_lines_table_height_fits_exactly_two_rows_by_default(qtbot) -> None:
+    dialog = InventoryFormDialog(_ARTICLES)
+    qtbot.addWidget(dialog)
+
+    dialog._on_article_activated(10)
+    dialog._on_article_activated(20)
+
+    expected = _header_height(dialog.lines_table) + 2 * 34 + 12
+    assert dialog.lines_table.maximumHeight() == expected
+    assert dialog.lines_table.minimumHeight() == expected
+
+
+def test_lines_table_height_caps_at_two_rows_with_more_lines(qtbot) -> None:
+    many_articles = [(10, "ART-1 — Eau", "100"), (20, "ART-2 — Riz", "50"), (30, "ART-3 — Sucre", "20")]
+    dialog = InventoryFormDialog(many_articles)
+    qtbot.addWidget(dialog)
+
+    dialog._on_article_activated(10)
+    dialog._on_article_activated(20)
+    two_rows_height = dialog.lines_table.maximumHeight()
+
+    dialog._on_article_activated(30)
+
+    assert dialog.lines_table.maximumHeight() == two_rows_height
+    assert dialog.lines_table.rowCount() == 3
+    assert len(dialog.values()["lignes"]) == 3
+
+
+def test_lines_table_never_disables_vertical_scrollbar(qtbot) -> None:
+    dialog = InventoryFormDialog(_ARTICLES)
+    qtbot.addWidget(dialog)
+
+    assert dialog.lines_table.verticalScrollBarPolicy() != Qt.ScrollBarPolicy.ScrollBarAlwaysOff
 
 
 def test_save_button_accepts(qtbot) -> None:

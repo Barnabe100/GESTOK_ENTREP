@@ -4,7 +4,7 @@ from decimal import Decimal
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import QDateEdit, QDialog
 
-from app.views.entry_form_dialog import EntryFormDialog
+from app.views.entry_form_dialog import _PRICE_COLUMN, _QUANTITY_COLUMN, EntryFormDialog
 from tests.ui_test_helpers import (
     assert_field_is_marked_required,
     assert_field_is_not_marked_required,
@@ -358,3 +358,71 @@ def test_validate_button_click_disables_save_and_validate_buttons(qtbot) -> None
 
     assert dialog.save_button.isEnabled() is False
     assert dialog.validate_button.isEnabled() is False
+
+
+# -- Mission 5.5, Évolution A : lines_table compact (2 lignes visibles) ------------
+
+
+def _header_height(table) -> int:
+    return table.horizontalHeader().sizeHint().height() or 32
+
+
+def test_lines_table_has_header_only_height_with_no_lines(qtbot) -> None:
+    dialog = EntryFormDialog(_SUPPLIERS, _ARTICLES)
+    qtbot.addWidget(dialog)
+
+    assert dialog.lines_table.maximumHeight() == _header_height(dialog.lines_table) + 12
+
+
+def test_lines_table_height_fits_exactly_two_rows_by_default(qtbot) -> None:
+    dialog = EntryFormDialog(_SUPPLIERS, _ARTICLES)
+    qtbot.addWidget(dialog)
+
+    dialog._on_article_activated(10)
+    dialog._on_article_activated(20)
+
+    expected = _header_height(dialog.lines_table) + 2 * 34 + 12
+    assert dialog.lines_table.maximumHeight() == expected
+    assert dialog.lines_table.minimumHeight() == expected
+
+
+def test_lines_table_height_caps_at_two_rows_with_more_lines(qtbot) -> None:
+    """Au-delà de 2 lignes, la hauteur visible n'augmente plus (défilement
+    vertical du tableau pour les lignes suivantes) — mais aucune ligne
+    n'est jamais perdue : ``rowCount``/``values()`` reflètent toujours le
+    nombre réel de lignes."""
+    dialog = EntryFormDialog(_SUPPLIERS, _ARTICLES)
+    qtbot.addWidget(dialog)
+
+    dialog._on_article_activated(10)
+    dialog._on_article_activated(20)
+    two_rows_height = dialog.lines_table.maximumHeight()
+
+    dialog._on_article_activated(10)
+
+    assert dialog.lines_table.maximumHeight() == two_rows_height
+    assert dialog.lines_table.rowCount() == 3
+    assert len(dialog.values()["lignes"]) == 3
+
+
+def test_lines_table_column_widths_preserved_after_multiple_refreshes(qtbot) -> None:
+    dialog = EntryFormDialog(_SUPPLIERS, _ARTICLES)
+    qtbot.addWidget(dialog)
+
+    dialog._on_article_activated(10)
+    dialog._on_article_activated(20)
+    dialog._on_article_activated(10)
+
+    assert dialog.lines_table.columnWidth(_QUANTITY_COLUMN) == 95
+    assert dialog.lines_table.columnWidth(_PRICE_COLUMN) == 120
+
+
+def test_lines_table_never_shows_horizontal_scrollbar_policy_disabled_only(qtbot) -> None:
+    """Confort : le tableau reste dimensionné pour éviter tout défilement
+    horizontal (largeurs de colonnes fixes + Article extensible) — seul le
+    défilement vertical (``ScrollBarAsNeeded`` par défaut, jamais désactivé)
+    sert à voir les lignes au-delà des 2 visibles par défaut."""
+    dialog = EntryFormDialog(_SUPPLIERS, _ARTICLES)
+    qtbot.addWidget(dialog)
+
+    assert dialog.lines_table.verticalScrollBarPolicy() != Qt.ScrollBarPolicy.ScrollBarAlwaysOff
