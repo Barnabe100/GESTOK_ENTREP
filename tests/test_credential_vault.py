@@ -24,6 +24,7 @@ import pytest
 from app.security.credential_vault import (
     CredentialVault,
     WindowsCredentialVault,
+    get_backup_encryption_vault,
     get_credential_vault,
     get_login_credential_vault,
 )
@@ -179,3 +180,47 @@ def test_login_vault_and_postgresql_vault_use_distinct_keyring_service_names(pre
     assert postgresql_vault._service_name != login_vault._service_name
     assert "PostgreSQL" in postgresql_vault._service_name
     assert "PostgreSQL" not in login_vault._service_name
+
+
+# -- coffre dédié à la clé de chiffrement des sauvegardes (Mission
+# « Sauvegarde automatique et restauration », §5) — jamais le même coffre
+# que PostgreSQL ni la connexion utilisateur. Mêmes principes de test que
+# ci-dessus (aucune machine Windows disponible dans ce sandbox).
+
+
+def test_backup_encryption_vault_unavailable_outside_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "platform", "linux")
+    with pytest.raises(CredentialVaultUnavailableError):
+        get_backup_encryption_vault()
+
+
+def test_get_backup_encryption_vault_returns_windows_vault_when_platform_is_windows(pretend_windows) -> None:
+    vault = get_backup_encryption_vault()
+    assert isinstance(vault, WindowsCredentialVault)
+    assert isinstance(vault, CredentialVault)
+
+
+def test_backup_encryption_vault_rejects_non_windows_backend_never_stores_anything(pretend_windows) -> None:
+    vault = get_backup_encryption_vault()
+    with pytest.raises(CredentialVaultUnavailableError):
+        vault.set_password("archive-encryption-key", "cle-tres-secrete")
+
+
+def test_backup_encryption_vault_rejection_message_never_contains_the_key(pretend_windows) -> None:
+    vault = get_backup_encryption_vault()
+    with pytest.raises(CredentialVaultUnavailableError) as exc_info:
+        vault.set_password("archive-encryption-key", "cle-tres-secrete-de-chiffrement")
+    assert "cle-tres-secrete-de-chiffrement" not in str(exc_info.value)
+
+
+def test_backup_encryption_vault_is_isolated_from_the_other_two_domains(pretend_windows) -> None:
+    """Preuve directe de l'isolation : les trois coffres, même pour le
+    même ``profile_id``, s'adressent à des noms de service ``keyring``
+    distincts — jamais le même espace d'entrées."""
+    postgresql_vault = get_credential_vault()
+    login_vault = get_login_credential_vault()
+    backup_vault = get_backup_encryption_vault()
+
+    service_names = {postgresql_vault._service_name, login_vault._service_name, backup_vault._service_name}
+    assert len(service_names) == 3
+    assert "sauvegarde" in backup_vault._service_name.lower() or "chiffrement" in backup_vault._service_name.lower()

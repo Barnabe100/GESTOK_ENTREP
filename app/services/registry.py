@@ -18,6 +18,7 @@ from app.services.auth.account_recovery_service import AccountRecoveryService
 from app.services.auth.auth_service import AuthService
 from app.services.auth.permission_service import PermissionService
 from app.services.backups.backup_service import BackupService
+from app.services.backups.external_backup_service import ExternalBackupService
 from app.services.categories.category_service import CategoryService
 from app.services.clients.client_service import ClientService
 from app.services.dashboard.dashboard_service import DashboardService
@@ -71,6 +72,7 @@ class ServiceRegistry:
     movements: MovementService
     reports: ReportService
     backups: BackupService
+    external_backups: ExternalBackupService
     licenses: LicenseService
     activation: ActivationService
     dashboard: DashboardService
@@ -111,6 +113,7 @@ def build_service_registry(
     )
     report_service = ReportService(permission_service, settings)
     backup_service = BackupService(permission_service, settings)
+    external_backup_service = ExternalBackupService(backup_service, permission_service, settings)
     sale_service = SaleService(permission_service, settings)
     rental_service = LocationService(permission_service, settings)
 
@@ -132,6 +135,7 @@ def build_service_registry(
         movements=MovementService(permission_service, settings),
         reports=report_service,
         backups=backup_service,
+        external_backups=external_backup_service,
         licenses=license_service,
         activation=activation_service,
         dashboard=DashboardService(permission_service, report_service, sale_service, rental_service, settings),

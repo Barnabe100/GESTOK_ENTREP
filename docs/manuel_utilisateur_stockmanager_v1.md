@@ -558,35 +558,50 @@ Certaines permissions sont **doublement conditionnées** : par le rôle de l'uti
 
 ### Sauvegarde manuelle
 
-Bouton « Sauvegarder maintenant » (module Sauvegardes). Utilise le mécanisme de sauvegarde natif de SQLite (compatible avec une base en cours d'utilisation), puis **vérifie automatiquement l'intégrité** du fichier généré avant de considérer la sauvegarde comme réussie. Le nom du fichier suit le modèle `stockmanager_backup_AAAAMMJJ_HHMMSS.db`.
+Bouton « Sauvegarder maintenant » (module Sauvegardes). Utilise le mécanisme de sauvegarde natif de SQLite (compatible avec une base en cours d'utilisation) — ou, en configuration PostgreSQL, `pg_dump` au format personnalisé (`-Fc`) — puis **vérifie automatiquement l'intégrité** du fichier généré avant de considérer la sauvegarde comme réussie. Le nom du fichier suit le modèle `stockmanager_backup_AAAAMMJJ_HHMMSS.db` (ou `.dump` en PostgreSQL). Chaque sauvegarde est accompagnée d'un fichier de métadonnées (`.manifest.json`) : date de création, version de StockManager, moteur et version de schéma de la base, type de sauvegarde, taille, empreinte cryptographique (SHA-256) permettant de détecter toute altération ultérieure.
 
-### Sauvegarde automatique
+### Sauvegarde automatique locale
 
-Une sauvegarde automatique peut être activée dans la configuration (désactivée par défaut), avec une fréquence quotidienne ou hebdomadaire et une heure cible. Deux mécanismes coexistent :
+Une sauvegarde automatique peut être activée dans la configuration (désactivée par défaut), avec une fréquence quotidienne ou hebdomadaire, une heure cible et un nombre de sauvegardes à conserver (**30 par défaut** ; les plus anciennes, avec leur fichier de métadonnées, sont supprimées automatiquement au-delà de cette limite). Deux mécanismes coexistent :
 - pendant que l'application est ouverte, une vérification interne toutes les minutes déclenche la sauvegarde si elle est due ;
-- un utilitaire externe séparé, destiné à être enregistré dans le Planificateur de tâches Windows par un administrateur système, permet de déclencher la sauvegarde même lorsque l'application est fermée. **[NON VÉRIFIÉ]** L'enregistrement de cette tâche planifiée dans Windows n'est pas automatique — c'est une étape manuelle à réaliser par un administrateur système, non testée sur un poste Windows réel dans le cadre de ce document.
+- une tâche du Planificateur de tâches Windows, **créée et administrée directement depuis l'écran Sauvegardes de StockManager** (bouton « Configurer/réparer la tâche planifiée Windows… », section « Protection externe »), déclenche la même sauvegarde même lorsque l'application est fermée, dès qu'une session Windows de l'utilisateur est ouverte à l'heure programmée. Contrairement à une version antérieure de cette fonctionnalité, cette tâche n'a plus besoin d'être enregistrée manuellement par un administrateur système : StockManager l'enregistre lui-même, sans élévation de privilèges, via l'utilitaire Windows `schtasks.exe`.
 
-Un nombre de sauvegardes à conserver (rétention) est configurable ; les plus anciennes sont supprimées automatiquement au-delà de cette limite.
+### Protection externe (clé USB, disque externe)
+
+Fonctionnalité optionnelle (désactivée par défaut) de la même section « Protection externe » : copie quotidienne de la dernière sauvegarde locale valide vers une clé USB ou un disque externe choisi une fois par l'Administrateur (« Sélectionner/modifier le support… »), avec une rétention séparée configurable entre 30 et 50 copies. Le support est retrouvé par un repère qu'il porte (indépendant de sa lettre de lecteur Windows, qui peut changer d'un branchement à l'autre) — jamais par une lettre fixe mémorisée. Si le support est absent ou inaccessible au moment prévu, aucune sauvegarde externe existante n'est supprimée : l'échec est seulement journalisé, une nouvelle tentative a lieu à la prochaine échéance planifiée (même tâche Windows que la sauvegarde locale, décrite ci-dessus). Un bouton « Copier maintenant » permet de déclencher cette copie immédiatement, sans attendre l'échéance planifiée.
+
+### Export manuel
+
+Depuis l'historique des sauvegardes (locales ou externes), le bouton « Exporter… » copie l'archive sélectionnée (avec son fichier de métadonnées) vers n'importe quel emplacement choisi — utile pour une copie ponctuelle supplémentaire, indépendante de toute politique de rétention.
 
 ### Restauration
 
-Bouton « Restaurer la sauvegarde sélectionnée ». La restauration suit un ordre strict et sécurisé :
-1. Vérification d'intégrité du fichier de sauvegarde choisi.
-2. Vérification que sa version de schéma correspond à celle de la base actuelle.
+Deux chemins, tous deux portés par le même mécanisme de service interne (jamais deux logiques distinctes) :
+- « Restaurer la sauvegarde sélectionnée », pour une sauvegarde déjà présente dans l'historique de ce poste ;
+- « Assistant de restauration… », qui permet en plus de sélectionner librement un fichier de sauvegarde à tout emplacement accessible (clé USB, disque externe, autre dossier) — notamment nécessaire sur un poste tout juste installé, qui n'a encore aucun historique local.
+
+Dans les deux cas, la restauration suit un ordre strict et sécurisé :
+1. Vérification d'intégrité du fichier de sauvegarde choisi (déchiffrement préalable si l'archive est chiffrée).
+2. Vérification que sa version de schéma correspond à celle de la base actuelle, et que son moteur (SQLite/PostgreSQL) correspond au moteur actif.
 3. **Création automatique d'une sauvegarde de sécurité de la base actuelle avant toute écriture** (préfixe dédié, jamais supprimée par la rotation automatique).
 4. Remplacement effectif de la base de données.
 5. En cas d'échec à cette étape, tentative automatique de restauration de la sauvegarde de sécurité créée à l'étape 3.
 
 Un redémarrage de l'application est nécessaire après une restauration réussie.
 
+### Récupération après panne ou changement d'ordinateur
+
+C'est le scénario que couvre spécifiquement l'assistant de restauration ci-dessus : après installation de StockManager sur un nouvel ordinateur (et importation de la licence si nécessaire), ouvrir le menu Sauvegardes, cliquer sur « Assistant de restauration… », brancher le support externe contenant la dernière sauvegarde externe du poste précédent, puis sélectionner l'archive à restaurer. La configuration de la sauvegarde locale et de la protection externe elles-mêmes n'est pas transférée automatiquement : elle doit être reconfigurée une fois sur le nouveau poste.
+
 ### Précautions
 
 - Ne jamais interrompre l'application pendant une opération de sauvegarde ou de restauration.
 - La sauvegarde de sécurité automatique créée avant une restauration ne doit jamais être supprimée manuellement tant que la restauration n'est pas confirmée réussie.
+- Une sauvegarde qui ne se trouve que sur le disque interne de l'ordinateur ne protège pas contre une panne de cet ordinateur lui-même : activer la protection externe pour ce cas.
 
 ### Emplacement
 
-Le dossier de destination des sauvegardes est visible et modifiable directement dans l'écran Sauvegardes (champ « Dossier de destination » avec bouton « Parcourir… »), par défaut un sous-dossier `backups` du dossier de données de l'application.
+Le dossier de destination des sauvegardes locales est visible et modifiable directement dans l'écran Sauvegardes (champ « Dossier de destination » avec bouton « Parcourir… »), par défaut un sous-dossier `backups` du dossier de données de l'application.
 
 ### Zone dangereuse — réinitialisation des données métier
 
@@ -684,6 +699,7 @@ Le reçu de vente documente **la transaction commerciale complète** (ce qui a �
 
 - Effectuez une sauvegarde manuelle avant toute opération à fort impact (réinitialisation des données métier, restauration d'une ancienne sauvegarde, montée de version majeure de l'application).
 - Activez la sauvegarde automatique et vérifiez régulièrement, dans l'écran Sauvegardes, que la dernière exécution automatique s'est bien déroulée.
+- Activez également la protection externe (clé USB ou disque externe) : une sauvegarde qui ne se trouve que sur le disque interne de l'ordinateur ne peut pas être récupérée si cet ordinateur tombe en panne, est volé ou détruit.
 - Ne partagez jamais un compte utilisateur entre plusieurs personnes : créez un compte par personne, avec le rôle approprié — cela garantit une traçabilité correcte de qui a fait quoi (journal d'audit, utilisateur associé à chaque mouvement).
 - Désactivez immédiatement le compte d'une personne qui quitte l'entreprise, plutôt que de le laisser actif.
 - Vérifiez régulièrement l'onglet Stock faible / Ruptures du tableau de bord pour anticiper les réapprovisionnements.

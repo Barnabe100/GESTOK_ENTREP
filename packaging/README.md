@@ -106,6 +106,47 @@ journal applicatif du poste — voir `docs/postgresql-configuration.md`,
 `docs/postgresql-configuration.md` pour le détail des prérequis, formats
 et procédures.
 
+## Mission « Sauvegarde automatique et restauration » : agent auxiliaire et tâche planifiée Windows
+
+Cette mission ajoute une protection externe optionnelle (copie quotidienne
+vers clé USB/disque externe) et la tâche Windows qui l'exécute — ainsi que
+la sauvegarde locale elle-même — même lorsque StockManager est fermé. Deux
+points d'attention pour le packaging :
+
+- **Aucun artefact PyInstaller distinct** : l'agent auxiliaire
+  (`app/backup_external_agent_cli.py`) est invoqué en production via le
+  **même exécutable** `StockManager.exe`, avec l'option `--run-backup-agent`
+  interceptée tout au début de `app/main.py` (avant toute importation/
+  instanciation de `QApplication`/Qt). `ExternalBackupService.configure_scheduled_task`
+  enregistre cette ligne de commande exacte (``sys.executable`` déjà résolu
+  vers `StockManager.exe` une fois gelé, voir `resolve_agent_invocation()`)
+  dans la tâche planifiée — un seul exécutable à construire, signer et
+  maintenir, jamais un second `.exe`/script séparé à embarquer.
+- **Aucune dépendance supplémentaire à empaqueter** : la tâche Windows est
+  administrée via `schtasks.exe` (outil système déjà présent sur tout poste
+  Windows, invoqué en sous-processus — même convention que `pg_dump`/
+  `pg_restore` ci-dessus), jamais `pywin32`/l'API COM `ITaskService`.
+  L'identification du support externe utilise un fichier marqueur
+  (`app/services/backups/external_media.py`), jamais `pywin32`/WMI. Le
+  chiffrement optionnel des archives (`cryptography`, déjà présent dans
+  `requirements.txt` pour d'autres besoins) stocke sa clé dans le coffre
+  Windows via le même mécanisme `keyring` que les identifiants PostgreSQL
+  (voir « Lot E » ci-dessus, aucune troisième dépendance de coffre). Aucun
+  changement de `hiddenimports`/`datas` de `stockmanager.spec` n'a donc été
+  nécessaire pour cette mission.
+- **Droits Windows** : la tâche planifiée est créée pour l'utilisateur
+  courant (aucune option `/ru`/`/rp` de `schtasks.exe`), jamais avec des
+  droits administrateur permanents — cohérent avec le reste du packaging,
+  qui n'exige déjà aucune élévation pour l'installation utilisateur standard.
+
+**Non revérifié sous Windows réel** (voir « Tests obligatoires sous Windows »
+ci-dessous, points 7 à 9) : la création effective de la tâche planifiée
+depuis l'exécutable packagé, son exécution alors que StockManager est
+fermé, et la copie externe réelle vers une clé USB — seule la logique a été
+validée sous Linux (voir les tests unitaires et d'intégration dédiés,
+`tests/test_scheduled_task_manager_windows_integration.py` entre autres,
+tous ignorés automatiquement hors Windows).
+
 ## Procédure de build (à exécuter sur Windows)
 
 ```text
@@ -245,6 +286,20 @@ Windows ») :
    et restauration PostgreSQL » ci-dessus).
 6. L'installateur Inno Setup s'installe, se désinstalle, et préserve les
    données utilisateur (`%APPDATA%\StockManager`) dans les deux cas.
+7. Depuis l'écran Sauvegardes de l'exécutable packagé, « Configurer/réparer
+   la tâche planifiée Windows… » crée réellement une tâche visible dans le
+   Planificateur de tâches Windows (`taskschd.msc`), pointant vers
+   `StockManager.exe --run-backup-agent` ; « Supprimer la tâche planifiée… »
+   la retire proprement.
+8. **StockManager fermé**, déclencher manuellement cette tâche depuis le
+   Planificateur de tâches (ou attendre l'heure programmée) : une nouvelle
+   sauvegarde locale apparaît bien dans le dossier de destination configuré,
+   sans qu'aucune fenêtre StockManager ne s'ouvre.
+9. Avec la protection externe activée et une clé USB sélectionnée, la même
+   tâche copie bien la dernière sauvegarde locale validée sur la clé ; la
+   débrancher avant l'exécution planifiée ne doit supprimer aucune sauvegarde
+   externe déjà présente (voir « Garanties » dans le manuel utilisateur,
+   chapitre Sauvegardes).
 
 ## Limitations connues de la configuration actuelle (à revalider sous Windows)
 

@@ -448,7 +448,10 @@ class MainWindow(QMainWindow):
         if module_name == "Base de données":
             return DatabaseAdminPage(self._services.database_admin, self._permissions)
         if module_name == "Sauvegardes":
-            return BackupsPage(self._services.backups, self._permissions, self._services.data_reset)
+            return BackupsPage(
+                self._services.backups, self._permissions, self._services.data_reset,
+                self._services.external_backups,
+            )
         if module_name == "Audit":
             return AuditPage(self._services.audit, self._permissions)
         if module_name == "Licences":

@@ -1,17 +1,28 @@
-"""Page Sauvegardes (administration) : configuration, sauvegarde manuelle,
-restauration, historique.
+"""Page Sauvegardes (administration) : configuration, protection externe,
+sauvegarde manuelle, restauration, historique.
 
-Toute action passe par :class:`BackupService`, qui revérifie la permission
-côté service ; les boutons ne sont désactivés ici que par confort d'usage.
-La restauration ne propose que des sauvegardes déjà listées dans
-l'historique (fichiers créés par StockManager, reconnus par leur nom) plutôt
-qu'un sélecteur de fichier libre — évite d'exposer la restauration
-« aveugle » d'un fichier arbitraire (§10 du cahier des charges de cette
-phase) ; le service revérifie de toute façon indépendamment le fichier
-choisi avant toute restauration.
+Toute action passe par :class:`BackupService`/:class:`ExternalBackupService`,
+qui revérifient la permission côté service ; les boutons ne sont désactivés
+ici que par confort d'usage.
+
+Deux chemins de restauration, délibérément complémentaires et jamais une
+logique dupliquée (tous deux appellent ``BackupService.restore_backup``) :
+le bouton « Restaurer la sauvegarde sélectionnée » ne propose que des
+sauvegardes déjà listées dans l'historique combiné (locales + externes,
+reconnues par leur nom) — le chemin courant, le plus sûr, pour cette
+installation ; l'« Assistant de restauration » (voir
+``app.views.backup_restore_wizard_dialog``) expose en plus un sélecteur de
+fichier libre, nécessaire pour restaurer depuis un support externe sur un
+poste tout juste installé n'ayant encore aucun historique local (Mission
+« Sauvegarde automatique et restauration », §3.4/§7) — le service revérifie
+de toute façon indépendamment le fichier choisi (intégrité, compatibilité)
+avant toute restauration réelle, jamais une confiance aveugle dans le
+chemin fourni.
 """
 from __future__ import annotations
 
+import shutil
+from pathlib import Path
 from typing import Optional
 
 from PySide6.QtWidgets import (
@@ -24,6 +35,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -37,10 +49,19 @@ from PySide6.QtWidgets import (
 )
 
 from app.services.auth.permission_service import PermissionService
+from app.services.backups import archive_manifest
 from app.services.backups.backup_service import BackupConfig, BackupService, FREQUENCY_DAILY, FREQUENCY_WEEKLY
+from app.services.backups.external_backup_service import (
+    MAX_RETENTION,
+    MIN_RETENTION,
+    ExternalBackupConfig,
+    ExternalBackupService,
+)
 from app.services.system.data_reset_service import DataResetService
 from app.utils.exceptions import AppError
 from app.views.background_task import BackgroundTask
+from app.views.backup_details_dialog import BackupDetailsDialog
+from app.views.backup_restore_wizard_dialog import BackupRestoreWizardDialog
 from app.views.common import confirm_action
 from app.views.data_reset_confirm_dialog import DataResetConfirmDialog
 from app.views.design_system import COLOR_DANGER, COLOR_SUCCESS, COLOR_TEXT_SECONDARY, qcolor
@@ -49,7 +70,13 @@ from app.views.loading_overlay import LoadingOverlay
 _FREQUENCY_LABELS = {FREQUENCY_DAILY: "Quotidienne", FREQUENCY_WEEKLY: "Hebdomadaire"}
 _FREQUENCY_BY_LABEL = {label: value for value, label in _FREQUENCY_LABELS.items()}
 
-_HISTORY_COLUMNS = ["Moteur", "Date", "Nom", "Taille", "Statut"]
+# Mission « Sauvegarde automatique et restauration », §3.3 : « Type » (locale
+# ou externe) et « Emplacement » s'ajoutent à l'historique déjà existant —
+# aucune colonne déjà présente n'est retirée.
+_HISTORY_COLUMNS = ["Type", "Moteur", "Date", "Nom", "Taille", "Statut", "Emplacement"]
+
+_SOURCE_LOCAL = "Locale"
+_SOURCE_EXTERNAL = "Externe"
 
 # Lot E (§E.3/E.4) : jamais présenter une sauvegarde d'un moteur comme celle
 # de l'autre — libellé et description de format distincts, affichés aussi
@@ -76,19 +103,28 @@ class BackupsPage(QWidget):
         backup_service: BackupService,
         permission_service: PermissionService,
         data_reset_service: Optional[DataResetService] = None,
+        external_backup_service: Optional[ExternalBackupService] = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._backup_service = backup_service
         self._permissions = permission_service
         self._data_reset_service = data_reset_service
+        self._external_backup_service = external_backup_service
         self._history_entries: list = []
+        self._selected_media_root: Optional[str] = None
         # Correctif revue finale (Point 3) : référence à l'opération
         # d'arrière-plan en cours (voir BackgroundTask) — None hors
         # opération, utilisée pour empêcher un second lancement pendant
         # qu'une sauvegarde/restauration est déjà en cours.
         self._backup_task: Optional[BackgroundTask] = None
         self._restore_task: Optional[BackgroundTask] = None
+        self._external_copy_task: Optional[BackgroundTask] = None
+        # Assistant de restauration (§3.4) : dialogue modal optionnel,
+        # suivi ici uniquement pour que ``has_active_background_task``
+        # reste vrai tant qu'une restauration qu'il a lancée tourne encore
+        # (voir BackupRestoreWizardDialog.has_active_background_task).
+        self._restore_wizard_dialog: Optional[BackupRestoreWizardDialog] = None
 
         try:
             self._active_engine = backup_service.active_engine()
@@ -129,6 +165,7 @@ class BackupsPage(QWidget):
         content_layout.addWidget(self._build_engine_group())
         content_layout.addWidget(self._build_config_group())
         content_layout.addLayout(self._build_actions_row())
+        content_layout.addWidget(self._build_external_group())
         history_title = QLabel("Historique des sauvegardes", self)
         history_title.setProperty("role", "sectionTitle")
         content_layout.addWidget(history_title)
@@ -145,6 +182,7 @@ class BackupsPage(QWidget):
         self._loading_overlay = LoadingOverlay(self)
 
         self._load_config_into_form()
+        self._load_external_config_into_form()
         self.refresh_history()
 
     # -- coordination avec MainWindow (correctif revue finale) ---------------
@@ -160,7 +198,15 @@ class BackupsPage(QWidget):
         Détruire cette page ou la fenêtre tant que ceci renvoie ``True``
         reproduirait le défaut corrigé par ce lot (``QThread: Destroyed
         while thread is still running``)."""
-        return self._backup_task is not None or self._restore_task is not None
+        return (
+            self._backup_task is not None
+            or self._restore_task is not None
+            or self._external_copy_task is not None
+            or (
+                self._restore_wizard_dialog is not None
+                and self._restore_wizard_dialog.has_active_background_task()
+            )
+        )
 
     # -- moteur actif (Lot E, §E.4) ------------------------------------------------
 
@@ -285,6 +331,297 @@ class BackupsPage(QWidget):
             return False
         return True
 
+    # -- protection externe (Mission « Sauvegarde automatique et restauration ») -----
+
+    def _build_external_group(self) -> QGroupBox:
+        group = QGroupBox("Protection externe (clé USB / disque externe)", self)
+        layout = QVBoxLayout(group)
+        layout.setSpacing(8)
+
+        can_configure = (
+            self._external_backup_service is not None
+            and self._permissions.has_permission("BACKUP_EXTERNAL_CONFIGURE")
+        )
+        can_copy = (
+            self._external_backup_service is not None and self._permissions.has_permission("BACKUP_CREATE")
+        )
+
+        self.external_status_label = QLabel("", group)
+        self.external_status_label.setStyleSheet("font-weight: 600;")
+        layout.addWidget(self.external_status_label)
+
+        # §3.2 : rappel discret lorsque la protection externe n'est pas
+        # activée — masqué dès qu'elle l'est (voir _apply_external_config_to_form).
+        self.external_reminder_label = QLabel(
+            "Rappel : sans protection externe, les sauvegardes restent uniquement sur le "
+            "disque interne — une panne de ce disque pourrait entraîner leur perte.",
+            group,
+        )
+        self.external_reminder_label.setWordWrap(True)
+        self.external_reminder_label.setProperty("role", "secondary")
+        layout.addWidget(self.external_reminder_label)
+
+        form = QFormLayout()
+        form.setVerticalSpacing(8)
+        form.setHorizontalSpacing(16)
+
+        self.external_enabled_checkbox = QCheckBox("Activer la protection externe", group)
+        form.addRow(self.external_enabled_checkbox)
+
+        media_row = QHBoxLayout()
+        self.external_media_label = QLabel("Aucun support configuré.", group)
+        self.external_media_label.setWordWrap(True)
+        media_row.addWidget(self.external_media_label, 1)
+        self.choose_media_button = QPushButton("Choisir/modifier le support…", group)
+        media_row.addWidget(self.choose_media_button)
+        form.addRow("Support externe", media_row)
+
+        self.external_retention_spin = QSpinBox(group)
+        self.external_retention_spin.setRange(MIN_RETENTION, MAX_RETENTION)
+        self.external_retention_spin.setMinimumWidth(100)
+        form.addRow("Sauvegardes externes à conserver", self.external_retention_spin)
+
+        self.external_last_run_label = QLabel("—", group)
+        form.addRow("Dernière copie", self.external_last_run_label)
+
+        self.external_last_result_label = QLabel("—", group)
+        self.external_last_result_label.setWordWrap(True)
+        form.addRow("Résultat de la dernière exécution", self.external_last_result_label)
+
+        self.external_task_status_label = QLabel("—", group)
+        self.external_task_status_label.setWordWrap(True)
+        form.addRow("Tâche planifiée Windows", self.external_task_status_label)
+
+        layout.addLayout(form)
+
+        for widget in (self.external_enabled_checkbox, self.choose_media_button, self.external_retention_spin):
+            widget.setEnabled(can_configure)
+
+        buttons_row = QHBoxLayout()
+        buttons_row.setSpacing(10)
+        self.save_external_config_button = QPushButton("Enregistrer", group)
+        self.save_external_config_button.setProperty("variant", "primary")
+        self.save_external_config_button.setEnabled(can_configure)
+        buttons_row.addWidget(self.save_external_config_button)
+
+        self.test_media_button = QPushButton("Tester l'accessibilité", group)
+        self.test_media_button.setEnabled(
+            self._external_backup_service is not None and self._permissions.has_permission("BACKUP_VIEW")
+        )
+        buttons_row.addWidget(self.test_media_button)
+
+        self.copy_now_button = QPushButton("Copier maintenant", group)
+        self.copy_now_button.setEnabled(can_copy)
+        buttons_row.addWidget(self.copy_now_button)
+
+        self.configure_task_button = QPushButton("Configurer/réparer la tâche planifiée", group)
+        self.configure_task_button.setEnabled(can_configure)
+        buttons_row.addWidget(self.configure_task_button)
+
+        self.remove_task_button = QPushButton("Supprimer la tâche planifiée", group)
+        self.remove_task_button.setProperty("variant", "danger")
+        self.remove_task_button.setEnabled(can_configure)
+        buttons_row.addWidget(self.remove_task_button)
+
+        buttons_row.addStretch(1)
+        layout.addLayout(buttons_row)
+
+        self.choose_media_button.clicked.connect(self._on_choose_media_clicked)
+        self.save_external_config_button.clicked.connect(self._on_save_external_config_clicked)
+        self.test_media_button.clicked.connect(self._on_test_media_clicked)
+        self.copy_now_button.clicked.connect(self._on_copy_now_clicked)
+        self.configure_task_button.clicked.connect(self._on_configure_task_clicked)
+        self.remove_task_button.clicked.connect(self._on_remove_task_clicked)
+
+        return group
+
+    def _load_external_config_into_form(self) -> None:
+        if self._external_backup_service is None:
+            self.external_status_label.setText("Protection externe non disponible.")
+            self.external_reminder_label.setVisible(False)
+            return
+        try:
+            config = self._external_backup_service.get_config()
+        except AppError:
+            return
+        self._apply_external_config_to_form(config)
+        self._refresh_scheduled_task_status()
+
+    def _apply_external_config_to_form(self, config: ExternalBackupConfig) -> None:
+        self.external_enabled_checkbox.setChecked(config.enabled)
+        self.external_retention_spin.setValue(config.retention)
+        self.external_media_label.setText(
+            f"« {config.label} »" if config.is_configured else "Aucun support configuré."
+        )
+        self.external_status_label.setText(
+            "Protection externe : activée" if config.enabled else "Protection externe : désactivée"
+        )
+        # §3.2 : rappel visible uniquement tant que la protection n'est pas activée.
+        self.external_reminder_label.setVisible(not config.enabled)
+        self.external_last_run_label.setText(config.last_run_at or "—")
+        self.external_last_result_label.setText(config.last_result or "—")
+
+    def _refresh_scheduled_task_status(self) -> None:
+        if self._external_backup_service is None:
+            return
+        try:
+            status = self._external_backup_service.scheduled_task_status()
+        except AppError as exc:
+            self.external_task_status_label.setText(f"Indisponible sur ce poste : {exc}")
+            return
+        if not status.exists:
+            self.external_task_status_label.setText("Non configurée.")
+            return
+        self.external_task_status_label.setText(
+            f"{status.status or '—'} — dernière exécution : {status.last_run_time or '—'} "
+            f"(résultat : {status.last_result or '—'})"
+        )
+
+    def _on_choose_media_clicked(self) -> None:
+        directory = QFileDialog.getExistingDirectory(self, "Support externe (clé USB / disque externe)", "")
+        if not directory:
+            return
+        label, confirmed = QInputDialog.getText(
+            self, "Nom du support", "Donnez un nom à ce support (ex. « Disque externe bureau ») :"
+        )
+        if not confirmed or not label.strip():
+            return
+        self._configure_media(directory, label)
+
+    def _configure_media(self, directory: str, label: str) -> bool:
+        """Isolé de ``_on_choose_media_clicked`` pour rester testable sans
+        dialogues modaux."""
+        try:
+            config = self._external_backup_service.configure_media(Path(directory), label)
+        except AppError as exc:
+            QMessageBox.warning(self, "Support refusé", str(exc))
+            return False
+        self._apply_external_config_to_form(config)
+        QMessageBox.information(self, "Support configuré", f"Le support « {label} » a été configuré avec succès.")
+        return True
+
+    def _on_save_external_config_clicked(self) -> None:
+        self._save_external_config()
+
+    def _save_external_config(self) -> bool:
+        try:
+            config = self._external_backup_service.update_config(
+                enabled=self.external_enabled_checkbox.isChecked(),
+                retention=self.external_retention_spin.value(),
+            )
+            self._apply_external_config_to_form(config)
+            QMessageBox.information(
+                self, "Configuration enregistrée", "La configuration de la protection externe a été enregistrée."
+            )
+        except AppError as exc:
+            QMessageBox.warning(self, "Configuration refusée", str(exc))
+            return False
+        return True
+
+    def _on_test_media_clicked(self) -> None:
+        self._test_media_accessible()
+
+    def _test_media_accessible(self) -> bool:
+        try:
+            accessible = self._external_backup_service.test_media_accessible()
+        except AppError as exc:
+            QMessageBox.warning(self, "Test impossible", str(exc))
+            return False
+        if accessible:
+            QMessageBox.information(self, "Support accessible", "Le support externe configuré est actuellement accessible.")
+        else:
+            QMessageBox.warning(
+                self, "Support inaccessible",
+                "Le support externe configuré n'est pas actuellement accessible. Vérifiez qu'il est bien branché.",
+            )
+        return accessible
+
+    def _on_copy_now_clicked(self) -> None:
+        # Même principe que ``_on_backup_now_clicked`` (thread d'arrière-plan,
+        # voile de chargement, garde anti-double-lancement).
+        if self._external_copy_task is not None:
+            return
+        self.copy_now_button.setEnabled(False)
+        self._loading_overlay.show_with_message("Copie externe en cours…")
+
+        def _on_success(result) -> None:
+            self._finish_external_copy_task()
+            self._show_external_copy_result(result)
+            self.refresh_history()
+
+        def _on_failure(exc: Exception) -> None:
+            self._finish_external_copy_task()
+            message = str(exc) if isinstance(exc, AppError) else f"Erreur inattendue lors de la copie externe : {exc}"
+            QMessageBox.warning(self, "Copie externe refusée", message)
+
+        self._external_copy_task = BackgroundTask(self._external_backup_service.copy_now)
+        self._external_copy_task.start(_on_success, _on_failure)
+
+    def _finish_external_copy_task(self) -> None:
+        self._external_copy_task = None
+        self._loading_overlay.hide_overlay()
+        self.copy_now_button.setEnabled(
+            self._external_backup_service is not None and self._permissions.has_permission("BACKUP_CREATE")
+        )
+        self._load_external_config_into_form()
+
+    def _show_external_copy_result(self, result) -> bool:
+        if result.success:
+            QMessageBox.information(self, "Copie externe réussie", result.message)
+        else:
+            QMessageBox.warning(self, "Échec de la copie externe", result.message)
+        return result.success
+
+    def _run_external_copy_now(self) -> bool:
+        """Appel direct et synchrone, isolé pour rester testable sans
+        dialogue modal ni thread — même principe que ``_run_manual_backup``."""
+        try:
+            result = self._external_backup_service.copy_now()
+        except AppError as exc:
+            QMessageBox.warning(self, "Copie externe refusée", str(exc))
+            return False
+        success = self._show_external_copy_result(result)
+        self.refresh_history()
+        self._load_external_config_into_form()
+        return success
+
+    def _on_configure_task_clicked(self) -> None:
+        self._configure_scheduled_task()
+
+    def _configure_scheduled_task(self) -> bool:
+        try:
+            time_of_day = self._backup_service.get_config().time_of_day
+            self._external_backup_service.configure_scheduled_task(time_of_day)
+            QMessageBox.information(
+                self, "Tâche planifiée configurée",
+                "La tâche planifiée Windows a été configurée/réparée avec succès.",
+            )
+        except AppError as exc:
+            QMessageBox.warning(self, "Configuration refusée", str(exc))
+            return False
+        self._refresh_scheduled_task_status()
+        return True
+
+    def _on_remove_task_clicked(self) -> None:
+        if not confirm_action(
+            self, "Supprimer la tâche planifiée",
+            "Voulez-vous vraiment supprimer la tâche planifiée Windows ? La sauvegarde "
+            "automatique et la copie externe ne s'exécuteront plus lorsque StockManager "
+            "est fermé.",
+        ):
+            return
+        self._remove_scheduled_task()
+
+    def _remove_scheduled_task(self) -> bool:
+        try:
+            self._external_backup_service.remove_scheduled_task()
+            QMessageBox.information(self, "Tâche supprimée", "La tâche planifiée Windows a été supprimée.")
+        except AppError as exc:
+            QMessageBox.warning(self, "Suppression refusée", str(exc))
+            return False
+        self._refresh_scheduled_task_status()
+        return True
+
     # -- actions ----------------------------------------------------------------
 
     def _build_actions_row(self) -> QHBoxLayout:
@@ -304,11 +641,51 @@ class BackupsPage(QWidget):
         self.restore_button.setProperty("variant", "warning")
         self.restore_button.setEnabled(False)
         row.addWidget(self.restore_button)
+
+        # §3.3 : actions pertinentes sur la ligne d'historique sélectionnée —
+        # jamais de suppression manuelle proposée ici (voir le mandat : « ne
+        # pas proposer une suppression manuelle sans vérifier les
+        # conséquences sur la protection des données »).
+        self.view_details_button = QPushButton("Consulter les détails", self)
+        self.view_details_button.setEnabled(False)
+        row.addWidget(self.view_details_button)
+
+        self.export_button = QPushButton("Exporter…", self)
+        self.export_button.setEnabled(False)
+        row.addWidget(self.export_button)
+
+        # §3.4 : assistant de restauration — chemin complémentaire au bouton
+        # « Restaurer la sauvegarde sélectionnée » ci-dessus (qui ne propose
+        # que l'historique déjà reconnu de cette installation) : permet de
+        # parcourir n'importe quel emplacement accessible et de restaurer
+        # depuis une archive externe, y compris sur un poste tout juste
+        # installé n'ayant encore aucun historique local (§7 du mandat).
+        self.restore_wizard_button = QPushButton("Assistant de restauration…", self)
+        self.restore_wizard_button.setEnabled(self._permissions.has_permission("BACKUP_RESTORE"))
+        row.addWidget(self.restore_wizard_button)
+
         row.addStretch(1)
 
         self.backup_now_button.clicked.connect(self._on_backup_now_clicked)
         self.restore_button.clicked.connect(self._on_restore_clicked)
+        self.view_details_button.clicked.connect(self._on_view_details_clicked)
+        self.export_button.clicked.connect(self._on_export_clicked)
+        self.restore_wizard_button.clicked.connect(self._on_open_restore_wizard_clicked)
         return row
+
+    def _on_open_restore_wizard_clicked(self) -> None:
+        if self._restore_wizard_dialog is not None:
+            return
+        dialog = BackupRestoreWizardDialog(
+            self._backup_service, parent=self, external_backup_service=self._external_backup_service,
+        )
+        self._restore_wizard_dialog = dialog
+        try:
+            dialog.exec()
+        finally:
+            self._restore_wizard_dialog = None
+        if dialog.result() == QDialog.DialogCode.Accepted:
+            self.refresh_history()
 
     def _on_backup_now_clicked(self) -> None:
         # Correctif revue finale (Point 3) : l'appel au service s'exécute
@@ -377,14 +754,16 @@ class BackupsPage(QWidget):
         self.history_table.setHorizontalHeaderLabels(_HISTORY_COLUMNS)
         header = self.history_table.horizontalHeader()
         header.setStretchLastSection(True)
-        # Largeurs adaptées au contenu réel de chaque colonne (§7.4) :
-        # Moteur/Date/Taille/Statut tiennent sur un contenu court et fixe,
-        # Nom (potentiellement long) est la seule à s'étirer.
+        # Largeurs adaptées au contenu réel de chaque colonne (§7.4/§3.3) :
+        # Type/Moteur/Date/Taille/Statut tiennent sur un contenu court et
+        # fixe, Nom (potentiellement long) s'étire ; Emplacement s'étire
+        # aussi (dernière colonne, voir setStretchLastSection ci-dessus).
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
         self.history_table.verticalHeader().setDefaultSectionSize(30)
         # §2.2 : au moins cinq sauvegardes visibles simultanément sans avoir
         # à faire défiler le tableau lui-même — en-tête (~32px) + 5 lignes
@@ -396,20 +775,33 @@ class BackupsPage(QWidget):
         self.history_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.history_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.history_table.itemSelectionChanged.connect(self._update_restore_button)
+        self.history_table.itemSelectionChanged.connect(self._update_history_action_buttons)
         return self.history_table
 
     def refresh_history(self) -> None:
+        """Historique combiné (§3.3) : sauvegardes locales
+        (``BackupService.list_backups``) et externes
+        (``ExternalBackupService.list_external_backups``, vide si le
+        support n'est pas actuellement accessible — jamais une erreur dans
+        ce cas), chaque entrée gardant la trace de son origine (colonne
+        « Type »)."""
+        combined: list[tuple[str, object]] = []
         try:
-            entries = self._backup_service.list_backups()
+            combined.extend((_SOURCE_LOCAL, entry) for entry in self._backup_service.list_backups())
         except AppError:
-            self._history_entries = []
-            self.history_table.setRowCount(0)
-            self._update_restore_button()
-            return
+            pass
+        if self._external_backup_service is not None:
+            try:
+                combined.extend(
+                    (_SOURCE_EXTERNAL, entry) for entry in self._external_backup_service.list_external_backups()
+                )
+            except AppError:
+                pass
+        combined.sort(key=lambda pair: pair[1].info.name, reverse=True)
 
-        self._history_entries = entries
-        self.history_table.setRowCount(len(entries))
-        for row, entry in enumerate(entries):
+        self._history_entries = combined
+        self.history_table.setRowCount(len(combined))
+        for row, (source, entry) in enumerate(combined):
             info = entry.info
             try:
                 verification = self._backup_service.verify_backup_file(info.path)
@@ -417,17 +809,16 @@ class BackupsPage(QWidget):
             except AppError:
                 statut = "?"
 
-            engine_item = QTableWidgetItem(_ENGINE_LABELS.get(entry.engine, entry.engine))
-            self.history_table.setItem(row, 0, engine_item)
+            self.history_table.setItem(row, 0, QTableWidgetItem(source))
+            self.history_table.setItem(row, 1, QTableWidgetItem(_ENGINE_LABELS.get(entry.engine, entry.engine)))
             # §2.2 : format français, cohérent avec le reste de l'application
             # depuis la Mission 2 (dd/MM/yyyy) — jamais le format ISO brut,
             # moins lisible au premier coup d'œil.
-            date_item = QTableWidgetItem(info.modified_at.strftime("%d/%m/%Y %H:%M:%S"))
-            self.history_table.setItem(row, 1, date_item)
+            self.history_table.setItem(row, 2, QTableWidgetItem(info.modified_at.strftime("%d/%m/%Y %H:%M:%S")))
             name_item = QTableWidgetItem(info.name)
             name_item.setToolTip(info.name)
-            self.history_table.setItem(row, 2, name_item)
-            self.history_table.setItem(row, 3, QTableWidgetItem(_format_size(info.size_bytes)))
+            self.history_table.setItem(row, 3, name_item)
+            self.history_table.setItem(row, 4, QTableWidgetItem(_format_size(info.size_bytes)))
             statut_item = QTableWidgetItem(statut)
             # Couleurs de statut cohérentes (§2.2) : vert = valide, rouge =
             # invalide, gris neutre pour le cas « indéterminé » (``?``, une
@@ -441,11 +832,17 @@ class BackupsPage(QWidget):
             font = statut_item.font()
             font.setBold(True)
             statut_item.setFont(font)
-            self.history_table.setItem(row, 4, statut_item)
+            self.history_table.setItem(row, 5, statut_item)
+            location_item = QTableWidgetItem(str(info.path.parent))
+            location_item.setToolTip(str(info.path))
+            self.history_table.setItem(row, 6, location_item)
 
         self._update_restore_button()
+        self._update_history_action_buttons()
 
     def _selected_entry(self):
+        """Retourne ``(source, entry)`` (voir :meth:`refresh_history`), ou
+        ``None`` si rien n'est sélectionné."""
         selected = self.history_table.selectionModel().selectedRows()
         if not selected:
             return None
@@ -456,18 +853,62 @@ class BackupsPage(QWidget):
 
     def _update_restore_button(self) -> None:
         can_restore = self._permissions.has_permission("BACKUP_RESTORE")
-        entry = self._selected_entry()
+        selection = self._selected_entry()
         # §E.3 : ne jamais proposer la restauration d'une sauvegarde d'un
         # moteur différent du moteur actif — refusée de toute façon côté
         # service (voir BackupService.restore_backup), mais déjà empêchée
         # ici pour ne pas laisser croire que l'opération est possible.
-        matches_active_engine = entry is not None and entry.engine == self._active_engine
+        matches_active_engine = selection is not None and selection[1].engine == self._active_engine
         self.restore_button.setEnabled(can_restore and matches_active_engine)
 
-    def _on_restore_clicked(self) -> None:
-        entry = self._selected_entry()
-        if entry is None:
+    def _update_history_action_buttons(self) -> None:
+        has_selection = self._selected_entry() is not None
+        self.view_details_button.setEnabled(has_selection)
+        self.export_button.setEnabled(has_selection and self._permissions.has_permission("BACKUP_VIEW"))
+
+    # -- consulter les détails / exporter (§3.3) -------------------------------------
+
+    def _on_view_details_clicked(self) -> None:
+        selection = self._selected_entry()
+        if selection is None:
             return
+        source, entry = selection
+        BackupDetailsDialog(entry, source, self._backup_service, parent=self).exec()
+
+    def _on_export_clicked(self) -> None:
+        selection = self._selected_entry()
+        if selection is None:
+            return
+        _source, entry = selection
+        suggested = str(Path.home() / entry.info.name)
+        destination, _filter = QFileDialog.getSaveFileName(self, "Exporter la sauvegarde", suggested)
+        if not destination:
+            return
+        self._export_entry_to(entry, destination)
+
+    def _export_entry_to(self, entry, destination: str) -> bool:
+        """Isolé de ``_on_export_clicked`` pour rester testable sans
+        dialogue modal de sélection de fichier — copie l'archive ET son
+        manifeste (s'il existe) vers tout emplacement choisi par
+        l'utilisateur (clé USB, disque externe, autre dossier — §C du
+        mandat), indépendamment de toute politique de rétention."""
+        try:
+            destination_path = Path(destination)
+            shutil.copyfile(entry.info.path, destination_path)
+            manifest_source = archive_manifest.manifest_path_for(entry.info.path)
+            if manifest_source.is_file():
+                shutil.copyfile(manifest_source, archive_manifest.manifest_path_for(destination_path))
+        except OSError as exc:
+            QMessageBox.warning(self, "Export refusé", f"Impossible d'exporter la sauvegarde : {exc}")
+            return False
+        QMessageBox.information(self, "Export réussi", f"La sauvegarde a été exportée vers « {destination} ».")
+        return True
+
+    def _on_restore_clicked(self) -> None:
+        selection = self._selected_entry()
+        if selection is None:
+            return
+        _source, entry = selection
         if entry.engine != self._active_engine:
             QMessageBox.warning(
                 self, "Restauration impossible",

@@ -15,7 +15,7 @@ def _no_blocking_dialogs(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _build_page(stack) -> BackupsPage:
-    return BackupsPage(stack.backups, stack.permissions)
+    return BackupsPage(stack.backups, stack.permissions, external_backup_service=stack.external_backups)
 
 
 def test_sqlite_mode_shows_no_postgresql_target_line(qtbot, login_as) -> None:
@@ -102,7 +102,7 @@ def test_backup_now_creates_backup_and_refreshes_history(qtbot, login_as, tmp_pa
     assert result is True
     assert page.history_table.rowCount() == 1
     # Lot E : colonne "Moteur" ajoutée en tête (§E.3) -> Statut passe de l'index 3 à 4.
-    assert page.history_table.item(0, 4).text() == "Valide"
+    assert page.history_table.item(0, 5).text() == "Valide"  # Statut (Type/Moteur ajoutés en tête, §3.3)
 
 
 def test_history_shows_name_and_size(qtbot, login_as, tmp_path) -> None:
@@ -115,9 +115,9 @@ def test_history_shows_name_and_size(qtbot, login_as, tmp_path) -> None:
 
     assert page.history_table.rowCount() == 1
     # Lot E : colonne "Moteur" ajoutée en tête (§E.3) -> Nom/Taille passent des index 1/2 à 2/3.
-    assert page.history_table.item(0, 2).text() == backup_result.file_path.name
-    assert page.history_table.item(0, 3).text() != ""
-    assert page.history_table.item(0, 0).text() == "SQLite"
+    assert page.history_table.item(0, 3).text() == backup_result.file_path.name  # Nom
+    assert page.history_table.item(0, 4).text() != ""  # Taille
+    assert page.history_table.item(0, 1).text() == "SQLite"  # Moteur
 
 
 def test_restore_button_disabled_until_row_selected(qtbot, login_as, tmp_path) -> None:
@@ -442,3 +442,339 @@ def test_restore_second_click_while_in_progress_is_ignored(qtbot, login_as, tmp_
     qtbot.waitUntil(lambda: ("hide",) in calls, timeout=5000)
 
     assert call_count["n"] == 1
+
+
+# -- Mission « Sauvegarde automatique et restauration » : protection externe -----
+
+
+def test_external_group_shows_unavailable_when_service_absent(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = BackupsPage(stack.backups, stack.permissions)  # pas de external_backup_service
+    qtbot.addWidget(page)
+
+    assert page.external_status_label.text() == "Protection externe non disponible."
+    assert page.choose_media_button.isEnabled() is False
+    assert page.copy_now_button.isEnabled() is False
+
+
+def test_external_group_shows_safe_defaults(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page.show()
+
+    assert page.external_enabled_checkbox.isChecked() is False
+    assert page.external_media_label.text() == "Aucun support configuré."
+    assert page.external_reminder_label.isVisible() is True
+
+
+def test_configure_media_updates_form_and_hides_reminder(qtbot, login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    drive = tmp_path / "usb"
+    drive.mkdir()
+
+    result = page._configure_media(str(drive), "Clé USB de test")
+
+    assert result is True
+    assert page.external_media_label.text() == "« Clé USB de test »"
+
+
+def test_save_external_config_rejects_enabling_without_media(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page.external_enabled_checkbox.setChecked(True)
+
+    result = page._save_external_config()
+
+    assert result is False
+
+
+def test_save_external_config_succeeds_after_media_configured(qtbot, login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    drive = tmp_path / "usb"
+    drive.mkdir()
+    page._configure_media(str(drive), "Support")
+    page.external_enabled_checkbox.setChecked(True)
+    page.external_retention_spin.setValue(40)
+
+    result = page._save_external_config()
+
+    assert result is True
+    assert stack.external_backups.get_config().enabled is True
+    assert stack.external_backups.get_config().retention == 40
+
+
+def test_test_media_accessible_reports_true_when_configured_and_present(qtbot, login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    drive = tmp_path / "usb"
+    drive.mkdir()
+    page._configure_media(str(drive), "Support")
+    stack.external_backups._media_roots_provider = lambda: [drive]
+
+    assert page._test_media_accessible() is True
+
+
+def test_test_media_accessible_reports_false_when_not_configured(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page._test_media_accessible() is False
+
+
+def test_run_external_copy_now_succeeds_and_refreshes(qtbot, login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00",
+        destination=str(tmp_path / "backups"), retention=30,
+    )
+    stack.backups.create_manual_backup()
+    drive = tmp_path / "usb"
+    drive.mkdir()
+    stack.external_backups.configure_media(drive, "Support")
+    stack.external_backups.update_config(enabled=True, retention=30)
+    stack.external_backups._media_roots_provider = lambda: [drive]
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    result = page._run_external_copy_now()
+
+    assert result is True
+    assert any(source == "Externe" for source, _entry in page._history_entries)
+
+
+def test_configure_and_remove_scheduled_task_translate_unsupported_platform(qtbot, login_as) -> None:
+    """Hors Windows (ce sandbox), ces opérations échouent explicitement —
+    l'écran doit afficher un message, jamais lever une exception non
+    gérée (voir ExternalBackupService, qui traduit en ValidationError)."""
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page._configure_scheduled_task() is False
+    assert page._remove_scheduled_task() is False
+
+
+# -- historique combiné (Type locale/externe, Emplacement) -----------------------
+
+
+def test_history_combines_local_and_external_entries(qtbot, login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00",
+        destination=str(tmp_path / "backups"), retention=30,
+    )
+    stack.backups.create_manual_backup()
+    drive = tmp_path / "usb"
+    drive.mkdir()
+    stack.external_backups.configure_media(drive, "Support")
+    stack.external_backups.update_config(enabled=True, retention=30)
+    stack.external_backups._media_roots_provider = lambda: [drive]
+    stack.external_backups.copy_now()
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.history_table.rowCount() == 2
+    types = {page.history_table.item(row, 0).text() for row in range(page.history_table.rowCount())}
+    assert types == {"Locale", "Externe"}
+
+
+def test_history_shows_location_column(qtbot, login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    destination = tmp_path / "backups"
+    stack.backups.update_config(auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(destination), retention=10)
+    stack.backups.create_manual_backup()
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.history_table.item(0, 6).text() == str(destination)
+
+
+# -- consulter les détails / exporter --------------------------------------------
+
+
+def test_history_action_buttons_disabled_without_selection(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.view_details_button.isEnabled() is False
+    assert page.export_button.isEnabled() is False
+
+
+def test_history_action_buttons_enabled_with_selection(qtbot, login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    stack.backups.update_config(auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(tmp_path / "backups"), retention=10)
+    stack.backups.create_manual_backup()
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    page.history_table.selectRow(0)
+
+    assert page.view_details_button.isEnabled() is True
+    assert page.export_button.isEnabled() is True
+
+
+def test_view_details_opens_backup_details_dialog(qtbot, login_as, tmp_path, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    stack.backups.update_config(auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(tmp_path / "backups"), retention=10)
+    stack.backups.create_manual_backup()
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page.history_table.selectRow(0)
+
+    captured = {}
+
+    def _fake_dialog(*args, **kwargs):
+        captured["called"] = True
+        return type("_FakeDialog", (), {"exec": lambda self: None})()
+
+    monkeypatch.setattr("app.views.pages.backups_page.BackupDetailsDialog", _fake_dialog)
+
+    page._on_view_details_clicked()
+
+    assert captured.get("called") is True
+
+
+def test_export_entry_copies_archive_and_manifest(qtbot, login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    destination = tmp_path / "backups"
+    stack.backups.update_config(auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(destination), retention=10)
+    backup_result = stack.backups.create_manual_backup()
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    export_target = tmp_path / "export" / "copie.db"
+    export_target.parent.mkdir()
+    entry = next(entry for source, entry in page._history_entries if source == "Locale")
+
+    result = page._export_entry_to(entry, str(export_target))
+
+    assert result is True
+    assert export_target.read_bytes() == backup_result.file_path.read_bytes()
+    from app.services.backups import archive_manifest
+
+    assert archive_manifest.manifest_path_for(export_target).is_file()
+
+
+def test_export_entry_reports_failure_on_os_error(qtbot, login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    destination = tmp_path / "backups"
+    stack.backups.update_config(auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(destination), retention=10)
+    stack.backups.create_manual_backup()
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    entry = next(entry for source, entry in page._history_entries if source == "Locale")
+
+    result = page._export_entry_to(entry, "/chemin/inexistant/copie.db")
+
+    assert result is False
+
+
+def test_restore_wizard_button_enabled_with_permission(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.restore_wizard_button.isEnabled() is True
+
+
+def test_restore_wizard_button_disabled_without_permission(qtbot, login_as) -> None:
+    stack, _ = login_as("Consultation")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.restore_wizard_button.isEnabled() is False
+
+
+def test_open_restore_wizard_refreshes_history_on_accept(qtbot, login_as, monkeypatch) -> None:
+    from PySide6.QtWidgets import QDialog
+
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    captured = {}
+    refresh_calls = []
+    monkeypatch.setattr(page, "refresh_history", lambda: refresh_calls.append(True))
+
+    def _fake_wizard(*args, **kwargs):
+        captured["args"] = args
+        return type(
+            "_FakeWizard", (),
+            {
+                "exec": lambda self: None,
+                "result": lambda self: QDialog.DialogCode.Accepted,
+                "has_active_background_task": lambda self: False,
+            },
+        )()
+
+    monkeypatch.setattr("app.views.pages.backups_page.BackupRestoreWizardDialog", _fake_wizard)
+
+    page._on_open_restore_wizard_clicked()
+
+    assert captured.get("args") is not None
+    assert refresh_calls == [True]
+    assert page._restore_wizard_dialog is None
+
+
+def test_open_restore_wizard_does_not_refresh_on_reject(qtbot, login_as, monkeypatch) -> None:
+    from PySide6.QtWidgets import QDialog
+
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    refresh_calls = []
+    monkeypatch.setattr(page, "refresh_history", lambda: refresh_calls.append(True))
+
+    def _fake_wizard(*args, **kwargs):
+        return type(
+            "_FakeWizard", (),
+            {
+                "exec": lambda self: None,
+                "result": lambda self: QDialog.DialogCode.Rejected,
+                "has_active_background_task": lambda self: False,
+            },
+        )()
+
+    monkeypatch.setattr("app.views.pages.backups_page.BackupRestoreWizardDialog", _fake_wizard)
+
+    page._on_open_restore_wizard_clicked()
+
+    assert refresh_calls == []
+
+
+def test_has_active_background_task_delegates_to_open_wizard(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    class _BusyWizard:
+        def exec(self):
+            # Simule une restauration encore en cours au moment de l'appel.
+            assert page.has_active_background_task() is True
+
+        def result(self):
+            from PySide6.QtWidgets import QDialog
+            return QDialog.DialogCode.Rejected
+
+        def has_active_background_task(self):
+            return True
+
+    monkeypatch.setattr("app.views.pages.backups_page.BackupRestoreWizardDialog", lambda *a, **k: _BusyWizard())
+
+    page._on_open_restore_wizard_clicked()
+
+    assert page.has_active_background_task() is False

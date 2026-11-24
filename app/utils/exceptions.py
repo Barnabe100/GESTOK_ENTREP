@@ -58,6 +58,13 @@ class CredentialVaultUnavailableError(ConfigurationError):
     automatique vers un autre mécanisme de stockage."""
 
 
+class UnsupportedPlatformError(ConfigurationError):
+    """L'opération demandée (ex. gestion de la tâche planifiée Windows,
+    mission Sauvegarde automatique/restauration §4) n'est prise en charge
+    que sur la plateforme indiquée — jamais un repli silencieux ni un
+    comportement dégradé sur une autre plateforme."""
+
+
 class LicenseError(AppError):
     """La fonctionnalité demandée n'est pas autorisée par la licence active
     (ou aucune licence valide n'est présente) — distincte de

@@ -1051,7 +1051,7 @@ Menu Rapports — un menu déroulant permet de choisir le rapport souhaité ; le
 # 15. Sauvegardes, restauration et réinitialisation des données métier
 
 ## Objectif
-Protéger les données de l'entreprise contre une perte (panne, erreur, incident).
+Protéger les données de l'entreprise contre une perte (panne, erreur de manipulation, incident, changement ou panne d'ordinateur, réinstallation de Windows).
 
 ## Qui peut l'utiliser
 Administrateur uniquement.
@@ -1059,37 +1059,109 @@ Administrateur uniquement.
 ## Accès
 Menu Sauvegardes.
 
-## Sauvegarde manuelle
+## Sauvegarde locale automatique
 
-Bouton **« Sauvegarder maintenant »** : crée immédiatement une copie de sécurité de la base de données, dans le dossier de destination configuré.
-
-## Sauvegarde automatique
+Une sauvegarde automatique quotidienne, stockée sur le disque interne du poste, est la protection de base : elle fonctionne sans aucune intervention, y compris lorsque StockManager n'est pas ouvert (voir « Tâche planifiée Windows » ci-dessous).
 
 Un formulaire de configuration permet de définir :
 
 | Paramètre | Détail |
 |---|---|
-| Activation | Case à cocher (désactivée par défaut) |
+| Activation | Case à cocher |
 | Fréquence | Quotidienne ou Hebdomadaire (quotidienne par défaut) |
 | Heure d'exécution | Format HH:MM (02:00 par défaut) |
 | Dossier de destination | Modifiable (bouton « Parcourir… ») |
-| Sauvegardes à conserver | Nombre de sauvegardes conservées avant suppression automatique des plus anciennes (10 par défaut) |
+| Sauvegardes à conserver | Nombre de sauvegardes conservées avant suppression automatique des plus anciennes (**30 par défaut**) |
 
-> La sauvegarde automatique ne peut s'exécuter que lorsque l'application est ouverte.
+Chaque sauvegarde est systématiquement vérifiée (intégrité du fichier, cohérence des données) avant d'être considérée comme valide ; une sauvegarde invalide n'est jamais comptée dans l'historique ni copiée vers un support externe.
+
+Bouton **« Sauvegarder maintenant »** : crée immédiatement une copie de sécurité, en plus des sauvegardes automatiques.
+
+> Si l'ordinateur n'est jamais allumé avec une session Windows ouverte à l'heure programmée, la sauvegarde ne peut pas s'exécuter ce jour-là — voir « Tâche planifiée Windows ».
+
+## Protection externe (clé USB, disque externe)
+
+La sauvegarde locale protège contre une erreur de manipulation ou une corruption de données, mais **pas** contre une panne, un vol ou la destruction de l'ordinateur lui-même : pour cela, une copie régulière sur un support externe est recommandée.
+
+Section « Protection externe » de l'écran Sauvegardes :
+
+| Paramètre | Détail |
+|---|---|
+| Activation | Case à cocher (désactivée par défaut) |
+| Support | Clé USB ou disque externe sélectionné une fois via « Sélectionner/modifier le support… » |
+| Sauvegardes à conserver | Entre 30 et 50 (30 par défaut) |
+| Dernière copie réussie | Date/heure affichée, ou absence si aucune copie n'a encore réussi |
+
+Actions disponibles :
+- **Sélectionner/modifier le support…** : choisit la clé USB ou le disque externe de destination. StockManager y enregistre un repère invisible qui permet de retrouver ce même support même s'il change de lettre de lecteur à un futur branchement (ex. `E:` devenu `F:`) — jamais besoin de le rebrancher sur le même port USB.
+- **Tester l'accessibilité du support** : vérifie, à tout moment, que le support choisi est actuellement branché et accessible.
+- **Copier maintenant** : lance immédiatement une copie de la dernière sauvegarde locale valide vers le support, sans attendre l'échéance planifiée.
+- **Configurer/réparer la tâche planifiée Windows…** / **Supprimer la tâche planifiée…** : voir ci-dessous.
+
+> Si la protection externe reste désactivée, StockManager affiche un rappel discret : les sauvegardes ne se trouvent alors que sur le disque interne du poste.
+
+**Garanties importantes :**
+- Une copie externe n'est jamais effectuée à partir d'une sauvegarde locale invalide.
+- Si le support est absent, débranché ou inaccessible au moment prévu, **aucune sauvegarde externe n'est supprimée** : l'échec est simplement enregistré, et une nouvelle tentative aura lieu à la prochaine échéance planifiée.
+
+## Tâche planifiée Windows
+
+La sauvegarde locale et, si elle est activée, la copie externe sont exécutées une fois par jour par une tâche du Planificateur de tâches Windows, configurée directement depuis StockManager — sans jamais devoir ouvrir cet outil Windows soi-même. C'est cette tâche, et non l'application elle-même, qui garantit que la sauvegarde locale a bien lieu même lorsque StockManager reste fermé toute la journée.
+
+Depuis la section « Protection externe » :
+- **Configurer/réparer la tâche planifiée Windows…** : crée la tâche si elle n'existe pas encore, ou la répare à l'identique si elle a été supprimée ou modifiée accidentellement dans Windows. Une heure d'exécution quotidienne est demandée (20h00 suggéré par défaut).
+- **Supprimer la tâche planifiée…** : désactive proprement l'automatisation Windows (la configuration dans StockManager, elle, reste inchangée et peut être réactivée à tout moment).
+- L'état actuel de la tâche (existe ou non, dernière exécution, résultat) est affiché dans l'écran.
+
+> Cette tâche s'exécute dans le contexte de la session Windows de l'utilisateur courant, sans jamais demander ni nécessiter de droits administrateur permanents. Elle ne peut s'exécuter que si une session Windows est ouverte à l'heure programmée (l'ordinateur peut être verrouillé, mais pas éteint ni l'utilisateur déconnecté) : si le poste est systématiquement éteint à cette heure, choisir une heure où il est habituellement allumé.
+
+## Historique des sauvegardes
+
+Le tableau d'historique regroupe les sauvegardes locales et, lorsque le support externe est branché, les sauvegardes externes — chaque ligne précise son origine (Locale/Externe), le moteur de base de données, la date, le nom du fichier, la taille, le statut et l'emplacement.
+
+Actions disponibles sur une ligne sélectionnée :
+- **Consulter les détails** : affiche les informations techniques de la sauvegarde (version de StockManager et de la base de données au moment de la création, type, empreinte de contrôle, chiffrement).
+- **Exporter…** : copie la sauvegarde sélectionnée vers n'importe quel emplacement choisi (clé USB, disque externe, autre dossier) pour une copie ponctuelle supplémentaire, indépendante de la rotation automatique.
+- **Restaurer la sauvegarde sélectionnée** : voir « Restauration » ci-dessous.
+
+> Aucune suppression manuelle n'est proposée depuis cet historique : la rotation (locale comme externe) reste entièrement automatique, afin d'éviter de supprimer par erreur une sauvegarde encore nécessaire.
 
 ## Restauration
 
-Bouton **« Restaurer la sauvegarde sélectionnée »**, disponible pour toute sauvegarde présente dans l'historique.
+Deux façons de restaurer, selon la situation.
 
-### Procédure
+### Restauration rapide (depuis l'historique de ce poste)
 
-1. Sélectionner une sauvegarde dans l'historique.
+1. Sélectionner une sauvegarde dans l'historique (section précédente).
 2. Cliquer sur « Restaurer la sauvegarde sélectionnée ».
 3. Confirmer — le message affiché est explicite :
    > *« Voulez-vous vraiment restaurer cette sauvegarde ? La base de données actuelle sera remplacée (une sauvegarde de sécurité de l'état actuel sera créée automatiquement avant toute modification). L'application devra être redémarrée après une restauration réussie. Cette action est irréversible sans cette sauvegarde de sécurité. »*
 4. Après une restauration réussie, **redémarrer l'application**.
 
+### Assistant de restauration (depuis n'importe quel support, y compris sur un nouvel ordinateur)
+
+Bouton **« Assistant de restauration… »** — utile en particulier après un changement ou une panne d'ordinateur, une réinstallation de Windows, ou pour restaurer une archive qui n'apparaît pas dans l'historique de ce poste (ex. une sauvegarde apportée depuis un autre poste).
+
+1. Cliquer sur « Assistant de restauration… ».
+2. Cliquer sur « Parcourir… » et sélectionner le fichier de sauvegarde (clé USB, disque externe, autre dossier, tout emplacement accessible). Si un support externe est déjà configuré et branché, l'assistant propose directement son contenu.
+3. L'assistant affiche les informations de la sauvegarde choisie (date, moteur, taille, version) et vérifie son intégrité et sa compatibilité avant de proposer la restauration — toute archive invalide, corrompue, ou provenant d'un moteur de base de données différent de celui actif, est refusée et signalée clairement, sans jamais aller plus loin.
+4. Si l'archive est valide, cliquer sur « Restaurer… » puis confirmer — la même sauvegarde de sécurité automatique que pour la restauration rapide est créée avant tout remplacement.
+5. Après une restauration réussie, **redémarrer l'application**.
+
 > **Important — Une restauration remplace entièrement la base de données actuelle.** Toute donnée saisie après la date de la sauvegarde restaurée sera perdue (sauf dans la sauvegarde de sécurité créée automatiquement juste avant la restauration).
+
+## Récupération après un changement ou une panne d'ordinateur
+
+En cas de panne définitive, de vol, ou de remplacement de l'ordinateur :
+
+1. Installer StockManager Desktop sur le nouvel ordinateur (voir le guide d'installation Windows).
+2. Importer la licence si nécessaire (chapitre 17).
+3. Ouvrir le menu Sauvegardes puis cliquer sur « Assistant de restauration… ».
+4. Brancher le support externe (clé USB ou disque) contenant la dernière sauvegarde externe du poste précédent, cliquer sur « Parcourir… » et sélectionner l'archive la plus récente.
+5. Suivre la procédure de l'assistant ci-dessus jusqu'à la restauration.
+6. Vérifier que les données attendues sont bien présentes, puis reconfigurer si besoin la sauvegarde locale et la protection externe sur ce nouveau poste (sections précédentes) — ces réglages ne sont pas transférés automatiquement : ils doivent être reconfigurés une fois sur chaque poste.
+
+> C'est précisément pour ce scénario que la protection externe (support USB/disque) est recommandée en complément de la sauvegarde locale : une sauvegarde qui ne se trouve que sur le disque interne de l'ordinateur en panne ne peut pas être récupérée.
 
 **Capture à insérer** : `[CAPTURE 18 — SAUVEGARDES]`
 

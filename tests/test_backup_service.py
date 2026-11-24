@@ -12,6 +12,25 @@ from app.services.backups import backup_engine
 from app.utils.exceptions import PermissionDeniedError, ValidationError
 
 
+class _FakeEncryptionVault:
+    """Coffre d'identifiants en mémoire, injecté dans ``BackupService``
+    pour valider le cycle complet chiffrement/sauvegarde/restauration sans
+    Windows Credential Manager (voir ``BackupService.__init__``,
+    paramètre ``encryption_vault``) — jamais utilisé en dehors des tests."""
+
+    def __init__(self) -> None:
+        self._store: dict[str, str] = {}
+
+    def get_password(self, profile_id: str):
+        return self._store.get(profile_id)
+
+    def set_password(self, profile_id: str, password: str) -> None:
+        self._store[profile_id] = password
+
+    def delete_password(self, profile_id: str) -> None:
+        self._store.pop(profile_id, None)
+
+
 def _make_article(stack, reference="ART-1", stock_initial=Decimal("10")):
     category = stack.categories.create_category(f"Cat-{reference}")
     return stack.articles.create_article(
@@ -439,5 +458,118 @@ def test_scheduled_backup_does_not_run_twice_same_day(login_as, tmp_path) -> Non
 
     assert first is not None
     assert second is None
+
+
+# -- Mission « Sauvegarde automatique et restauration » : rétention par défaut,
+# manifeste, chiffrement optionnel -------------------------------------------------
+
+
+def test_default_retention_is_thirty(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+
+    config = stack.backups.get_config()
+
+    assert config.retention == 30
+
+
+def test_default_encryption_is_disabled(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+
+    config = stack.backups.get_config()
+
+    assert config.encryption_enabled is False
+
+
+def test_update_config_persists_encryption_enabled(login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+
+    updated = stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00",
+        destination=str(tmp_path / "backups"), retention=30, encryption_enabled=True,
+    )
+
+    assert updated.encryption_enabled is True
+    assert stack.backups.get_config().encryption_enabled is True
+
+
+def test_create_manual_backup_writes_a_manifest(login_as, tmp_path) -> None:
+    from app.services.backups import archive_manifest
+
+    stack, _ = login_as("Administrateur")
+    destination = tmp_path / "backups"
+    stack.backups.update_config(auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(destination), retention=30)
+
+    result = stack.backups.create_manual_backup()
+
+    manifest = archive_manifest.read_manifest_for(result.file_path)
+    assert manifest is not None
+    assert manifest.db_engine == "sqlite"
+    assert manifest.backup_type == archive_manifest.BACKUP_TYPE_LOCAL
+    assert manifest.encrypted is False
+    assert manifest.sha256 == archive_manifest.compute_sha256(result.file_path)
+
+
+def test_rotation_also_deletes_the_manifest_of_removed_backups(login_as, tmp_path) -> None:
+    from app.services.backups import archive_manifest
+
+    stack, _ = login_as("Administrateur")
+    destination = tmp_path / "backups"
+    stack.backups.update_config(auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(destination), retention=1)
+
+    first = stack.backups.create_manual_backup()
+    time.sleep(1.1)  # noms de fichiers à la seconde près : garantit un second nom distinct
+    stack.backups.create_manual_backup()
+
+    assert not first.file_path.exists()
+    assert not archive_manifest.manifest_path_for(first.file_path).exists()
+
+
+def test_encrypted_backup_round_trips_through_restore(login_as, tmp_path) -> None:
+    """Bout en bout avec chiffrement activé : la sauvegarde créée est bien
+    chiffrée sur le disque (illisible tel quel par sqlite3), mais la
+    restauration — qui doit déchiffrer avant de lire — réussit et restitue
+    exactement les données d'origine."""
+    stack, _ = login_as("Administrateur")
+    stack.backups._encryption_vault = _FakeEncryptionVault()
+    article = _make_article(stack, stock_initial=Decimal("77"))
+    destination = tmp_path / "backups"
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00",
+        destination=str(destination), retention=30, encryption_enabled=True,
+    )
+
+    result = stack.backups.create_manual_backup()
+    assert result.success is True
+
+    # L'archive chiffrée n'est pas une base SQLite exploitable telle quelle.
+    with pytest.raises(sqlite3.DatabaseError):
+        sqlite3.connect(f"file:{result.file_path.as_posix()}?mode=ro", uri=True).execute(
+            "SELECT 1 FROM sqlite_master LIMIT 1;"
+        ).fetchall()
+
+    restore_result = stack.backups.restore_backup(result.file_path)
+
+    assert restore_result.success is True
+    with session_scope(get_settings()) as session:
+        from app.models.catalog import Article
+
+        restored = session.get(Article, article.id)
+        assert restored.stock_actuel == Decimal("77")
+
+
+def test_verify_backup_file_succeeds_on_encrypted_archive(login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    stack.backups._encryption_vault = _FakeEncryptionVault()
+    destination = tmp_path / "backups"
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00",
+        destination=str(destination), retention=30, encryption_enabled=True,
+    )
+
+    result = stack.backups.create_manual_backup()
+
+    verification = stack.backups.verify_backup_file(result.file_path)
+
+    assert verification.valid is True
 
 

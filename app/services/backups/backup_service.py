@@ -21,15 +21,17 @@ from app.db.session import session_scope
 from app.models.audit import AuditLog
 from app.models.enums import ResultatAudit
 from app.repositories.parameter_repository import ParameterRepository
+from app.security.credential_vault import CredentialVault
 from app.services.auth.permission_service import PermissionService
-from app.services.backups import backup_engine
+from app.services.backups import archive_manifest, backup_engine
 from app.services.backups import postgresql_backup_engine as pg_backup_engine
+from app.services.backups.archive_encryption import ArchiveEncryptionError, decrypt_file_to_temp, encrypt_file_in_place
 from app.services.backups.postgresql_backup_engine import (
     PostgreSQLBackupError,
     PostgreSQLTarget,
     PostgreSQLToolNotFoundError,
 )
-from app.utils.exceptions import ValidationError
+from app.utils.exceptions import CredentialVaultUnavailableError, ValidationError
 from app.utils.logging_config import get_logger
 
 logger = get_logger("services.backups")
@@ -40,16 +42,23 @@ _KEY_TIME = "backup.time"
 _KEY_DESTINATION = "backup.destination"
 _KEY_RETENTION = "backup.retention"
 _KEY_LAST_AUTO_RUN = "backup.last_auto_run"
+# Mission « Sauvegarde automatique et restauration », §5 : chiffrement
+# optionnel des archives, désactivé par défaut (voir
+# ``archive_encryption.py`` pour la justification de ce choix).
+_KEY_ENCRYPTION_ENABLED = "backup.encryption_enabled"
 
 FREQUENCY_DAILY = "daily"
 FREQUENCY_WEEKLY = "weekly"
 _VALID_FREQUENCIES = {FREQUENCY_DAILY, FREQUENCY_WEEKLY}
 
 # Valeurs par défaut sûres (§14) : sauvegarde automatique désactivée tant
-# qu'un administrateur ne l'a pas explicitement activée, rétention modérée.
+# qu'un administrateur ne l'a pas explicitement activée. Rétention par
+# défaut 30 (Mission « Sauvegarde automatique et restauration », §2.A —
+# avant cette mission : 10 ; ne change rien pour un poste ayant déjà
+# enregistré une valeur explicite, voir ``_read_config``).
 _DEFAULT_FREQUENCY = FREQUENCY_DAILY
 _DEFAULT_TIME = "02:00"
-_DEFAULT_RETENTION = 10
+_DEFAULT_RETENTION = 30
 
 # Erreurs anticipées d'accès fichier/SQLite — jamais une exception large
 # masquant un bug ailleurs dans le moteur.
@@ -81,6 +90,10 @@ class BackupConfig:
     time_of_day: str
     destination: Path
     retention: int
+    # Mission « Sauvegarde automatique et restauration », §5 : désactivé
+    # par défaut (voir archive_encryption.py) — change un comportement
+    # établi (archives jusqu'ici en clair), jamais activé implicitement.
+    encryption_enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -111,9 +124,20 @@ class BackupEntry:
 
 
 class BackupService:
-    def __init__(self, permission_service: PermissionService, settings: Optional[Settings] = None) -> None:
+    def __init__(
+        self, permission_service: PermissionService, settings: Optional[Settings] = None,
+        *, encryption_vault: Optional[CredentialVault] = None,
+    ) -> None:
         self._permissions = permission_service
         self._settings = settings
+        # Jamais résolu ici (coûteux, spécifique Windows) : seulement
+        # transmis tel quel à ``archive_encryption`` au moment précis d'un
+        # chiffrement/déchiffrement. ``None`` (comportement par défaut en
+        # production) laisse ``archive_encryption`` résoudre le coffre
+        # Windows réel ; un coffre injecté ici (tests) permet de valider le
+        # cycle complet chiffrement/sauvegarde/restauration sans Windows
+        # Credential Manager (voir tests/test_backup_service.py).
+        self._encryption_vault = encryption_vault
 
     def _acting_user_id(self) -> Optional[int]:
         current_user = self._permissions.current_user
@@ -178,13 +202,15 @@ class BackupService:
             destination = repo.get_value(_KEY_DESTINATION) or str(_default_destination(settings))
             retention_raw = repo.get_value(_KEY_RETENTION)
             retention = int(retention_raw) if retention_raw else _DEFAULT_RETENTION
+            encryption_enabled = (repo.get_value(_KEY_ENCRYPTION_ENABLED) or "false") == "true"
         return BackupConfig(
             auto_enabled=auto_enabled, frequency=frequency, time_of_day=time_of_day,
-            destination=Path(destination), retention=retention,
+            destination=Path(destination), retention=retention, encryption_enabled=encryption_enabled,
         )
 
     def update_config(
-        self, *, auto_enabled: bool, frequency: str, time_of_day: str, destination: str, retention: int
+        self, *, auto_enabled: bool, frequency: str, time_of_day: str, destination: str, retention: int,
+        encryption_enabled: bool = False,
     ) -> BackupConfig:
         """Valide et persiste la configuration. Aucune prétention de succès
         si le dossier de destination n'est pas accessible (§5) : la création
@@ -220,6 +246,7 @@ class BackupService:
             repo.set_value(_KEY_TIME, time_of_day)
             repo.set_value(_KEY_DESTINATION, str(destination_path))
             repo.set_value(_KEY_RETENTION, str(retention))
+            repo.set_value(_KEY_ENCRYPTION_ENABLED, "true" if encryption_enabled else "false")
 
         self._audit("BACKUP_CONFIG_UPDATE", ResultatAudit.SUCCES)
         logger.info("Configuration des sauvegardes mise à jour.")
@@ -235,9 +262,12 @@ class BackupService:
             return self._create_backup_postgresql(config, settings, action="BACKUP_MANUAL")
         return self._create_backup(config, action="BACKUP_MANUAL")
 
-    def _create_backup(self, config: BackupConfig, *, action: str) -> BackupResult:
-        """Créer -> vérifier -> ne prétendre un succès qu'après vérification
-        (§4) -> appliquer la rétention -> auditer. Jamais l'inverse."""
+    def _create_backup(
+        self, config: BackupConfig, *, action: str, backup_type: str = archive_manifest.BACKUP_TYPE_LOCAL,
+    ) -> BackupResult:
+        """Créer -> vérifier -> chiffrer si activé -> manifeste -> ne
+        prétendre un succès qu'après vérification (§4) -> appliquer la
+        rétention -> auditer. Jamais l'inverse."""
         try:
             backup_path = backup_engine.create_backup_file(self._db_path(), config.destination)
         except _BACKUP_IO_ERRORS as exc:
@@ -253,8 +283,29 @@ class BackupService:
             self._audit(f"{action}_FAILURE", ResultatAudit.ECHEC, details=message)
             return BackupResult(success=False, message=message, file_path=backup_path)
 
+        encrypted = False
+        if config.encryption_enabled:
+            try:
+                encrypt_file_in_place(backup_path, vault=self._encryption_vault)
+                encrypted = True
+            except (ArchiveEncryptionError, CredentialVaultUnavailableError) as exc:
+                message = f"Sauvegarde créée mais échec du chiffrement : {exc}"
+                logger.error(message)
+                self._audit(f"{action}_FAILURE", ResultatAudit.ECHEC, details=message)
+                return BackupResult(success=False, message=message, file_path=backup_path)
+
+        # Manifeste écrit en dernier (§5) : son empreinte doit toujours
+        # correspondre exactement aux octets finaux sur le disque, chiffrés
+        # ou non.
+        archive_manifest.write_manifest_for(
+            backup_path, db_engine="sqlite", schema_version=verification.alembic_version,
+            backup_type=backup_type, encrypted=encrypted,
+        )
+
         deleted = backup_engine.apply_retention(config.destination, config.retention)
         if deleted:
+            for deleted_path in deleted:
+                archive_manifest.delete_manifest_for(deleted_path)
             logger.info("Rotation des sauvegardes : %d fichier(s) supprimé(s).", len(deleted))
             self._audit(
                 "BACKUP_ROTATION", ResultatAudit.SUCCES,
@@ -298,8 +349,26 @@ class BackupService:
             self._audit(f"{action}_FAILURE", ResultatAudit.ECHEC, details=message)
             return BackupResult(success=False, message=message, file_path=backup_path)
 
+        encrypted = False
+        if config.encryption_enabled:
+            try:
+                encrypt_file_in_place(backup_path, vault=self._encryption_vault)
+                encrypted = True
+            except (ArchiveEncryptionError, CredentialVaultUnavailableError) as exc:
+                message = f"Sauvegarde créée mais échec du chiffrement : {exc}"
+                logger.error(message)
+                self._audit(f"{action}_FAILURE", ResultatAudit.ECHEC, details=message)
+                return BackupResult(success=False, message=message, file_path=backup_path)
+
+        archive_manifest.write_manifest_for(
+            backup_path, db_engine="postgresql", schema_version=verification.alembic_version,
+            backup_type=archive_manifest.BACKUP_TYPE_LOCAL, encrypted=encrypted,
+        )
+
         deleted = pg_backup_engine.apply_retention(config.destination, config.retention)
         if deleted:
+            for deleted_path in deleted:
+                archive_manifest.delete_manifest_for(deleted_path)
             logger.info("Rotation des sauvegardes PostgreSQL : %d fichier(s) supprimé(s).", len(deleted))
             self._audit(
                 "BACKUP_ROTATION", ResultatAudit.SUCCES,
@@ -318,6 +387,19 @@ class BackupService:
         des deux types ; chaque entrée porte son propre moteur, jamais
         ambigu grâce aux motifs de nommage mutuellement exclusifs."""
         self._permissions.require_permission("BACKUP_VIEW")
+        return self._list_backups_unchecked()
+
+    def list_backups_for_automation(self) -> list[BackupEntry]:
+        """Même résultat que :meth:`list_backups`, sans aucune vérification
+        de permission — réservé aux appelants système non interactifs
+        (``ExternalBackupService``/l'agent auxiliaire, voir
+        ``app.backup_external_agent_cli``, exécutés sans session
+        utilisateur), jamais à l'interface utilisateur (qui doit toujours
+        passer par :meth:`list_backups`, qui vérifie BACKUP_VIEW) — même
+        convention que ``run_scheduled_backup_if_due``."""
+        return self._list_backups_unchecked()
+
+    def _list_backups_unchecked(self) -> list[BackupEntry]:
         config = self._read_config()
         entries = [BackupEntry("sqlite", info) for info in backup_engine.list_backup_files(config.destination)]
         entries += [
@@ -332,12 +414,46 @@ class BackupService:
         UI -> Service -> mécanique de fichiers. Le moteur de vérification
         est déduit de l'extension du fichier (``.dump`` -> PostgreSQL,
         ``.db`` -> SQLite), jamais du moteur actif (l'historique peut
-        contenir des sauvegardes de l'autre moteur, voir :meth:`list_backups`)."""
+        contenir des sauvegardes de l'autre moteur, voir :meth:`list_backups`).
+
+        Décrypte vers une copie temporaire si l'archive est chiffrée (voir
+        le manifeste) avant toute vérification structurelle — jamais une
+        tentative de lecture directe d'une archive chiffrée, qui
+        échouerait toujours. La copie temporaire est systématiquement
+        supprimée après usage, qu'elle ait servi ou non."""
         self._permissions.require_permission("BACKUP_VIEW")
-        file_path = Path(file_path)
-        if file_path.suffix == ".dump":
-            return pg_backup_engine.verify_backup_file(file_path)
-        return backup_engine.verify_backup_file(file_path)
+        file_path, temp_to_cleanup = self._resolve_plaintext_path(file_path)
+        try:
+            if file_path.suffix == ".dump":
+                return pg_backup_engine.verify_backup_file(file_path)
+            return backup_engine.verify_backup_file(file_path)
+        finally:
+            if temp_to_cleanup is not None:
+                temp_to_cleanup.unlink(missing_ok=True)
+
+    def _resolve_plaintext_path(self, archive_path: Path) -> tuple[Path, Optional[Path]]:
+        """Retourne ``(chemin à utiliser pour toute lecture, chemin
+        temporaire à nettoyer ensuite ou None)``. Si l'archive n'est pas
+        chiffrée (ou aucun manifeste associé — sauvegarde antérieure à ce
+        mécanisme), retourne l'archive elle-même sans aucune copie.
+
+        Vérifie d'abord l'empreinte du manifeste : une archive chiffrée
+        altérée depuis sa création est refusée ici, avant même toute
+        tentative de déchiffrement — jamais un déchiffrement tenté sur un
+        contenu dont l'intégrité n'est plus garantie."""
+        archive_path = Path(archive_path)
+        manifest = archive_manifest.read_manifest_for(archive_path)
+        if manifest is None or not manifest.encrypted:
+            return archive_path, None
+
+        manifest_check = archive_manifest.verify_manifest_for(archive_path)
+        if not manifest_check.hash_matches:
+            raise ValidationError(
+                "L'empreinte de cette archive chiffrée ne correspond plus à celle enregistrée "
+                "à sa création — fichier altéré ou corrompu : " + "; ".join(manifest_check.errors)
+            )
+        temp_path = decrypt_file_to_temp(archive_path, vault=self._encryption_vault)
+        return temp_path, temp_path
 
     # -- sauvegarde planifiée -----------------------------------------------------
 
@@ -423,70 +539,92 @@ class BackupService:
 
         La tentative est tracée dans le journal applicatif, pas dans la
         table d'audit (voir commentaire avant l'appel à ``logger.info``
-        ci-dessous) : seuls le succès et l'échec définitifs y sont écrits."""
-        verification = backup_engine.verify_backup_file(backup_path)
-        if not verification.valid:
-            message = "Sauvegarde invalide, restauration refusée : " + "; ".join(verification.errors)
-            self._audit("BACKUP_RESTORE_FAILURE", ResultatAudit.ECHEC, details=message)
-            raise ValidationError(message)
+        ci-dessous) : seuls le succès et l'échec définitifs y sont écrits.
 
-        current_version = backup_engine.get_alembic_version(self._db_path())
-        if verification.alembic_version != current_version:
-            message = (
-                f"Version de schéma incompatible (sauvegarde : {verification.alembic_version!r}, "
-                f"base actuelle : {current_version!r}) — restauration refusée."
-            )
-            self._audit("BACKUP_RESTORE_FAILURE", ResultatAudit.ECHEC, details=message)
-            raise ValidationError(message)
-
-        config = self._read_config()
+        Décrypte d'abord ``backup_path`` vers une copie temporaire en clair
+        si l'archive est chiffrée (voir le manifeste) — la vérification et
+        la restauration elles-mêmes opèrent toujours sur cette copie en
+        clair, jamais sur le fichier chiffré directement ; la copie
+        temporaire est systématiquement supprimée après usage, succès ou
+        échec."""
         try:
-            security_backup_path = backup_engine.create_backup_file(
-                self._db_path(), config.destination, prefix=backup_engine.PRERESTORE_PREFIX
-            )
-        except _BACKUP_IO_ERRORS as exc:
-            message = f"Impossible de créer la sauvegarde de sécurité préalable : {exc}"
+            plaintext_path, temp_to_cleanup = self._resolve_plaintext_path(backup_path)
+        except (ValidationError, ArchiveEncryptionError) as exc:
+            message = str(exc)
             self._audit("BACKUP_RESTORE_FAILURE", ResultatAudit.ECHEC, details=message)
             raise ValidationError(message) from exc
 
-        # Trace de la tentative dans le journal applicatif (fichier), jamais
-        # dans la table d'audit : une restauration réussie remplace la base
-        # entière — table d'audit comprise — par celle de la sauvegarde ;
-        # toute ligne « tentative » écrite ici dans la base ACTUELLE serait
-        # donc systématiquement effacée par son propre succès. Seuls les
-        # résultats définitifs (succès/échec), écrits après coup dans la
-        # base alors stabilisée, sont donc audités en base (§12).
-        logger.info("Tentative de restauration depuis %s (utilisateur=%s).", backup_path, self._acting_user_id())
-
-        # Libère toute connexion SQLAlchemy avant d'écraser le fichier actif.
-        db_session_module.reset_engine_cache()
         try:
-            backup_engine.restore_database_from_backup(backup_path, self._db_path())
-        except _BACKUP_IO_ERRORS as exc:
-            failure_message = f"Échec de la restauration : {exc}"
-            logger.error(failure_message)
-            try:
-                backup_engine.restore_database_from_backup(security_backup_path, self._db_path())
-                recovery_message = (
-                    failure_message + " La base précédente a été restaurée depuis la sauvegarde de sécurité."
-                )
-            except _BACKUP_IO_ERRORS as recovery_exc:
-                recovery_message = (
-                    failure_message + f" ÉCHEC CRITIQUE : la restauration de secours a également échoué "
-                    f"({recovery_exc}). Sauvegarde de sécurité disponible : {security_backup_path}."
-                )
-            self._audit("BACKUP_RESTORE_FAILURE", ResultatAudit.ECHEC, details=recovery_message)
-            return RestoreResult(success=False, message=recovery_message, security_backup_path=security_backup_path)
+            verification = backup_engine.verify_backup_file(plaintext_path)
+            if not verification.valid:
+                message = "Sauvegarde invalide, restauration refusée : " + "; ".join(verification.errors)
+                self._audit("BACKUP_RESTORE_FAILURE", ResultatAudit.ECHEC, details=message)
+                raise ValidationError(message)
 
-        # La prochaine session s'ouvrira sur la base restaurée.
-        db_session_module.reset_engine_cache()
-        self._audit("BACKUP_RESTORE_SUCCESS", ResultatAudit.SUCCES, details=f"Restauré depuis {backup_path}.")
-        logger.info("Restauration réussie depuis %s (sauvegarde de sécurité : %s).", backup_path, security_backup_path)
-        return RestoreResult(
-            success=True,
-            message="Restauration réussie. Redémarrez l'application pour continuer.",
-            security_backup_path=security_backup_path,
-        )
+            current_version = backup_engine.get_alembic_version(self._db_path())
+            if verification.alembic_version != current_version:
+                message = (
+                    f"Version de schéma incompatible (sauvegarde : {verification.alembic_version!r}, "
+                    f"base actuelle : {current_version!r}) — restauration refusée."
+                )
+                self._audit("BACKUP_RESTORE_FAILURE", ResultatAudit.ECHEC, details=message)
+                raise ValidationError(message)
+
+            config = self._read_config()
+            try:
+                security_backup_path = backup_engine.create_backup_file(
+                    self._db_path(), config.destination, prefix=backup_engine.PRERESTORE_PREFIX
+                )
+            except _BACKUP_IO_ERRORS as exc:
+                message = f"Impossible de créer la sauvegarde de sécurité préalable : {exc}"
+                self._audit("BACKUP_RESTORE_FAILURE", ResultatAudit.ECHEC, details=message)
+                raise ValidationError(message) from exc
+
+            # Trace de la tentative dans le journal applicatif (fichier), jamais
+            # dans la table d'audit : une restauration réussie remplace la base
+            # entière — table d'audit comprise — par celle de la sauvegarde ;
+            # toute ligne « tentative » écrite ici dans la base ACTUELLE serait
+            # donc systématiquement effacée par son propre succès. Seuls les
+            # résultats définitifs (succès/échec), écrits après coup dans la
+            # base alors stabilisée, sont donc audités en base (§12).
+            logger.info("Tentative de restauration depuis %s (utilisateur=%s).", backup_path, self._acting_user_id())
+
+            # Libère toute connexion SQLAlchemy avant d'écraser le fichier actif.
+            db_session_module.reset_engine_cache()
+            try:
+                backup_engine.restore_database_from_backup(plaintext_path, self._db_path())
+            except _BACKUP_IO_ERRORS as exc:
+                failure_message = f"Échec de la restauration : {exc}"
+                logger.error(failure_message)
+                try:
+                    backup_engine.restore_database_from_backup(security_backup_path, self._db_path())
+                    recovery_message = (
+                        failure_message + " La base précédente a été restaurée depuis la sauvegarde de sécurité."
+                    )
+                except _BACKUP_IO_ERRORS as recovery_exc:
+                    recovery_message = (
+                        failure_message + f" ÉCHEC CRITIQUE : la restauration de secours a également échoué "
+                        f"({recovery_exc}). Sauvegarde de sécurité disponible : {security_backup_path}."
+                    )
+                self._audit("BACKUP_RESTORE_FAILURE", ResultatAudit.ECHEC, details=recovery_message)
+                return RestoreResult(
+                    success=False, message=recovery_message, security_backup_path=security_backup_path
+                )
+
+            # La prochaine session s'ouvrira sur la base restaurée.
+            db_session_module.reset_engine_cache()
+            self._audit("BACKUP_RESTORE_SUCCESS", ResultatAudit.SUCCES, details=f"Restauré depuis {backup_path}.")
+            logger.info(
+                "Restauration réussie depuis %s (sauvegarde de sécurité : %s).", backup_path, security_backup_path
+            )
+            return RestoreResult(
+                success=True,
+                message="Restauration réussie. Redémarrez l'application pour continuer.",
+                security_backup_path=security_backup_path,
+            )
+        finally:
+            if temp_to_cleanup is not None:
+                temp_to_cleanup.unlink(missing_ok=True)
 
     def _restore_backup_postgresql(self, backup_path: Path, settings: Settings) -> RestoreResult:
         """Pendant PostgreSQL de :meth:`_restore_backup_sqlite` (Lot E,
@@ -500,82 +638,99 @@ class BackupService:
             self._audit("BACKUP_RESTORE_FAILURE", ResultatAudit.ECHEC, details=message)
             raise ValidationError(message)
 
-        verification = pg_backup_engine.verify_backup_file(backup_path)
-        if not verification.valid:
-            message = "Sauvegarde invalide, restauration refusée : " + "; ".join(verification.errors)
-            self._audit("BACKUP_RESTORE_FAILURE", ResultatAudit.ECHEC, details=message)
-            raise ValidationError(message)
-
+        # Décrypte d'abord vers une copie temporaire en clair si l'archive
+        # est chiffrée (voir le manifeste) — même principe que
+        # ``_restore_backup_sqlite``, ``pg_restore`` ne sachant lire
+        # qu'une archive ``.dump`` en clair.
         try:
-            password = pg.resolve_password()
-        except ValueError as exc:
-            message = f"Restauration impossible : {exc}"
+            plaintext_path, temp_to_cleanup = self._resolve_plaintext_path(backup_path)
+        except (ValidationError, ArchiveEncryptionError) as exc:
+            message = str(exc)
             self._audit("BACKUP_RESTORE_FAILURE", ResultatAudit.ECHEC, details=message)
             raise ValidationError(message) from exc
 
-        target = self._postgresql_target(settings)
-
-        current_version = pg_backup_engine.get_live_alembic_version(target, password)
-        if verification.alembic_version != current_version:
-            message = (
-                f"Version de schéma incompatible (sauvegarde : {verification.alembic_version!r}, "
-                f"base actuelle : {current_version!r}) — restauration refusée."
-            )
-            self._audit("BACKUP_RESTORE_FAILURE", ResultatAudit.ECHEC, details=message)
-            raise ValidationError(message)
-
-        config = self._read_config()
         try:
-            security_backup_path = pg_backup_engine.create_backup_file(
-                target, password, config.destination, prefix=pg_backup_engine.PRERESTORE_PREFIX,
+            verification = pg_backup_engine.verify_backup_file(plaintext_path)
+            if not verification.valid:
+                message = "Sauvegarde invalide, restauration refusée : " + "; ".join(verification.errors)
+                self._audit("BACKUP_RESTORE_FAILURE", ResultatAudit.ECHEC, details=message)
+                raise ValidationError(message)
+
+            try:
+                password = pg.resolve_password()
+            except ValueError as exc:
+                message = f"Restauration impossible : {exc}"
+                self._audit("BACKUP_RESTORE_FAILURE", ResultatAudit.ECHEC, details=message)
+                raise ValidationError(message) from exc
+
+            target = self._postgresql_target(settings)
+
+            current_version = pg_backup_engine.get_live_alembic_version(target, password)
+            if verification.alembic_version != current_version:
+                message = (
+                    f"Version de schéma incompatible (sauvegarde : {verification.alembic_version!r}, "
+                    f"base actuelle : {current_version!r}) — restauration refusée."
+                )
+                self._audit("BACKUP_RESTORE_FAILURE", ResultatAudit.ECHEC, details=message)
+                raise ValidationError(message)
+
+            config = self._read_config()
+            try:
+                security_backup_path = pg_backup_engine.create_backup_file(
+                    target, password, config.destination, prefix=pg_backup_engine.PRERESTORE_PREFIX,
+                )
+            except _POSTGRESQL_BACKUP_ERRORS as exc:
+                message = f"Impossible de créer la sauvegarde de sécurité préalable : {exc}"
+                self._audit("BACKUP_RESTORE_FAILURE", ResultatAudit.ECHEC, details=message)
+                raise ValidationError(message) from exc
+
+            # Même convention que pour SQLite : seuls les résultats définitifs
+            # sont audités en base, la tentative elle-même part uniquement au
+            # journal applicatif (voir le commentaire équivalent dans
+            # ``_restore_backup_sqlite``).
+            logger.info(
+                "Tentative de restauration PostgreSQL depuis %s (utilisateur=%s).",
+                backup_path, self._acting_user_id(),
             )
-        except _POSTGRESQL_BACKUP_ERRORS as exc:
-            message = f"Impossible de créer la sauvegarde de sécurité préalable : {exc}"
-            self._audit("BACKUP_RESTORE_FAILURE", ResultatAudit.ECHEC, details=message)
-            raise ValidationError(message) from exc
 
-        # Même convention que pour SQLite : seuls les résultats définitifs
-        # sont audités en base, la tentative elle-même part uniquement au
-        # journal applicatif (voir le commentaire équivalent dans
-        # ``_restore_backup_sqlite``).
-        logger.info(
-            "Tentative de restauration PostgreSQL depuis %s (utilisateur=%s).",
-            backup_path, self._acting_user_id(),
-        )
-
-        db_session_module.reset_engine_cache()
-        try:
-            pg_backup_engine.restore_database_from_backup(target, password, backup_path)
-        except _POSTGRESQL_BACKUP_ERRORS as exc:
-            # Différence délibérée avec le cas SQLite : pg_restore est
-            # invoqué avec ``--single-transaction`` (voir
-            # ``postgresql_backup_engine.restore_database_from_backup``), qui
-            # annule l'intégralité de la restauration côté serveur en cas
-            # d'échec — la base active n'a par construction jamais été
-            # modifiée. Aucune « restauration de secours » n'est donc
-            # nécessaire ici (contrairement à SQLite, où un remplacement de
-            # fichier partiel est possible) : la sauvegarde de sécurité
-            # reste disponible par prudence, mais son usage resterait un
-            # choix explicite de l'administrateur, jamais une tentative
-            # automatique.
             db_session_module.reset_engine_cache()
-            failure_message = (
-                f"Échec de la restauration : {exc} La base active n'a pas été modifiée "
-                f"(transaction annulée côté serveur) ; sauvegarde de sécurité disponible : "
-                f"{security_backup_path}."
-            )
-            logger.error(failure_message)
-            self._audit("BACKUP_RESTORE_FAILURE", ResultatAudit.ECHEC, details=failure_message)
-            return RestoreResult(success=False, message=failure_message, security_backup_path=security_backup_path)
+            try:
+                pg_backup_engine.restore_database_from_backup(target, password, plaintext_path)
+            except _POSTGRESQL_BACKUP_ERRORS as exc:
+                # Différence délibérée avec le cas SQLite : pg_restore est
+                # invoqué avec ``--single-transaction`` (voir
+                # ``postgresql_backup_engine.restore_database_from_backup``), qui
+                # annule l'intégralité de la restauration côté serveur en cas
+                # d'échec — la base active n'a par construction jamais été
+                # modifiée. Aucune « restauration de secours » n'est donc
+                # nécessaire ici (contrairement à SQLite, où un remplacement de
+                # fichier partiel est possible) : la sauvegarde de sécurité
+                # reste disponible par prudence, mais son usage resterait un
+                # choix explicite de l'administrateur, jamais une tentative
+                # automatique.
+                db_session_module.reset_engine_cache()
+                failure_message = (
+                    f"Échec de la restauration : {exc} La base active n'a pas été modifiée "
+                    f"(transaction annulée côté serveur) ; sauvegarde de sécurité disponible : "
+                    f"{security_backup_path}."
+                )
+                logger.error(failure_message)
+                self._audit("BACKUP_RESTORE_FAILURE", ResultatAudit.ECHEC, details=failure_message)
+                return RestoreResult(
+                    success=False, message=failure_message, security_backup_path=security_backup_path
+                )
 
-        db_session_module.reset_engine_cache()
-        self._audit("BACKUP_RESTORE_SUCCESS", ResultatAudit.SUCCES, details=f"Restauré depuis {backup_path}.")
-        logger.info(
-            "Restauration PostgreSQL réussie depuis %s (sauvegarde de sécurité : %s).",
-            backup_path, security_backup_path,
-        )
-        return RestoreResult(
-            success=True,
-            message="Restauration réussie. Redémarrez l'application pour continuer.",
-            security_backup_path=security_backup_path,
-        )
+            db_session_module.reset_engine_cache()
+            self._audit("BACKUP_RESTORE_SUCCESS", ResultatAudit.SUCCES, details=f"Restauré depuis {backup_path}.")
+            logger.info(
+                "Restauration PostgreSQL réussie depuis %s (sauvegarde de sécurité : %s).",
+                backup_path, security_backup_path,
+            )
+            return RestoreResult(
+                success=True,
+                message="Restauration réussie. Redémarrez l'application pour continuer.",
+                security_backup_path=security_backup_path,
+            )
+        finally:
+            if temp_to_cleanup is not None:
+                temp_to_cleanup.unlink(missing_ok=True)

@@ -107,8 +107,8 @@ def test_history_tags_postgresql_backup_with_correct_engine_column(qtbot, postgr
     qtbot.addWidget(page)
 
     assert page.history_table.rowCount() == 1
-    assert page.history_table.item(0, 0).text() == "PostgreSQL"
-    assert page.history_table.item(0, 2).text() == result.file_path.name
+    assert page.history_table.item(0, 1).text() == "PostgreSQL"  # Moteur
+    assert page.history_table.item(0, 3).text() == result.file_path.name  # Nom
 
 
 def test_restore_disabled_when_selected_backup_is_a_different_engine(

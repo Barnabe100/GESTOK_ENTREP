@@ -298,4 +298,19 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # Mission « Sauvegarde automatique et restauration », §4 : la tâche
+    # planifiée Windows invoque ce même exécutable StockManager (déjà
+    # packagé par PyInstaller) avec ce drapeau, plutôt qu'un artefact
+    # distinct à construire/signer/maintenir séparément — voir
+    # app.backup_external_agent_cli.resolve_agent_invocation. Interception
+    # avant toute construction de QApplication/import Qt : un déclenchement
+    # planifié (StockManager fermé, potentiellement aucune session
+    # interactive) ne doit jamais dépendre de l'interface graphique.
+    from app.backup_external_agent_cli import AGENT_FLAG
+
+    if AGENT_FLAG in sys.argv[1:]:
+        from app.backup_external_agent_cli import run_agent
+
+        sys.exit(run_agent())
+
     sys.exit(main())

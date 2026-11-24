@@ -64,6 +64,11 @@ logger = get_logger("security.credential_vault")
 # existants.
 _KEYRING_SERVICE_NAME = "StockManager Desktop - PostgreSQL"
 _LOGIN_KEYRING_SERVICE_NAME = "StockManager Desktop - Connexion utilisateur"
+# Mission « Sauvegarde automatique et restauration », §5 : troisième
+# domaine de secret, pour la clé de chiffrement optionnelle des archives de
+# sauvegarde (voir app.services.backups.archive_encryption) — jamais
+# mélangé aux deux domaines ci-dessus, même principe d'isolation.
+_BACKUP_ENCRYPTION_KEYRING_SERVICE_NAME = "StockManager Desktop - Chiffrement des sauvegardes"
 
 
 @runtime_checkable
@@ -222,4 +227,21 @@ def get_login_credential_vault() -> CredentialVault:
         _LOGIN_KEYRING_SERVICE_NAME,
         "Le coffre d'identifiants sécurisé n'est disponible que sous Windows — "
         "l'option « Se souvenir de moi » ne peut pas être utilisée sur ce poste.",
+    )
+
+
+def get_backup_encryption_vault() -> CredentialVault:
+    """Point d'entrée unique pour obtenir le coffre d'identifiants de la
+    clé de chiffrement des archives de sauvegarde (Mission « Sauvegarde
+    automatique et restauration », §5) — jamais le même coffre/espace que
+    :func:`get_credential_vault`/:func:`get_login_credential_vault` (voir
+    la docstring de module). L'appelant (``app.services.backups.archive_encryption``)
+    doit traiter :class:`CredentialVaultUnavailableError` comme bloquant
+    pour toute tentative de chiffrement/déchiffrement : contrairement à la
+    connexion utilisateur, il n'existe aucun repli acceptable (une archive
+    chiffrée sans accès à sa clé est définitivement illisible)."""
+    return _windows_only_vault(
+        _BACKUP_ENCRYPTION_KEYRING_SERVICE_NAME,
+        "Le coffre d'identifiants sécurisé n'est disponible que sous Windows — "
+        "le chiffrement des sauvegardes ne peut pas être utilisé sur ce poste.",
     )

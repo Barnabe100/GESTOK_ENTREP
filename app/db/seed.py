@@ -89,6 +89,11 @@ PERMISSIONS: list[tuple[str, str, str]] = [
     ("BACKUP_VIEW", "Consulter l'historique des sauvegardes", "sauvegardes"),
     ("BACKUP_CREATE", "Lancer une sauvegarde", "sauvegardes"),
     ("BACKUP_RESTORE", "Restaurer une sauvegarde", "restauration"),
+    (
+        "BACKUP_EXTERNAL_CONFIGURE",
+        "Configurer la protection externe (support, rétention, tâche planifiée Windows)",
+        "sauvegardes",
+    ),
     ("AUDIT_VIEW", "Consulter le journal d'audit", "audit"),
     ("LICENSE_VIEW", "Consulter la licence", "licences"),
     ("LICENSE_ACTIVATE", "Activer une licence", "licences"),
