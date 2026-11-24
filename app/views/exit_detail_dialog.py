@@ -32,7 +32,7 @@ from app.services.exits.exit_service import SortieSummary
 from app.services.stock.movement_summary import MouvementSummary
 from app.utils.money import format_money
 from app.utils.quantity import format_quantity
-from app.views.design_system import MultiColumnForm, apply_compact_row_height
+from app.views.design_system import MultiColumnForm, apply_compact_row_height, apply_content_driven_height
 
 _LINE_COLUMNS = ["Article", "Quantité", "Coût unitaire (CMUP)", "Montant"]
 _MOVEMENT_COLUMNS = ["Date/heure", "Type", "Quantité", "Stock avant", "Stock après", "Utilisateur"]
@@ -55,8 +55,9 @@ class ExitDetailDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(f"Sortie — {exit_.numero}")
         self.setModal(True)
+        # Mission 5.6, §1 : la hauteur n'est plus fixée ici — voir
+        # ``apply_content_driven_height`` en fin de constructeur.
         self.setMinimumWidth(850)
-        self.resize(880, 700)
 
         layout = QVBoxLayout(self)
 
@@ -151,7 +152,6 @@ class ExitDetailDialog(QDialog):
 
         content_layout.addWidget(movements_group)
 
-        content_layout.addStretch(1)
         scroll_area.setWidget(content)
         layout.addWidget(scroll_area)
 
@@ -161,3 +161,9 @@ class ExitDetailDialog(QDialog):
         self.close_button.clicked.connect(self.accept)
         button_row.addWidget(self.close_button)
         layout.addLayout(button_row)
+
+        # Mission 5.6, §1 : hauteur initiale adaptée au contenu réel — plus
+        # d'étirement vertical artificiel (``addStretch`` retiré ci-dessus)
+        # ni de hauteur fixe pouvant laisser un grand espace vide sous le
+        # dernier tableau (désormais compact, voir ``apply_compact_row_height``).
+        apply_content_driven_height(self, content, 880, extra_height=self.close_button.sizeHint().height())

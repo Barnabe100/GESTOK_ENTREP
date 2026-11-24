@@ -176,3 +176,56 @@ def test_tables_never_disable_vertical_scrollbar(qtbot) -> None:
 
     for table in dialog.findChildren(QTableWidget):
         assert table.verticalScrollBarPolicy() != Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+
+
+# -- Mission 5.6, §1 : suppression de l'espace vide, hauteur adaptée au contenu --
+
+
+def test_content_layout_ends_with_the_last_table_group_not_a_spacer(qtbot) -> None:
+    from PySide6.QtWidgets import QScrollArea
+
+    dialog = ExitDetailDialog(_make_exit(), [_make_movement()], "XOF")
+    qtbot.addWidget(dialog)
+
+    content = dialog.findChildren(QScrollArea)[0].widget()
+    last_item = content.layout().itemAt(content.layout().count() - 1)
+    assert last_item.widget() is not None  # dernier élément : un widget (groupe), jamais un spacer
+
+
+def test_dialog_height_is_content_driven_not_a_large_fixed_value(qtbot) -> None:
+    dialog = ExitDetailDialog(
+        _make_exit(beneficiaire=None, reference=None, commentaire=None, lignes=[]), [], "XOF"
+    )
+    dialog.show()
+
+    assert dialog.height() < 500  # bien en-dessous de l'ancienne hauteur fixe (700)
+
+
+def test_close_button_remains_accessible(qtbot) -> None:
+    dialog = ExitDetailDialog(_make_exit(), [_make_movement()], "XOF")
+    dialog.show()
+
+    assert dialog.close_button.isVisible()
+    assert dialog.close_button.isEnabled()
+
+
+def test_scroll_area_still_scrolls_when_window_shrunk_below_content(qtbot) -> None:
+    from PySide6.QtWidgets import QScrollArea
+
+    dialog = ExitDetailDialog(_make_exit(), [_make_movement()], "XOF")
+    dialog.show()
+    scroll_area = dialog.findChildren(QScrollArea)[0]
+
+    dialog.resize(dialog.width(), 200)
+
+    assert scroll_area.verticalScrollBar().maximum() > 0
+
+
+def test_dialog_fits_within_1366x768_and_1920x1080(qtbot) -> None:
+    dialog = ExitDetailDialog(_make_exit(), [_make_movement()], "XOF")
+    dialog.show()
+
+    assert dialog.width() <= 1366
+    assert dialog.height() <= 768
+    assert dialog.width() <= 1920
+    assert dialog.height() <= 1080

@@ -1,6 +1,22 @@
-from PySide6.QtWidgets import QListWidget, QListWidgetItem, QTableWidget
+from PySide6.QtWidgets import (
+    QDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QPushButton,
+    QScrollArea,
+    QTableWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
-from app.views.design_system import apply_comfortable_list_height, apply_compact_row_height
+from app.views.design_system import (
+    apply_comfortable_list_height,
+    apply_compact_row_height,
+    apply_content_driven_height,
+)
 
 
 def _table(rows: int) -> QTableWidget:
@@ -88,3 +104,64 @@ def test_list_height_self_calibrates_to_actual_row_height(qtbot) -> None:
     row_height = widget.sizeHintForRow(0)
     assert row_height > 0
     assert widget.height() == 5 * row_height + 6
+
+
+# -- Mission 5.6, §1 : apply_content_driven_height (hauteur adaptée au contenu) ----
+
+
+def _scrollable_dialog(n_lines: int) -> tuple[QDialog, QWidget, QPushButton]:
+    """Reproduit le squelette commun à ``entry_detail_dialog.py``/
+    ``exit_detail_dialog.py``/``inventory_detail_dialog.py``/
+    ``client_detail_dialog.py`` : un ``QScrollArea`` défilant plus une ligne
+    de boutons fixe en-dessous."""
+    dialog = QDialog()
+    layout = QVBoxLayout(dialog)
+
+    scroll_area = QScrollArea(dialog)
+    scroll_area.setWidgetResizable(True)
+    scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+    content = QWidget(scroll_area)
+    content_layout = QVBoxLayout(content)
+    for i in range(n_lines):
+        content_layout.addWidget(QLabel(f"Ligne {i}", content))
+    scroll_area.setWidget(content)
+    layout.addWidget(scroll_area)
+
+    button_row = QHBoxLayout()
+    button_row.addStretch(1)
+    close_button = QPushButton("Fermer", dialog)
+    button_row.addWidget(close_button)
+    layout.addLayout(button_row)
+
+    return dialog, content, close_button
+
+
+def test_content_driven_height_grows_with_more_content(qtbot) -> None:
+    short_dialog, short_content, short_button = _scrollable_dialog(1)
+    apply_content_driven_height(short_dialog, short_content, 400, extra_height=short_button.sizeHint().height())
+
+    tall_dialog, tall_content, tall_button = _scrollable_dialog(10)
+    apply_content_driven_height(tall_dialog, tall_content, 400, extra_height=tall_button.sizeHint().height())
+
+    assert tall_dialog.height() > short_dialog.height()
+
+
+def test_content_driven_height_sets_the_requested_width(qtbot) -> None:
+    dialog, content, button = _scrollable_dialog(1)
+
+    apply_content_driven_height(dialog, content, 555, extra_height=button.sizeHint().height())
+
+    assert dialog.width() == 555
+
+
+def test_content_driven_height_leaves_no_large_empty_space(qtbot) -> None:
+    """Le défilement reste fonctionnel (``show`` au-delà) mais la hauteur
+    initiale ne doit pas réserver un espace disproportionné par rapport au
+    contenu réel — non-régression du grand espace vide (Mission 5.6, §1)."""
+    dialog, content, button = _scrollable_dialog(1)
+
+    apply_content_driven_height(dialog, content, 400, extra_height=button.sizeHint().height())
+    dialog.show()
+
+    scroll_area = dialog.findChild(QScrollArea)
+    assert scroll_area.verticalScrollBar().maximum() == 0

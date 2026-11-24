@@ -151,6 +151,47 @@ def apply_comfortable_list_height(
     list_widget.setFixedHeight(visible_rows * row_height + 6)
 
 
+def apply_content_driven_height(
+    dialog: QWidget, content: QWidget, width: int, extra_height: int = 0, buffer: int = 12
+) -> None:
+    """Dimensionne un dialogue de consultation (en-tête + ``QScrollArea``
+    défilante) à la hauteur réelle de son contenu, plutôt qu'une hauteur
+    fixe devinée à l'avance (Mission 5.6, §1) — qui laissait un grand espace
+    vide sous le dernier tableau une fois ceux-ci rendus compacts
+    (``apply_compact_row_height``), ou à l'inverse aurait pu tronquer un
+    contenu plus haut que prévu.
+
+    ``content`` : le widget placé dans la ``QScrollArea`` (jamais la
+    ``QScrollArea`` elle-même ni le dialogue — son ``sizeHint()`` est seul
+    fiable ici, celui d'une ``QScrollArea`` avec ``widgetResizable(True)``
+    ne se propageant pas de façon fiable selon la plateforme/le pilote
+    d'affichage). ``extra_height`` : hauteur des éléments du dialogue situés
+    hors de la zone défilante (ex. la ligne de boutons sous la
+    ``QScrollArea``) — typiquement ``dialog.close_button.sizeHint().height()``.
+    ``buffer`` : marge de sécurité absorbant les écarts de rendu entre
+    plateformes (métriques de police natives), déterminée empiriquement
+    (voir ``test_design_system_row_height_helpers.py``).
+
+    Le défilement vertical de la ``QScrollArea`` reste entièrement
+    fonctionnel au-delà de cette hauteur initiale (si l'utilisateur réduit
+    la fenêtre manuellement) : seule la hauteur affichée par défaut change,
+    jamais une donnée masquée. Ne règle jamais la largeur du dialogue au
+    delà de ``width``, passé explicitement par l'appelant (``setMinimumWidth``
+    éventuel du dialogue restant entièrement sous son contrôle)."""
+    content.adjustSize()
+    layout = dialog.layout()
+    margins = layout.contentsMargins()
+    height = (
+        content.sizeHint().height()
+        + extra_height
+        + margins.top()
+        + margins.bottom()
+        + layout.spacing()
+        + buffer
+    )
+    dialog.resize(width, height)
+
+
 class QuantityEditDelegate(QStyledItemDelegate):
     """Délégué d'édition des cellules de quantité (et de tarif) des
     tableaux de caisse Ventes/Locations (Mission 4, §3).
