@@ -178,6 +178,52 @@ packagé, et le comportement réel de `StockManager.exe --recover` exécuté
 depuis une invite de commande sur un poste où la base de données a été
 rendue délibérément inaccessible.
 
+## Mission corrective « Correction et validation du module de sauvegarde sous Windows »
+
+Six anomalies constatées lors d'un test Windows réel du module précédent
+(support USB déclaré inaccessible juste après configuration, tâche
+planifiée échouant avec le code 1, export de clé refusant une clé pourtant
+configurée, entre autres) ont été corrigées. Aucune dépendance
+supplémentaire introduite (ni `requirements.txt`, ni `hiddenimports`/`datas`
+de `stockmanager.spec`) :
+
+- **Création de la tâche planifiée via un fichier XML**, plus via une
+  ligne de commande `/tr` construite à la main : la cause du code 1 était
+  un double échappement des guillemets par `subprocess.list2cmdline`
+  lorsque la valeur `/tr` contenait elle-même un chemin entre guillemets
+  (reproduit et confirmé en isolant l'appel). `scheduled_task_manager.py`
+  construit désormais la définition complète de la tâche avec
+  `xml.etree.ElementTree` (échappement XML standard, jamais de guillemets
+  imbriqués) et l'enregistre via `schtasks /create /xml <fichier> /f` —
+  toujours aucune dépendance `pywin32`/API COM.
+- **Énumération réelle des lecteurs** (`external_media.list_drives_with_info`) :
+  remplace l'ancien sélecteur de dossier générique par une liste des
+  lecteurs Windows réellement montés (`GetDriveTypeW`/
+  `GetVolumeInformationW` via `ctypes`, toujours aucune dépendance WMI/
+  `pywin32`), avec une vérification d'écriture réelle avant toute
+  confirmation — cause du bug « support configuré puis déclaré
+  inaccessible » : un chemin de lettre de lecteur sans barre finale
+  (`Path("E:")`) est, sous Windows, relatif au répertoire courant de ce
+  lecteur pour le processus, jamais sa racine — corrigé par
+  `normalize_drive_root`.
+- **Empreinte de clé de chiffrement persistée** (`archive_encryption.fingerprint_of`,
+  SHA-256 de la clé, jamais la clé elle-même) : permet de détecter qu'une
+  clé a déjà été utilisée sur ce poste même si les archives qu'elle
+  protège ont depuis été déplacées vers un autre support ou un autre
+  ordinateur — sans cette empreinte, une installation ayant perdu sa clé
+  mais déplacé ses archives ailleurs aurait pu voir StockManager générer
+  une nouvelle clé de remplacement, rendant les anciennes archives
+  illisibles. Stockée comme un paramètre applicatif ordinaire
+  (`ParameterRepository`), jamais dans le coffre d'identifiants.
+
+**Non revérifié sous Windows réel** (s'ajoute à la liste « Tests
+obligatoires sous Windows » ci-dessous, points 7 à 10) : la création
+réelle de la tâche planifiée via le nouveau mécanisme XML depuis
+l'exécutable packagé (chemin contenant des espaces compris), la
+sélection d'un support externe parmi les lecteurs réellement détectés
+sur un poste de test, et l'export/import de la clé de chiffrement avec
+affichage temporaire du mot de passe.
+
 ## Procédure de build (à exécuter sur Windows)
 
 ```text
@@ -317,21 +363,41 @@ Windows ») :
    et restauration PostgreSQL » ci-dessus).
 6. L'installateur Inno Setup s'installe, se désinstalle, et préserve les
    données utilisateur (`%APPDATA%\StockManager`) dans les deux cas.
-7. Depuis l'écran Sauvegardes de l'exécutable packagé, « Configurer/réparer
-   la tâche planifiée Windows… » crée réellement DEUX tâches visibles dans
-   le Planificateur de tâches Windows (`taskschd.msc`) — l'une quotidienne,
-   l'autre au déclencheur « à l'ouverture de session » (mission corrective) —
-   toutes deux pointant vers `StockManager.exe --run-backup-agent` ;
-   « Supprimer la tâche planifiée… » les retire proprement toutes les deux.
-8. **StockManager fermé**, déclencher manuellement cette tâche depuis le
-   Planificateur de tâches (ou attendre l'heure programmée) : une nouvelle
-   sauvegarde locale apparaît bien dans le dossier de destination configuré,
-   sans qu'aucune fenêtre StockManager ne s'ouvre.
-9. Avec la protection externe activée et une clé USB sélectionnée, la même
-   tâche copie bien la dernière sauvegarde locale validée sur la clé ; la
-   débrancher avant l'exécution planifiée ne doit supprimer aucune sauvegarde
-   externe déjà présente (voir « Garanties » dans le manuel utilisateur,
-   chapitre Sauvegardes).
+7. Depuis l'écran Sauvegardes de l'exécutable packagé (installé sur un
+   chemin contenant un espace, ex. `C:\Program Files\StockManager\`),
+   « Configurer/réparer la tâche planifiée Windows… » crée réellement DEUX
+   tâches visibles dans le Planificateur de tâches Windows (`taskschd.msc`,
+   définition désormais créée via un fichier XML, voir « Mission corrective
+   — Correction et validation… » ci-dessus) — l'une quotidienne, l'autre au
+   déclencheur « à l'ouverture de session » — toutes deux pointant vers
+   `StockManager.exe --run-backup-agent` avec le chemin complet correctement
+   interprété malgré l'espace ; « Supprimer la tâche planifiée… » les retire
+   proprement toutes les deux.
+8. **StockManager fermé, session Windows ouverte**, déclencher manuellement
+   cette tâche depuis le Planificateur de tâches (ou attendre l'heure
+   programmée) : une nouvelle sauvegarde locale apparaît bien dans le
+   dossier de destination configuré, sans qu'aucune fenêtre StockManager ne
+   s'ouvre. Puis, **en fermant la session Windows** avant l'heure programmée :
+   vérifier qu'aucune sauvegarde n'est créée tant qu'aucune session n'est
+   ouverte, et qu'elle est rattrapée dès la prochaine ouverture de session
+   (déclencheur « à l'ouverture de session »).
+9. « Sélectionner/modifier le support… » affiche réellement les lecteurs
+   détectés sur le poste de test (clé USB *et*, séparément, un disque dur
+   externe se déclarant comme disque fixe) avec leur lettre et leur
+   étiquette de volume ; le support sélectionné est immédiatement rapporté
+   accessible par « Tester l'accessibilité du support », sans jamais
+   l'inverse juste après une configuration réussie.
+10. Avec la protection externe activée et un support sélectionné comme en 9,
+    la tâche planifiée copie bien la dernière sauvegarde locale validée sur
+    le support ; le débrancher avant l'exécution planifiée ne doit supprimer
+    aucune sauvegarde externe déjà présente (voir « Garanties » dans le
+    manuel utilisateur, chapitre Sauvegardes).
+11. Avec le chiffrement activé, « Exporter la clé de chiffrement… » puis
+    « Importer la clé de chiffrement… » (sur un second profil ou après
+    suppression du coffre local) réussissent avec le bon mot de passe,
+    échouent explicitement avec un mauvais mot de passe, et la case
+    « Afficher le mot de passe » révèle bien la saisie dans les deux
+    fenêtres.
 
 ## Limitations connues de la configuration actuelle (à revalider sous Windows)
 

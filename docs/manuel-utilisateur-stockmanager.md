@@ -1059,6 +1059,10 @@ Administrateur uniquement.
 ## Accès
 Menu Sauvegardes.
 
+## État de la protection
+
+En haut de l'écran Sauvegardes, un panneau **« État de la protection »** résume en permanence, en une phrase par ligne, l'état réel des quatre mécanismes de protection : sauvegarde locale automatique, protection externe, tâche planifiée Windows et chiffrement. Ce panneau est systématiquement relu après chaque action (enregistrement d'une configuration, sélection d'un support, configuration de la tâche planifiée, export/import de la clé de chiffrement) et n'affiche jamais un mécanisme comme « actif » si une condition technique réelle fait défaut — par exemple, la protection externe n'est jamais présentée comme active si le support configuré est actuellement débranché ou inaccessible, même si elle reste activée dans la configuration.
+
 ## Sauvegarde locale automatique
 
 Une sauvegarde automatique quotidienne, stockée sur le disque interne du poste, est la protection de base : elle fonctionne sans aucune intervention, y compris lorsque StockManager n'est pas ouvert (voir « Tâche planifiée Windows » ci-dessous).
@@ -1067,11 +1071,13 @@ Un formulaire de configuration permet de définir :
 
 | Paramètre | Détail |
 |---|---|
-| Activation | Case à cocher |
+| Activation | Case à cocher (**activée par défaut** sur une installation neuve) |
 | Fréquence | Quotidienne ou Hebdomadaire (quotidienne par défaut) |
-| Heure d'exécution | Format HH:MM (02:00 par défaut) |
+| Heure d'exécution | Format HH:MM (20:00 par défaut) |
 | Dossier de destination | Modifiable (bouton « Parcourir… ») |
 | Sauvegardes à conserver | Nombre de sauvegardes conservées avant suppression automatique des plus anciennes (**30 par défaut**) |
+
+> Sur une installation déjà configurée, désactiver volontairement la sauvegarde automatique est toujours respecté : StockManager ne la réactive jamais silencieusement dans votre dos, même après une mise à jour.
 
 Chaque sauvegarde est systématiquement vérifiée (intégrité du fichier, cohérence des données) avant d'être considérée comme valide ; une sauvegarde invalide n'est jamais comptée dans l'historique ni copiée vers un support externe.
 
@@ -1093,7 +1099,7 @@ Section « Protection externe » de l'écran Sauvegardes :
 | Dernière copie réussie | Date/heure affichée, ou absence si aucune copie n'a encore réussi |
 
 Actions disponibles :
-- **Sélectionner/modifier le support…** : choisit la clé USB ou le disque externe de destination. StockManager y enregistre un repère invisible qui permet de retrouver ce même support même s'il change de lettre de lecteur à un futur branchement (ex. `E:` devenu `F:`) — jamais besoin de le rebrancher sur le même port USB.
+- **Sélectionner/modifier le support…** : ouvre une liste des lecteurs réellement détectés sur l'ordinateur (clé USB *et* disque dur externe — StockManager reconnaît les deux types de support, y compris un disque externe qui se déclare comme un disque fixe plutôt qu'amovible), avec leur lettre, leur étiquette de volume et, le cas échéant, le support déjà configuré sur ce lecteur. Choisir un lecteur dans cette liste, jamais un simple dossier : StockManager enregistre un repère invisible à la racine du lecteur choisi, qui permet de le retrouver même s'il change de lettre à un futur branchement (ex. `E:` devenu `F:`) — jamais besoin de le rebrancher sur le même port USB. Avant de confirmer, StockManager vérifie réellement que le lecteur accepte l'écriture (et non simplement qu'il existe) : un support protégé en écriture ou corrompu est immédiatement signalé, sans jamais être accepté puis rapporté inaccessible l'instant suivant.
 - **Tester l'accessibilité du support** : vérifie, à tout moment, que le support choisi est actuellement branché et accessible.
 - **Copier maintenant** : lance immédiatement une copie de la dernière sauvegarde locale valide vers le support, sans attendre l'échéance planifiée.
 - **Configurer/réparer la tâche planifiée Windows…** / **Supprimer la tâche planifiée…** : voir ci-dessous.
@@ -1111,9 +1117,19 @@ La sauvegarde locale et, si elle est activée, la copie externe sont exécutées
 Depuis la section « Protection externe » :
 - **Configurer/réparer la tâche planifiée Windows…** : crée la tâche si elle n'existe pas encore, ou la répare si elle a été supprimée ou modifiée accidentellement dans Windows. Une heure d'exécution quotidienne est demandée (20h00 suggéré par défaut). **Attention** : cette action recrée entièrement la tâche à partir de la configuration actuelle de StockManager — toute personnalisation apportée manuellement à cette tâche depuis le Planificateur de tâches Windows lui-même (horaire modifié à la main, déclencheur supplémentaire ajouté, etc.) est alors perdue et remplacée. Un second repère, indépendant de la tâche Windows elle-même, est également créé pour que StockManager déclenche la sauvegarde dès l'ouverture de session, même si l'heure programmée est passée pendant que l'ordinateur était éteint.
 - **Supprimer la tâche planifiée…** : désactive proprement l'automatisation Windows (la configuration dans StockManager, elle, reste inchangée et peut être réactivée à tout moment).
-- L'état actuel de la tâche (existe ou non, dernière exécution, résultat) est affiché dans l'écran.
+- L'état actuel de la tâche (existe ou non, dernière exécution, résultat) est affiché dans l'écran, ainsi que dans le panneau « État de la protection » en haut de l'écran.
 
-> Cette tâche s'exécute dans le contexte de la session Windows de l'utilisateur courant, sans jamais demander ni nécessiter de droits administrateur permanents. Elle ne peut s'exécuter que si une session Windows est ouverte à l'heure programmée (l'ordinateur peut être verrouillé, mais pas éteint ni l'utilisateur déconnecté) : si le poste est systématiquement éteint à cette heure, choisir une heure où il est habituellement allumé.
+**Ce que cette tâche garantit précisément, selon la situation du poste à l'heure programmée :**
+
+| Situation du poste à l'heure programmée | Résultat |
+|---|---|
+| StockManager fermé, mais une session Windows est ouverte (l'ordinateur peut être verrouillé) | La sauvegarde s'exécute normalement, sans que StockManager ait besoin d'être ouvert. |
+| Aucune session Windows ouverte à cette heure (ordinateur allumé mais personne n'est connecté) | La tâche ne peut pas s'exécuter ce jour-là (comportement normal de Windows pour ce type de tâche, qui ne demande volontairement aucun mot de passe ni droit stocké). Un second déclencheur, à l'ouverture de session, rattrape alors la sauvegarde manquée dès qu'une session est à nouveau ouverte. |
+| Ordinateur éteint à cette heure | Aucune tâche ne peut s'exécuter tant que l'ordinateur reste éteint — ni la sauvegarde quotidienne, ni le rattrapage. Le rattrapage n'a lieu qu'au prochain démarrage suivi d'une ouverture de session, via ce même second déclencheur. |
+
+Dans tous les cas, c'est StockManager lui-même (via le second déclencheur, à l'ouverture de session) qui décide si une sauvegarde est réellement due au moment du rattrapage — jamais une sauvegarde systématique à chaque ouverture de session, mais seulement lorsque l'échéance programmée a effectivement été manquée.
+
+> Cette tâche s'exécute dans le contexte de la session Windows de l'utilisateur courant, sans jamais demander ni nécessiter de droits administrateur permanents ni de mot de passe stocké. Si le poste est systématiquement éteint à l'heure programmée, choisir une heure où il est habituellement allumé, ou se fier au rattrapage à l'ouverture de session décrit ci-dessus.
 
 ## Historique des sauvegardes
 
@@ -1125,6 +1141,16 @@ Actions disponibles sur une ligne sélectionnée :
 - **Restaurer la sauvegarde sélectionnée** : voir « Restauration » ci-dessous.
 
 > Aucune suppression manuelle n'est proposée depuis cet historique : la rotation (locale comme externe) reste entièrement automatique, afin d'éviter de supprimer par erreur une sauvegarde encore nécessaire.
+
+## Chiffrement des sauvegardes
+
+Case **« Chiffrer les sauvegardes »** (section Sauvegarde locale) : une fois activée, chaque nouvelle sauvegarde est chiffrée avant d'être écrite sur le disque (local comme externe), à l'aide d'une clé générée automatiquement et conservée dans le coffre d'identifiants de Windows — jamais en clair sur le disque, jamais visible dans l'interface.
+
+**Export de la clé** (bouton « Exporter la clé de chiffrement… ») : crée un fichier de transfert protégé par un mot de passe que vous choisissez à cette occasion — ce mot de passe n'est jamais mémorisé par StockManager, lui seul permettra de réimporter la clé. StockManager refuse d'exporter la clé directement dans le dossier des sauvegardes lui-même (la clé ne doit jamais se retrouver sur le même support que les archives qu'elle protège). Une case à cocher **« Afficher le mot de passe »** permet de vérifier ce que vous avez saisi avant de valider, dans la fenêtre d'export comme dans celle d'import.
+
+**Import de la clé** (bouton « Importer la clé de chiffrement… », utile en particulier après un changement d'ordinateur) : sélectionner le fichier de transfert exporté depuis le poste précédent, puis saisir le même mot de passe. Un mot de passe incorrect, ou un fichier altéré, est signalé clairement sans jamais importer une clé invalide.
+
+**Sécurité de la clé — ce que StockManager ne fait jamais** : si le chiffrement est activé mais qu'aucune clé n'est présente sur ce poste alors qu'une clé a déjà servi par le passé (détecté même si les sauvegardes qu'elle protège ont depuis été déplacées vers un autre support ou un autre ordinateur), StockManager ne génère jamais silencieusement une nouvelle clé de remplacement — ce qui rendrait illisibles toutes les sauvegardes déjà chiffrées avec l'ancienne. Il affiche à la place un état « clé manquante » explicite (dans le panneau « État de la protection » et à l'écran) et attend l'import de la clé correcte.
 
 ## Restauration
 

@@ -47,7 +47,16 @@ from app.services.backups import archive_manifest, backup_engine, temp_cleanup
 from app.services.backups import postgresql_backup_engine as pg_backup_engine
 from app.services.backups import scheduled_task_manager
 from app.services.backups.backup_service import BackupEntry, BackupService
-from app.services.backups.external_media import create_marker, find_marker_drive, list_candidate_drive_roots
+from app.services.backups import external_media
+from app.services.backups.external_media import (
+    DriveInfo,
+    check_root_accessible,
+    create_marker,
+    find_marker_drive,
+    list_candidate_drive_roots,
+    normalize_drive_root,
+    read_marker,
+)
 from app.utils.exceptions import UnsupportedPlatformError, ValidationError
 from app.utils.logging_config import get_logger
 
@@ -178,28 +187,80 @@ class ExternalBackupService:
             last_run_at=last_run_at, last_result=last_result,
         )
 
+    def list_available_drives(self) -> list[DriveInfo]:
+        """Mission corrective « Correction et validation du module de
+        sauvegarde sous Windows », §2.4 : remplace le sélecteur de dossier
+        générique — l'utilisateur choisit désormais un lecteur réellement
+        identifié (lettre, type, étiquette), jamais un chemin arbitraire.
+        Inclut les clés USB ET les disques durs externes (souvent
+        rapportés ``DRIVE_FIXED`` par Windows), exclut le disque système et
+        les destinations inappropriées (réseau, optique, RAM) — voir
+        ``external_media.list_drives_with_info``."""
+        self._permissions.require_permission("BACKUP_VIEW")
+        return external_media.list_drives_with_info(candidate_roots=self._media_roots_provider())
+
     def configure_media(self, drive_root: Path, label: str) -> ExternalBackupConfig:
-        """Associe (ou ré-associe) un support externe à StockManager — écrit
-        un nouveau marqueur à sa racine (voir ``external_media.create_marker``)
-        et enregistre son identifiant. Ré-associer un support déjà configuré
-        change simplement son identifiant et son libellé, jamais les
-        sauvegardes déjà présentes dessus (non touchées par cette méthode)."""
+        """Associe (ou ré-associe) un support externe à StockManager —
+        jamais une simple écriture suivie d'une confirmation aveugle
+        (mission corrective, §1/§3.1 : le défaut diagnostiqué était
+        exactement « succès affiché, puis test d'accessibilité en échec
+        immédiat »). Pipeline strict, chaque étape devant réussir avant la
+        suivante :
+
+        1. normaliser ``drive_root`` vers la racine canonique de son
+           lecteur (``external_media.normalize_drive_root`` — élimine la
+           cause racine : une lettre sans barre finale, ou un sous-dossier,
+           écrivaient le marqueur à un endroit différent de celui où la
+           recherche ultérieure le cherche) ;
+        2. vérifier que cette racine existe et accepte réellement
+           l'écriture (``external_media.check_root_accessible``) ;
+        3. écrire le marqueur (``create_marker`` — remplace tout marqueur
+           déjà présent, permet de ré-associer un support déjà utilisé,
+           jamais les sauvegardes déjà présentes dessus, que cette méthode
+           ne touche jamais) ;
+        4. RELIRE immédiatement ce marqueur et comparer son identifiant à
+           celui qui vient d'être écrit — jamais une confiance aveugle dans
+           le seul fait que l'écriture n'a pas levé d'exception ;
+        5. n'enregistrer la configuration, auditer un succès et retourner
+           qu'après cette relecture positive."""
         self._permissions.require_permission("BACKUP_EXTERNAL_CONFIGURE")
         label_text = (label or "").strip()
         if not label_text:
             raise ValidationError("Le libellé du support externe est obligatoire.")
+
         try:
-            marker = create_marker(Path(drive_root), label_text)
+            root = normalize_drive_root(drive_root)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+
+        inaccessible_reason = check_root_accessible(root)
+        if inaccessible_reason is not None:
+            raise ValidationError(f"Support externe refusé : {inaccessible_reason}")
+
+        try:
+            marker = create_marker(root, label_text)
         except OSError as exc:
             raise ValidationError(f"Impossible d'écrire sur le support choisi : {exc}") from exc
+
+        reread = read_marker(root)
+        if reread is None or reread.marker_id != marker.marker_id:
+            raise ValidationError(
+                "Le marqueur d'identification n'a pas pu être relu après son écriture sur "
+                f"« {root} » — le support ne peut pas être configuré en toute confiance. Réessayez, "
+                "et si le problème persiste, vérifiez que le support n'est pas en lecture seule ou "
+                "qu'aucun antivirus ne bloque l'écriture."
+            )
 
         with session_scope(self._settings) as session:
             repo = ParameterRepository(session)
             repo.set_value(_KEY_MARKER_ID, marker.marker_id)
             repo.set_value(_KEY_LABEL, marker.label)
 
-        self._audit("BACKUP_EXTERNAL_CONFIGURE", ResultatAudit.SUCCES, details=f"Support configuré : {label_text}")
-        logger.info("Support externe configuré : %s (%s).", label_text, marker.marker_id)
+        self._audit(
+            "BACKUP_EXTERNAL_CONFIGURE", ResultatAudit.SUCCES,
+            details=f"Support configuré et vérifié : {label_text} ({root}).",
+        )
+        logger.info("Support externe configuré et vérifié : %s (%s, %s).", label_text, marker.marker_id, root)
         return self._read_config()
 
     def update_config(self, *, enabled: bool, retention: int) -> ExternalBackupConfig:

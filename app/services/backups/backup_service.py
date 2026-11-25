@@ -49,6 +49,19 @@ _KEY_LAST_AUTO_RUN = "backup.last_auto_run"
 # optionnel des archives, désactivé par défaut (voir
 # ``archive_encryption.py`` pour la justification de ce choix).
 _KEY_ENCRYPTION_ENABLED = "backup.encryption_enabled"
+# Mission corrective « Correction et validation du module de sauvegarde
+# sous Windows », point d'ajustement n°1 : empreinte (jamais la clé
+# elle-même, voir ``archive_encryption.fingerprint_of``) de la dernière
+# clé de chiffrement connue sur ce poste — persistée à chaque création ou
+# importation réussie. Jamais effacée par une simple désactivation du
+# chiffrement (``encryption_enabled=False``) : seule une clé RÉELLEMENT
+# retrouvée dans le coffre (ou une importation explicite et confirmée)
+# peut la remplacer. Permet de détecter qu'une clé a déjà existé sur ce
+# poste même si le coffre a depuis été vidé/réinitialisé et même si les
+# archives qu'elle protège ont été déplacées ailleurs (support externe,
+# autre ordinateur) — jamais limité à une recherche dans le seul dossier
+# de destination actuellement configuré.
+_KEY_ENCRYPTION_KEY_FINGERPRINT = "backup.encryption_key_fingerprint"
 
 FREQUENCY_DAILY = "daily"
 FREQUENCY_WEEKLY = "weekly"
@@ -254,7 +267,20 @@ class BackupService:
         settings = self._effective_settings()
         with session_scope(self._settings) as session:
             repo = ParameterRepository(session)
-            auto_enabled = (repo.get_value(_KEY_AUTO_ENABLED) or "false") == "true"
+            # Mission corrective « Correction et validation du module de
+            # sauvegarde sous Windows », §2.1 : un poste NEUF (ce paramètre
+            # n'a jamais été enregistré — ``get_value`` renvoie ``None``,
+            # jamais la chaîne ``"false"``) doit démarrer avec la
+            # sauvegarde locale quotidienne active par défaut (architecture
+            # cible : autonome dès l'installation, sans geste
+            # supplémentaire de l'administrateur). Un poste déjà configuré
+            # — même explicitement désactivé par un enregistrement
+            # antérieur — n'est JAMAIS modifié silencieusement ici : seule
+            # l'ABSENCE totale de toute valeur enregistrée déclenche ce
+            # nouveau défaut, jamais une réinterprétation d'une valeur déjà
+            # présente.
+            raw_auto_enabled = repo.get_value(_KEY_AUTO_ENABLED)
+            auto_enabled = True if raw_auto_enabled is None else raw_auto_enabled == "true"
             frequency = repo.get_value(_KEY_FREQUENCY) or _DEFAULT_FREQUENCY
             time_of_day = repo.get_value(_KEY_TIME) or _DEFAULT_TIME
             destination = repo.get_value(_KEY_DESTINATION) or str(_default_destination(settings))
@@ -297,6 +323,13 @@ class BackupService:
         if not destination_path.is_dir():
             raise ValidationError(f"« {destination_path} » n'est pas un dossier.")
 
+        if encryption_enabled:
+            # Toujours avant toute persistance (même garde que pour la
+            # destination ci-dessus) : jamais enregistrer
+            # ``encryption_enabled=true`` si l'initialisation de la clé
+            # elle-même échoue ou est refusée.
+            self._initialize_encryption_if_needed(destination_path)
+
         with session_scope(self._settings) as session:
             repo = ParameterRepository(session)
             repo.set_value(_KEY_AUTO_ENABLED, "true" if auto_enabled else "false")
@@ -309,6 +342,109 @@ class BackupService:
         self._audit("BACKUP_CONFIG_UPDATE", ResultatAudit.SUCCES)
         logger.info("Configuration des sauvegardes mise à jour.")
         return self._read_config()
+
+    def _destination_has_encrypted_archive(self, destination: Path) -> bool:
+        """Vrai si au moins une sauvegarde déjà chiffrée (``encrypted:
+        true`` dans son manifeste — voir ``archive_manifest.py``) est
+        visible dans ``destination``. Un signal complémentaire, jamais le
+        seul (voir l'empreinte persistée, §3.1 du mandat correctif) : ce
+        dossier peut très bien ne plus contenir les archives réellement
+        concernées (déplacées vers un support externe ou un autre poste
+        depuis) — ce cas précis est couvert par l'empreinte, pas par ce
+        contrôle, qui reste néanmoins utile en défense en profondeur
+        (détecte le cas où l'empreinte elle-même aurait été perdue, ex.
+        ligne supprimée manuellement de la table ``parametres``)."""
+        for info in backup_engine.list_backup_files(destination):
+            manifest = archive_manifest.read_manifest_for(info.path)
+            if manifest is not None and manifest.encrypted:
+                return True
+        for info in pg_backup_engine.list_backup_files(destination):
+            manifest = archive_manifest.read_manifest_for(info.path)
+            if manifest is not None and manifest.encrypted:
+                return True
+        return False
+
+    def _initialize_encryption_if_needed(self, destination: Path) -> None:
+        """Mission corrective « Correction et validation du module de
+        sauvegarde sous Windows », point d'ajustement n°1 — appelée par
+        :meth:`update_config` uniquement quand ``encryption_enabled`` est
+        activé, AVANT toute persistance de la configuration (jamais une
+        activation enregistrée si cette méthode échoue) :
+
+        1. une clé est déjà présente dans le coffre -> elle est conservée
+           telle quelle (jamais régénérée), son empreinte est simplement
+           tenue à jour (migration silencieuse pour un poste déjà
+           configuré avant l'introduction de cette empreinte) ;
+        2. le coffre est inaccessible -> échec explicite, jamais une
+           activation silencieusement sans effet ;
+        3. aucune clé dans le coffre, mais une empreinte d'une clé
+           précédente est connue (persistée lors d'une création/
+           importation antérieure, voir :data:`_KEY_ENCRYPTION_KEY_FINGERPRINT`)
+           -> refus explicite : générer une nouvelle clé maintenant
+           rendrait irrémédiablement illisibles toutes les archives
+           chiffrées avec l'ancienne, où qu'elles se trouvent désormais
+           (support externe, autre ordinateur) — jamais une génération
+           automatique dans ce cas, quel que soit le contenu du dossier de
+           destination actuel ;
+        4. aucune clé, aucune empreinte connue, mais une archive déjà
+           chiffrée est tout de même visible dans ``destination`` (défense
+           en profondeur si l'empreinte a été perdue par ailleurs) -> même
+           refus explicite ;
+        5. sinon -> première activation légitime, une clé est générée."""
+        try:
+            existing_key = archive_encryption.require_existing_encryption_key(self._encryption_vault)
+        except archive_encryption.NoEncryptionKeyConfiguredError:
+            existing_key = None
+        except CredentialVaultUnavailableError as exc:
+            raise ValidationError(
+                f"Impossible d'activer le chiffrement : le coffre d'identifiants Windows est "
+                f"actuellement inaccessible ({exc}). Réessayez une fois le coffre à nouveau disponible."
+            ) from exc
+
+        if existing_key is not None:
+            with session_scope(self._settings) as session:
+                ParameterRepository(session).set_value(
+                    _KEY_ENCRYPTION_KEY_FINGERPRINT, archive_encryption.fingerprint_of(existing_key)
+                )
+            return
+
+        with session_scope(self._settings) as session:
+            stored_fingerprint = ParameterRepository(session).get_value(_KEY_ENCRYPTION_KEY_FINGERPRINT)
+
+        if stored_fingerprint is not None or self._destination_has_encrypted_archive(destination):
+            raise ValidationError(
+                "Une clé de chiffrement a déjà été utilisée sur ce poste par le passé, mais elle n'est "
+                "plus présente dans le coffre Windows (coffre réinitialisé, changement d'ordinateur sans "
+                "transfert de la clé...). Générer une nouvelle clé maintenant rendrait illisibles toutes "
+                "les archives déjà chiffrées avec l'ancienne — y compris celles qui auraient pu être "
+                "déplacées vers un support externe ou un autre ordinateur depuis. Importez d'abord "
+                "l'ancienne clé de chiffrement (« Importer la clé de chiffrement… », écran Sauvegardes) "
+                "avant de réactiver le chiffrement."
+            )
+
+        new_key = archive_encryption.ensure_encryption_key(self._encryption_vault)
+        with session_scope(self._settings) as session:
+            ParameterRepository(session).set_value(
+                _KEY_ENCRYPTION_KEY_FINGERPRINT, archive_encryption.fingerprint_of(new_key)
+            )
+
+    def encryption_status(self) -> str:
+        """Un seul parmi ``"disabled"``/``"ready"``/``"key_missing"``/
+        ``"vault_unavailable"`` — jamais un simple booléen (mission
+        corrective, §3.3/§5.4 : ne jamais confondre le paramètre
+        « chiffrement activé » avec la preuve que la clé est réellement
+        disponible)."""
+        self._permissions.require_permission("BACKUP_VIEW")
+        config = self._read_config()
+        if not config.encryption_enabled:
+            return "disabled"
+        try:
+            archive_encryption.require_existing_encryption_key(self._encryption_vault)
+        except CredentialVaultUnavailableError:
+            return "vault_unavailable"
+        except archive_encryption.ArchiveEncryptionError:
+            return "key_missing"
+        return "ready"
 
     # -- sauvegarde manuelle ----------------------------------------------------
 
@@ -613,6 +749,16 @@ class BackupService:
         except archive_encryption.ArchiveEncryptionError as exc:
             self._audit("BACKUP_ENCRYPTION_KEY_IMPORT_FAILURE", ResultatAudit.ECHEC, details=str(exc))
             raise
+        # Mission corrective, point d'ajustement n°1 : une clé importée
+        # avec succès devient la nouvelle référence de ce poste — son
+        # empreinte remplace toute empreinte précédente (celle-ci décrivait
+        # précisément la clé qu'on vient de retrouver/remplacer explicitement
+        # par ce transfert, jamais une substitution silencieuse).
+        imported_key = archive_encryption.require_existing_encryption_key(self._encryption_vault)
+        with session_scope(self._settings) as session:
+            ParameterRepository(session).set_value(
+                _KEY_ENCRYPTION_KEY_FINGERPRINT, archive_encryption.fingerprint_of(imported_key)
+            )
         self._audit("BACKUP_ENCRYPTION_KEY_IMPORT_SUCCESS", ResultatAudit.SUCCES)
         logger.info("Clé de chiffrement des sauvegardes importée depuis %s.", source_path)
 

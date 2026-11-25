@@ -1,3 +1,4 @@
+import shutil
 import threading
 
 import pytest
@@ -61,6 +62,203 @@ def test_form_prefilled_with_current_config(qtbot, login_as, tmp_path) -> None:
     assert page.time_edit.text() == "03:15"
     assert page.destination_edit.text() == str(destination)
     assert page.retention_spin.value() == 7
+
+
+def test_form_prefilled_with_daily_frequency(qtbot, login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    stack.backups.update_config(
+        auto_enabled=True, frequency="daily", time_of_day="20:00",
+        destination=str(tmp_path / "backups"), retention=30,
+    )
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.frequency_combo.currentText() == "Quotidienne"
+
+
+# -- panneau d'état global (mission corrective §3.5) -----------------------------
+
+
+def test_status_panel_shows_local_backup_active(qtbot, login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    stack.backups.update_config(
+        auto_enabled=True, frequency="daily", time_of_day="20:00",
+        destination=str(tmp_path / "backups"), retention=30,
+    )
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert "ACTIVE" in page.status_local_label.text()
+    assert "✓" in page.status_local_label.text()
+
+
+def test_status_panel_shows_local_backup_inactive(qtbot, login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="20:00",
+        destination=str(tmp_path / "backups"), retention=30,
+    )
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert "INACTIVE" in page.status_local_label.text()
+    assert "✗" in page.status_local_label.text()
+
+
+def test_status_panel_shows_external_protection_disabled_when_not_enabled(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert "désactivée" in page.status_external_label.text()
+
+
+def test_status_panel_never_claims_external_protection_active_without_a_configured_support(
+    qtbot, login_as,
+) -> None:
+    """Exigence explicite de la mission : jamais « Protection active »
+    affiché si les conditions techniques réelles ne sont pas réunies —
+    ici, protection externe activée (état historique possible sur un
+    poste migré) mais aucun support n'a jamais été configuré.
+    ``update_config`` refuse lui-même cette combinaison pour toute
+    nouvelle activation (voir ``ExternalBackupService.update_config``) :
+    on simule donc directement, via le dépôt, l'état hérité que le
+    panneau doit malgré tout détecter sans jamais le présenter comme actif."""
+    from app.config.settings import get_settings
+    from app.db.session import session_scope
+    from app.repositories.parameter_repository import ParameterRepository
+
+    stack, _ = login_as("Administrateur")
+    with session_scope(get_settings()) as session:
+        ParameterRepository(session).set_value("backup.external.enabled", "true")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert "ACTIVE" not in page.status_external_label.text()
+    assert "aucun support n'est configuré" in page.status_external_label.text()
+
+
+def test_status_panel_shows_external_protection_active_when_support_accessible(
+    qtbot, login_as, tmp_path,
+) -> None:
+    stack, _ = login_as("Administrateur")
+    drive = tmp_path / "usb"
+    drive.mkdir()
+    stack.external_backups.configure_media(drive, "Clé de test")
+    stack.external_backups._media_roots_provider = lambda: [drive]
+    stack.external_backups.update_config(enabled=True, retention=30)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert "ACTIVE" in page.status_external_label.text()
+    assert "Clé de test" in page.status_external_label.text()
+
+
+def test_status_panel_never_claims_external_protection_active_when_support_inaccessible(
+    qtbot, login_as, tmp_path,
+) -> None:
+    """Le support a été configuré avec succès puis débranché (ou son
+    chemin n'est plus accessible) : jamais « Protection active » affiché
+    dans ce cas, même si la configuration enregistrée reste « activée »."""
+    stack, _ = login_as("Administrateur")
+    drive = tmp_path / "usb"
+    drive.mkdir()
+    stack.external_backups.configure_media(drive, "Clé de test")
+    stack.external_backups._media_roots_provider = lambda: [drive]
+    stack.external_backups.update_config(enabled=True, retention=30)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    shutil.rmtree(drive)
+    stack.external_backups._media_roots_provider = lambda: []
+
+    page._refresh_status_panel()
+
+    assert "ACTIVE" not in page.status_external_label.text()
+    assert "inaccessible" in page.status_external_label.text()
+
+
+def test_status_panel_shows_scheduled_task_not_configured(qtbot, login_as, monkeypatch) -> None:
+    from app.services.backups.scheduled_task_manager import ScheduledTaskStatus
+
+    stack, _ = login_as("Administrateur")
+    monkeypatch.setattr(
+        stack.external_backups, "scheduled_task_status", lambda: ScheduledTaskStatus(exists=False),
+    )
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert "non configurée" in page.status_task_label.text()
+
+
+def test_status_panel_shows_scheduled_task_desynchronized(qtbot, login_as, monkeypatch) -> None:
+    from app.services.backups.scheduled_task_manager import ScheduledTaskStatus
+
+    stack, _ = login_as("Administrateur")
+    monkeypatch.setattr(
+        stack.external_backups, "scheduled_task_status",
+        lambda: ScheduledTaskStatus(exists=True, status="Ready"),
+    )
+    monkeypatch.setattr(stack.external_backups, "is_scheduled_task_time_synchronized", lambda: False)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert "désynchronisée" in page.status_task_label.text()
+
+
+def test_status_panel_shows_scheduled_task_configured(qtbot, login_as, monkeypatch) -> None:
+    from app.services.backups.scheduled_task_manager import ScheduledTaskStatus
+
+    stack, _ = login_as("Administrateur")
+    monkeypatch.setattr(
+        stack.external_backups, "scheduled_task_status",
+        lambda: ScheduledTaskStatus(exists=True, status="Ready"),
+    )
+    monkeypatch.setattr(stack.external_backups, "is_scheduled_task_time_synchronized", lambda: True)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert "configurée" in page.status_task_label.text()
+    assert "Ready" in page.status_task_label.text()
+
+
+def test_status_panel_shows_encryption_disabled(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert "désactivé" in page.status_encryption_label.text()
+
+
+def test_status_panel_shows_encryption_key_missing(qtbot, login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    vault = _FakeEncryptionVault()
+    stack.backups._encryption_vault = vault
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="20:00",
+        destination=str(tmp_path / "backups"), retention=10, encryption_enabled=True,
+    )
+    stack.backups._encryption_vault = _FakeEncryptionVault()  # coffre vidé après coup
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert "AUCUNE clé" in page.status_encryption_label.text()
+
+
+def test_status_panel_shows_encryption_ready(qtbot, login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    vault = _FakeEncryptionVault()
+    stack.backups._encryption_vault = vault
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="20:00",
+        destination=str(tmp_path / "backups"), retention=10, encryption_enabled=True,
+    )
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert "disponible" in page.status_encryption_label.text()
+    assert "✓" in page.status_encryption_label.text()
 
 
 def test_save_config_persists_form_values(qtbot, login_as, tmp_path) -> None:
@@ -566,6 +764,101 @@ def test_configure_media_updates_form_and_hides_reminder(qtbot, login_as, tmp_pa
     assert page.external_media_label.text() == "« Clé USB de test »"
 
 
+# -- mission corrective §2.4 : sélection réelle d'un lecteur (jamais un dossier) --
+
+
+def test_choose_media_opens_drive_selection_and_configures_the_selected_root(
+    qtbot, login_as, tmp_path, monkeypatch
+) -> None:
+    from PySide6.QtWidgets import QDialog
+
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    drive = tmp_path / "usb"
+    drive.mkdir()
+
+    class _FakeSelectionDialog:
+        def __init__(self, drives, parent=None):
+            pass
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        def selected_root(self):
+            return drive
+
+    monkeypatch.setattr("app.views.pages.backups_page.DriveSelectionDialog", _FakeSelectionDialog)
+    monkeypatch.setattr(
+        "app.views.pages.backups_page.QInputDialog.getText", lambda *a, **k: ("Mon support", True)
+    )
+    configure_calls = []
+    monkeypatch.setattr(
+        page, "_configure_media",
+        lambda directory, label: configure_calls.append((directory, label)) or True,
+    )
+
+    page._on_choose_media_clicked()
+
+    assert configure_calls == [(str(drive), "Mon support")]
+
+
+def test_choose_media_does_nothing_when_selection_dialog_is_cancelled(qtbot, login_as, monkeypatch) -> None:
+    from PySide6.QtWidgets import QDialog
+
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    class _FakeSelectionDialog:
+        def __init__(self, drives, parent=None):
+            pass
+
+        def exec(self):
+            return QDialog.DialogCode.Rejected
+
+        def selected_root(self):
+            return None
+
+    monkeypatch.setattr("app.views.pages.backups_page.DriveSelectionDialog", _FakeSelectionDialog)
+    configure_calls = []
+    monkeypatch.setattr(page, "_configure_media", lambda *a, **k: configure_calls.append(True))
+
+    page._on_choose_media_clicked()
+
+    assert configure_calls == []
+
+
+def test_choose_media_shows_the_drives_actually_detected_by_the_service(
+    qtbot, login_as, tmp_path, monkeypatch
+) -> None:
+    from PySide6.QtWidgets import QDialog
+
+    from app.services.backups import external_media
+
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    drive = tmp_path / "usb"
+    drive.mkdir()
+    monkeypatch.setattr(
+        stack.external_backups, "list_available_drives",
+        lambda: [external_media.DriveInfo(root=drive, drive_type="removable", volume_label="Ma clé", marker=None)],
+    )
+    captured = {}
+
+    def _fake_selection_dialog(drives, parent=None):
+        captured["drives"] = drives
+        return type("_D", (), {"exec": lambda self: QDialog.DialogCode.Rejected, "selected_root": lambda self: None})()
+
+    monkeypatch.setattr("app.views.pages.backups_page.DriveSelectionDialog", _fake_selection_dialog)
+
+    page._on_choose_media_clicked()
+
+    assert len(captured["drives"]) == 1
+    assert captured["drives"][0].root == drive
+
+
 def test_save_external_config_rejects_enabling_without_media(qtbot, login_as) -> None:
     stack, _ = login_as("Administrateur")
     page = _build_page(stack)
@@ -885,6 +1178,7 @@ def test_has_active_background_task_delegates_to_open_wizard(qtbot, login_as, mo
 
 def test_encryption_checkbox_reflects_current_config(qtbot, login_as, tmp_path) -> None:
     stack, _ = login_as("Administrateur")
+    stack.backups._encryption_vault = _FakeEncryptionVault()
     stack.backups.update_config(
         auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(tmp_path / "backups"),
         retention=10, encryption_enabled=True,
@@ -901,6 +1195,7 @@ def test_save_config_no_longer_resets_encryption_enabled_to_false(qtbot, login_a
     qui retombait donc systématiquement à False à chaque enregistrement —
     même en changeant un tout autre champ (ici la rétention)."""
     stack, _ = login_as("Administrateur")
+    stack.backups._encryption_vault = _FakeEncryptionVault()
     stack.backups.update_config(
         auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(tmp_path / "backups"),
         retention=10, encryption_enabled=True,
@@ -917,6 +1212,7 @@ def test_save_config_no_longer_resets_encryption_enabled_to_false(qtbot, login_a
 
 def test_save_config_can_disable_encryption_explicitly(qtbot, login_as, tmp_path) -> None:
     stack, _ = login_as("Administrateur")
+    stack.backups._encryption_vault = _FakeEncryptionVault()
     stack.backups.update_config(
         auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(tmp_path / "backups"),
         retention=10, encryption_enabled=True,
@@ -937,6 +1233,101 @@ def test_encryption_key_buttons_disabled_without_permission(qtbot, login_as) -> 
 
     assert page.export_key_button.isEnabled() is False
     assert page.import_key_button.isEnabled() is False
+
+
+# -- mission corrective §3.4/§6.2 : KeyPasswordDialog remplace QInputDialog ----
+
+
+def test_on_export_encryption_key_clicked_uses_the_password_dialog(qtbot, login_as, tmp_path, monkeypatch) -> None:
+    from PySide6.QtWidgets import QDialog
+
+    from app.services.backups import archive_encryption
+
+    stack, _ = login_as("Administrateur")
+    fake_vault = _FakeEncryptionVault()
+    stack.backups._encryption_vault = fake_vault
+    archive_encryption.ensure_encryption_key(fake_vault)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    monkeypatch.setattr("app.views.pages.backups_page.confirm_action", lambda *a, **k: True)
+
+    class _FakePasswordDialog:
+        def __init__(self, mode, parent=None):
+            self._mode = mode
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        def password(self):
+            return "mot-de-passe-du-dialogue"
+
+    monkeypatch.setattr("app.views.pages.backups_page.KeyPasswordDialog", _FakePasswordDialog)
+    destination = tmp_path / "cle.json"
+    monkeypatch.setattr(
+        "app.views.pages.backups_page.QFileDialog.getSaveFileName", lambda *a, **k: (str(destination), "")
+    )
+    export_calls = []
+    monkeypatch.setattr(
+        page, "_export_encryption_key", lambda dest, password: export_calls.append((dest, password)) or True,
+    )
+
+    page._on_export_encryption_key_clicked()
+
+    assert export_calls == [(str(destination), "mot-de-passe-du-dialogue")]
+
+
+def test_on_export_encryption_key_clicked_does_nothing_when_password_dialog_cancelled(
+    qtbot, login_as, monkeypatch
+) -> None:
+    from PySide6.QtWidgets import QDialog
+
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    monkeypatch.setattr("app.views.pages.backups_page.confirm_action", lambda *a, **k: True)
+    monkeypatch.setattr(
+        "app.views.pages.backups_page.KeyPasswordDialog",
+        lambda mode, parent=None: type("_D", (), {"exec": lambda self: QDialog.DialogCode.Rejected})(),
+    )
+    export_calls = []
+    monkeypatch.setattr(page, "_export_encryption_key", lambda *a, **k: export_calls.append(True))
+
+    page._on_export_encryption_key_clicked()
+
+    assert export_calls == []
+
+
+def test_on_import_encryption_key_clicked_uses_the_password_dialog(qtbot, login_as, tmp_path, monkeypatch) -> None:
+    from PySide6.QtWidgets import QDialog
+
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    source = tmp_path / "cle.json"
+    source.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        "app.views.pages.backups_page.QFileDialog.getOpenFileName", lambda *a, **k: (str(source), "")
+    )
+
+    class _FakePasswordDialog:
+        def __init__(self, mode, parent=None):
+            self._mode = mode
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        def password(self):
+            return "mot-de-passe-import"
+
+    monkeypatch.setattr("app.views.pages.backups_page.KeyPasswordDialog", _FakePasswordDialog)
+    import_calls = []
+    monkeypatch.setattr(
+        page, "_import_encryption_key", lambda src, password: import_calls.append((src, password)) or True,
+    )
+
+    page._on_import_encryption_key_clicked()
+
+    assert import_calls == [(str(source), "mot-de-passe-import")]
 
 
 def test_export_encryption_key_success(qtbot, login_as, tmp_path) -> None:
@@ -1042,12 +1433,12 @@ def test_test_encryption_key_reports_success(qtbot, login_as, tmp_path) -> None:
     from app.services.backups import archive_encryption
 
     stack, _ = login_as("Administrateur")
+    vault = _FakeEncryptionVault()
+    stack.backups._encryption_vault = vault
     stack.backups.update_config(
         auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(tmp_path / "backups"),
         retention=10, encryption_enabled=True,
     )
-    vault = _FakeEncryptionVault()
-    stack.backups._encryption_vault = vault
     backup_result = stack.backups.create_manual_backup()
     page = _build_page(stack)
     qtbot.addWidget(page)

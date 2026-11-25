@@ -66,6 +66,8 @@ from app.views.backup_restore_wizard_dialog import BackupRestoreWizardDialog
 from app.views.common import confirm_action
 from app.views.data_reset_confirm_dialog import DataResetConfirmDialog
 from app.views.design_system import COLOR_DANGER, COLOR_SUCCESS, COLOR_TEXT_SECONDARY, qcolor
+from app.views.drive_selection_dialog import DriveSelectionDialog
+from app.views.key_password_dialog import MODE_EXPORT, MODE_IMPORT, KeyPasswordDialog
 from app.views.loading_overlay import LoadingOverlay
 
 _FREQUENCY_LABELS = {FREQUENCY_DAILY: "Quotidienne", FREQUENCY_WEEKLY: "Hebdomadaire"}
@@ -164,6 +166,7 @@ class BackupsPage(QWidget):
         content_layout.setSpacing(10)
 
         content_layout.addWidget(self._build_engine_group())
+        content_layout.addWidget(self._build_status_group())
         content_layout.addWidget(self._build_config_group())
         content_layout.addLayout(self._build_actions_row())
         content_layout.addWidget(self._build_external_group())
@@ -185,6 +188,7 @@ class BackupsPage(QWidget):
         self._load_config_into_form()
         self._load_external_config_into_form()
         self.refresh_history()
+        self._refresh_status_panel()
 
     # -- coordination avec MainWindow (correctif revue finale) ---------------
 
@@ -208,6 +212,145 @@ class BackupsPage(QWidget):
                 and self._restore_wizard_dialog.has_active_background_task()
             )
         )
+
+    # -- état global de la protection (mission corrective §3.5/§5) -----------------
+
+    def _build_status_group(self) -> QGroupBox:
+        """Mission corrective « Correction et validation du module de
+        sauvegarde sous Windows », §3.5 : un seul panneau, toujours en
+        tête d'écran, qui distingue clairement les quatre mécanismes
+        (sauvegarde locale automatique, protection externe, tâche
+        planifiée Windows, chiffrement) — jamais confondus, jamais
+        « Protection active » affiché si les conditions techniques
+        réelles ne sont pas réunies (voir :meth:`_refresh_status_panel`,
+        qui relit systématiquement l'état réel au moment de l'appel)."""
+        group = QGroupBox("État de la protection", self)
+        layout = QVBoxLayout(group)
+        self.status_local_label = QLabel(self)
+        self.status_local_label.setWordWrap(True)
+        layout.addWidget(self.status_local_label)
+        self.status_external_label = QLabel(self)
+        self.status_external_label.setWordWrap(True)
+        layout.addWidget(self.status_external_label)
+        self.status_task_label = QLabel(self)
+        self.status_task_label.setWordWrap(True)
+        layout.addWidget(self.status_task_label)
+        self.status_encryption_label = QLabel(self)
+        self.status_encryption_label.setWordWrap(True)
+        layout.addWidget(self.status_encryption_label)
+        return group
+
+    def _refresh_status_panel(self) -> None:
+        """Relit toujours l'état réel des quatre mécanismes au moment de
+        l'appel — jamais une simple réutilisation d'un état déjà calculé
+        ailleurs sur l'écran. Appelée après toute opération susceptible de
+        changer l'un de ces états (chargement initial, enregistrement de
+        la configuration locale ou externe, configuration du support,
+        configuration/suppression de la tâche planifiée, export/import de
+        la clé de chiffrement) — jamais besoin que l'utilisateur rafraîchisse
+        manuellement pour voir un état à jour."""
+        try:
+            config = self._backup_service.get_config()
+        except AppError:
+            self.status_local_label.setText("Sauvegarde locale : état indisponible.")
+        else:
+            if config.auto_enabled:
+                self.status_local_label.setText(
+                    f"✓ Sauvegarde locale automatique ACTIVE — "
+                    f"{_FREQUENCY_LABELS.get(config.frequency, config.frequency).lower()}, {config.time_of_day}, "
+                    f"{config.retention} archive(s) conservée(s)."
+                )
+                self.status_local_label.setStyleSheet(f"color: {COLOR_SUCCESS};")
+            else:
+                self.status_local_label.setText(
+                    "✗ Sauvegarde locale automatique INACTIVE — aucune sauvegarde ne sera "
+                    "effectuée tant que « Activer la sauvegarde automatique » n'est pas cochée "
+                    "puis enregistrée, que StockManager soit ouvert ou non."
+                )
+                self.status_local_label.setStyleSheet(f"color: {COLOR_DANGER}; font-weight: 600;")
+
+        if self._external_backup_service is None:
+            self.status_external_label.setText("Protection externe : non disponible sur ce poste.")
+            self.status_task_label.setText("Tâche planifiée Windows : non disponible sur ce poste.")
+        else:
+            try:
+                external_config = self._external_backup_service.get_config()
+            except AppError:
+                self.status_external_label.setText("Protection externe : état indisponible.")
+            else:
+                if not external_config.enabled:
+                    self.status_external_label.setText("○ Protection externe désactivée (facultative).")
+                    self.status_external_label.setStyleSheet(f"color: {COLOR_TEXT_SECONDARY};")
+                elif not external_config.is_configured:
+                    self.status_external_label.setText(
+                        "✗ Protection externe activée mais aucun support n'est configuré."
+                    )
+                    self.status_external_label.setStyleSheet(f"color: {COLOR_DANGER}; font-weight: 600;")
+                else:
+                    try:
+                        accessible = self._external_backup_service.test_media_accessible()
+                    except AppError:
+                        accessible = False
+                    if accessible:
+                        self.status_external_label.setText(
+                            f"✓ Protection externe ACTIVE — support « {external_config.label} » accessible."
+                        )
+                        self.status_external_label.setStyleSheet(f"color: {COLOR_SUCCESS};")
+                    else:
+                        self.status_external_label.setText(
+                            f"⚠ Protection externe activée — support « {external_config.label} » "
+                            f"actuellement inaccessible (débranché ?)."
+                        )
+                        self.status_external_label.setStyleSheet(f"color: {COLOR_DANGER};")
+
+            try:
+                task_status = self._external_backup_service.scheduled_task_status()
+            except AppError:
+                self.status_task_label.setText(
+                    "Tâche planifiée Windows : non disponible sur ce poste (Windows requis)."
+                )
+            else:
+                if not task_status.exists:
+                    self.status_task_label.setText("✗ Tâche planifiée Windows non configurée.")
+                    self.status_task_label.setStyleSheet(f"color: {COLOR_DANGER};")
+                else:
+                    try:
+                        synchronized = self._external_backup_service.is_scheduled_task_time_synchronized()
+                    except AppError:
+                        synchronized = None
+                    if synchronized is False:
+                        self.status_task_label.setText(
+                            "⚠ Tâche planifiée Windows configurée mais désynchronisée (l'heure a "
+                            "changé depuis) — cliquez sur « Configurer/réparer la tâche planifiée »."
+                        )
+                        self.status_task_label.setStyleSheet(f"color: {COLOR_DANGER};")
+                    else:
+                        self.status_task_label.setText(
+                            f"✓ Tâche planifiée Windows configurée ({task_status.status or '—'})."
+                        )
+                        self.status_task_label.setStyleSheet(f"color: {COLOR_SUCCESS};")
+
+        try:
+            encryption_status = self._backup_service.encryption_status()
+        except AppError:
+            self.status_encryption_label.setText("Chiffrement : état indisponible.")
+        else:
+            messages = {
+                "disabled": ("○ Chiffrement désactivé.", COLOR_TEXT_SECONDARY, False),
+                "ready": ("✓ Chiffrement activé — clé disponible.", COLOR_SUCCESS, False),
+                "key_missing": (
+                    "⚠ Chiffrement activé mais AUCUNE clé n'est configurée sur ce poste — importez "
+                    "la clé correspondante avant de créer une nouvelle sauvegarde.",
+                    COLOR_DANGER, True,
+                ),
+                "vault_unavailable": (
+                    "⚠ Chiffrement activé mais le coffre Windows est actuellement inaccessible.",
+                    COLOR_DANGER, True,
+                ),
+            }
+            text, color, bold = messages.get(encryption_status, ("Chiffrement : état inconnu.", COLOR_TEXT_SECONDARY, False))
+            self.status_encryption_label.setText(text)
+            self.status_encryption_label.setStyleSheet(f"color: {color};" + (" font-weight: 600;" if bold else ""))
 
     # -- moteur actif (Lot E, §E.4) ------------------------------------------------
 
@@ -374,6 +517,7 @@ class BackupsPage(QWidget):
         # si la tâche planifiée Windows déjà créée ne la reflète plus,
         # jamais après coup seulement au prochain rafraîchissement.
         self._refresh_task_time_sync_warning()
+        self._refresh_status_panel()
         return True
 
     # -- transfert de la clé de chiffrement (§3.1) -------------------------------
@@ -394,15 +538,10 @@ class BackupsPage(QWidget):
         ):
             return
 
-        password, confirmed = QInputDialog.getText(
-            self, "Mot de passe de protection",
-            "Choisissez un mot de passe pour protéger le fichier exporté\n"
-            "(nécessaire pour l'importer sur le nouvel ordinateur — ce mot de passe "
-            "n'est pas enregistré, conservez-le vous-même) :",
-            QLineEdit.EchoMode.Password,
-        )
-        if not confirmed or not password:
+        password_dialog = KeyPasswordDialog(MODE_EXPORT, parent=self)
+        if password_dialog.exec() != QDialog.DialogCode.Accepted:
             return
+        password = password_dialog.password()
 
         suggested = str(Path.home() / "StockManager_cle_chiffrement.json")
         destination, _filter = QFileDialog.getSaveFileName(
@@ -426,6 +565,7 @@ class BackupsPage(QWidget):
             f"La clé de chiffrement a été exportée vers « {destination} ». "
             "Conservez ce fichier et son mot de passe en lieu sûr.",
         )
+        self._refresh_status_panel()
         return True
 
     def _on_import_encryption_key_clicked(self) -> None:
@@ -435,14 +575,10 @@ class BackupsPage(QWidget):
         if not source:
             return
 
-        password, confirmed = QInputDialog.getText(
-            self, "Mot de passe du fichier de transfert",
-            "Mot de passe choisi lors de l'export de cette clé :",
-            QLineEdit.EchoMode.Password,
-        )
-        if not confirmed or not password:
+        password_dialog = KeyPasswordDialog(MODE_IMPORT, parent=self)
+        if password_dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        self._import_encryption_key(source, password)
+        self._import_encryption_key(source, password_dialog.password())
 
     def _import_encryption_key(self, source: str, password: str) -> bool:
         """Isolé de ``_on_import_encryption_key_clicked`` pour rester
@@ -477,6 +613,7 @@ class BackupsPage(QWidget):
             "archive… » pour vérifier qu'elle permet bien de déchiffrer une archive apportée de "
             "l'ancien ordinateur.",
         )
+        self._refresh_status_panel()
         return True
 
     def _on_test_encryption_key_clicked(self) -> None:
@@ -672,16 +809,19 @@ class BackupsPage(QWidget):
         except AppError as exc:
             self.external_task_status_label.setText(f"Indisponible sur ce poste : {exc}")
             self.task_time_sync_warning_label.setVisible(False)
+            self._refresh_status_panel()
             return
         if not status.exists:
             self.external_task_status_label.setText("Non configurée.")
             self.task_time_sync_warning_label.setVisible(False)
+            self._refresh_status_panel()
             return
         self.external_task_status_label.setText(
             f"{status.status or '—'} — dernière exécution : {status.last_run_time or '—'} "
             f"(résultat : {status.last_result or '—'})"
         )
         self._refresh_task_time_sync_warning()
+        self._refresh_status_panel()
 
     def _refresh_task_time_sync_warning(self) -> None:
         """Isolé de ``_refresh_scheduled_task_status`` pour être également
@@ -708,15 +848,30 @@ class BackupsPage(QWidget):
             self.task_time_sync_warning_label.setVisible(False)
 
     def _on_choose_media_clicked(self) -> None:
-        directory = QFileDialog.getExistingDirectory(self, "Support externe (clé USB / disque externe)", "")
-        if not directory:
+        """Mission corrective « Correction et validation du module de
+        sauvegarde sous Windows », §2.4 : remplace le sélecteur de dossier
+        générique par une véritable sélection de lecteur parmi ceux
+        réellement détectés (clé USB ET disque dur externe, jamais le
+        disque système ni une destination inappropriée — voir
+        ``ExternalBackupService.list_available_drives``)."""
+        try:
+            drives = self._external_backup_service.list_available_drives()
+        except AppError as exc:
+            QMessageBox.warning(self, "Détection impossible", str(exc))
             return
+        selection_dialog = DriveSelectionDialog(drives, parent=self)
+        if selection_dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        selected_root = selection_dialog.selected_root()
+        if selected_root is None:
+            return
+
         label, confirmed = QInputDialog.getText(
             self, "Nom du support", "Donnez un nom à ce support (ex. « Disque externe bureau ») :"
         )
         if not confirmed or not label.strip():
             return
-        self._configure_media(directory, label)
+        self._configure_media(str(selected_root), label)
 
     def _configure_media(self, directory: str, label: str) -> bool:
         """Isolé de ``_on_choose_media_clicked`` pour rester testable sans
@@ -728,6 +883,7 @@ class BackupsPage(QWidget):
             return False
         self._apply_external_config_to_form(config)
         QMessageBox.information(self, "Support configuré", f"Le support « {label} » a été configuré avec succès.")
+        self._refresh_status_panel()
         return True
 
     def _on_save_external_config_clicked(self) -> None:
@@ -746,6 +902,7 @@ class BackupsPage(QWidget):
         except AppError as exc:
             QMessageBox.warning(self, "Configuration refusée", str(exc))
             return False
+        self._refresh_status_panel()
         return True
 
     def _on_test_media_clicked(self) -> None:

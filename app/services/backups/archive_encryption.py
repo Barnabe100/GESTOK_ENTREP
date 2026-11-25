@@ -39,6 +39,7 @@ reste le comportement par défaut en production."""
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import tempfile
@@ -111,6 +112,22 @@ def _derive_wrapping_key(password: str, salt: bytes) -> bytes:
         algorithm=hashes.SHA256(), length=32, salt=salt, iterations=_TRANSFER_KDF_ITERATIONS,
     )
     return base64.urlsafe_b64encode(kdf.derive(password.encode("utf-8")))
+
+
+def fingerprint_of(key: bytes) -> str:
+    """Empreinte SHA-256 (hexadécimale) d'une clé de chiffrement — jamais
+    la clé elle-même, jamais réversible, jamais exploitable pour déchiffrer
+    quoi que ce soit (mission corrective « Correction et validation du
+    module de sauvegarde sous Windows », point d'ajustement n°1 : détecter
+    de façon fiable qu'une clé de chiffrement a déjà existé sur ce poste,
+    même si les archives qu'elle protège ont depuis été déplacées vers un
+    support externe ou un autre ordinateur — jamais limité à une recherche
+    dans le seul dossier de destination actuellement configuré). Une clé
+    Fernet est 256 bits d'aléa uniforme : son empreinte ne réduit en rien
+    l'espace de recherche d'une attaque par force brute, jamais un risque
+    de sécurité à la conserver dans la base de données applicative
+    (contrairement à la clé elle-même, qui n'y est et n'y sera jamais)."""
+    return hashlib.sha256(key).hexdigest()
 
 
 def ensure_encryption_key(vault: Optional[CredentialVault] = None) -> bytes:

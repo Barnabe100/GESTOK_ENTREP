@@ -82,3 +82,45 @@ def test_create_onlogon_task_is_accepted_by_real_schtasks() -> None:
     )
 
     assert stm.task_exists(_TEST_TASK_NAME) is True
+
+
+def test_create_task_with_a_space_in_the_executable_path_and_runs_it_successfully(tmp_path) -> None:
+    """Mission corrective « Correction et validation du module de
+    sauvegarde sous Windows », §3.2/§5 : reproduit réellement, sur Windows,
+    le scénario diagnostiqué (exécutable installé dans un dossier dont le
+    nom contient un espace, ex. ``Program Files`` — l'emplacement
+    d'installation par défaut de l'installateur Inno Setup) ET exécute
+    effectivement la tâche créée (``schtasks /run``), pas seulement sa
+    création : seule une exécution réelle prouve que la valeur transmise à
+    ``schtasks.exe`` (désormais via ``/xml``, jamais ``/tr``) est
+    correctement interprétée de bout en bout, pas seulement acceptée à la
+    création."""
+    import shutil
+    import subprocess as sp
+    import time
+
+    install_dir = tmp_path / "Program Files Test" / "StockManager"
+    install_dir.mkdir(parents=True)
+    copied_executable = install_dir / "python_copie.exe"
+    shutil.copy2(sys.executable, copied_executable)
+
+    marker_file = tmp_path / "marker.txt"
+    # ``--version`` ne produit aucun fichier observable ; on exécute plutôt
+    # un script Python minimal qui écrit un repère, pour prouver que
+    # l'exécutable ET ses arguments ont bien été transmis et exécutés tels
+    # quels par la tâche planifiée.
+    script = tmp_path / "write_marker.py"
+    script.write_text(f"open(r'{marker_file}', 'w').write('ok')\n", encoding="utf-8")
+
+    stm.create_or_repair_task(_TEST_TASK_NAME, str(copied_executable), [str(script)], "23:59")
+    assert stm.task_exists(_TEST_TASK_NAME) is True
+
+    sp.run(["schtasks", "/run", "/tn", _TEST_TASK_NAME], capture_output=True, text=True, timeout=30)
+    deadline = time.time() + 15
+    while time.time() < deadline and not marker_file.exists():
+        time.sleep(0.5)
+
+    assert marker_file.exists(), (
+        "La tâche planifiée ne semble pas avoir exécuté l'exécutable (chemin avec espace) avec "
+        "l'argument attendu — voir la définition XML générée par _build_task_xml."
+    )

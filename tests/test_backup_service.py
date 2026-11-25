@@ -53,13 +53,37 @@ def _audit_rows(action: str) -> list[AuditLog]:
 # -- configuration ----------------------------------------------------------------
 
 
-def test_get_config_returns_safe_defaults(login_as) -> None:
+def test_get_config_returns_autonomous_defaults_for_a_fresh_install(login_as) -> None:
+    """Mission corrective « Correction et validation du module de
+    sauvegarde sous Windows », §2.1 : un poste neuf (jamais configuré)
+    démarre avec la sauvegarde locale quotidienne ACTIVE par défaut —
+    l'architecture cible veut une protection autonome dès l'installation,
+    sans geste supplémentaire de l'administrateur."""
     stack, _ = login_as("Administrateur")
 
     config = stack.backups.get_config()
 
+    assert config.auto_enabled is True
+    assert config.frequency == "daily"
+    assert config.time_of_day == "20:00"
+    assert config.retention == 30
+
+
+def test_get_config_never_silently_re_enables_an_explicitly_disabled_installation(login_as, tmp_path) -> None:
+    """Un poste déjà configuré — même explicitement désactivé par un
+    enregistrement antérieur — ne doit jamais être réactivé
+    silencieusement par ce nouveau défaut : seule l'ABSENCE totale de
+    toute valeur enregistrée déclenche le défaut autonome ci-dessus."""
+    stack, _ = login_as("Administrateur")
+    stack.backups.update_config(
+        auto_enabled=False, frequency="weekly", time_of_day="03:00",
+        destination=str(tmp_path / "backups"), retention=15,
+    )
+
+    config = stack.backups.get_config()
+
     assert config.auto_enabled is False
-    assert config.retention >= 1
+    assert config.frequency == "weekly"
 
 
 def test_update_config_persists_values(login_as, tmp_path) -> None:
@@ -722,6 +746,7 @@ def test_default_encryption_is_disabled(login_as) -> None:
 
 def test_update_config_persists_encryption_enabled(login_as, tmp_path) -> None:
     stack, _ = login_as("Administrateur")
+    stack.backups._encryption_vault = _FakeEncryptionVault()
 
     updated = stack.backups.update_config(
         auto_enabled=False, frequency="daily", time_of_day="02:00",
@@ -730,6 +755,223 @@ def test_update_config_persists_encryption_enabled(login_as, tmp_path) -> None:
 
     assert updated.encryption_enabled is True
     assert stack.backups.get_config().encryption_enabled is True
+
+
+# -- mission corrective « Correction et validation sous Windows », point n°1 ---
+# -- sécurité de la clé de chiffrement (empreinte persistée) -------------------
+
+
+def _stored_fingerprint(settings):
+    from app.repositories.parameter_repository import ParameterRepository
+
+    with session_scope(settings) as session:
+        return ParameterRepository(session).get_value("backup.encryption_key_fingerprint")
+
+
+def test_activating_encryption_the_first_time_generates_a_key_and_stores_its_fingerprint(
+    login_as, tmp_path
+) -> None:
+    from app.services.backups import archive_encryption
+
+    stack, _ = login_as("Administrateur")
+    vault = _FakeEncryptionVault()
+    stack.backups._encryption_vault = vault
+    destination = tmp_path / "backups"
+
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(destination),
+        retention=10, encryption_enabled=True,
+    )
+
+    key = archive_encryption.require_existing_encryption_key(vault)
+    assert _stored_fingerprint(get_settings()) == archive_encryption.fingerprint_of(key)
+
+
+def test_activating_encryption_with_an_already_configured_key_never_regenerates_it(
+    login_as, tmp_path
+) -> None:
+    from app.services.backups import archive_encryption
+
+    stack, _ = login_as("Administrateur")
+    vault = _FakeEncryptionVault()
+    stack.backups._encryption_vault = vault
+    pre_existing_key = archive_encryption.ensure_encryption_key(vault)
+
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(tmp_path / "backups"),
+        retention=10, encryption_enabled=True,
+    )
+
+    assert archive_encryption.require_existing_encryption_key(vault) == pre_existing_key
+    assert _stored_fingerprint(get_settings()) == archive_encryption.fingerprint_of(pre_existing_key)
+
+
+def test_activating_encryption_refuses_to_generate_a_new_key_when_a_previous_one_is_known_lost(
+    login_as, tmp_path
+) -> None:
+    """Scénario central de l'ajustement n°1 : la clé a existé sur ce poste
+    (empreinte persistée), puis le coffre a été vidé/réinitialisé — jamais
+    une nouvelle clé générée automatiquement dans ce cas, quel que soit le
+    contenu (même vide) du dossier de destination actuellement configuré :
+    les archives protégées par l'ancienne clé pourraient très bien avoir
+    été déplacées ailleurs depuis."""
+    stack, _ = login_as("Administrateur")
+    stack.backups._encryption_vault = _FakeEncryptionVault()
+    destination = tmp_path / "backups"
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(destination),
+        retention=10, encryption_enabled=True,
+    )
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(destination),
+        retention=10, encryption_enabled=False,
+    )
+    # Simule un coffre réinitialisé (ex. changement d'ordinateur, profil
+    # Windows recréé) : vide, alors que l'empreinte, elle, reste persistée
+    # dans la base de données (jamais effacée par une simple désactivation
+    # du chiffrement, voir ci-dessus).
+    stack.backups._encryption_vault = _FakeEncryptionVault()
+
+    with pytest.raises(ValidationError, match="déjà été utilisée"):
+        stack.backups.update_config(
+            auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(destination),
+            retention=10, encryption_enabled=True,
+        )
+    # Refus explicite : jamais activé entre-temps.
+    assert stack.backups.get_config().encryption_enabled is False
+
+
+def test_activating_encryption_refuses_when_destination_already_holds_an_encrypted_archive(
+    login_as, tmp_path
+) -> None:
+    """Défense en profondeur si l'empreinte elle-même a été perdue
+    (ex. ligne supprimée manuellement de la table ``parametres``) : une
+    archive déjà chiffrée visible dans le dossier de destination
+    configuré doit, à elle seule, empêcher la génération automatique
+    d'une nouvelle clé."""
+    from app.services.backups import archive_manifest
+
+    stack, _ = login_as("Administrateur")
+    destination = tmp_path / "backups"
+    destination.mkdir()
+    archive = destination / "stockmanager_backup_20200101_020000.db"
+    archive.write_bytes(b"ancienne archive chiffree (contenu simule)")
+    archive_manifest.write_manifest_for(
+        archive, db_engine="sqlite", schema_version="0018",
+        backup_type=archive_manifest.BACKUP_TYPE_LOCAL, encrypted=True,
+    )
+    stack.backups._encryption_vault = _FakeEncryptionVault()
+
+    with pytest.raises(ValidationError, match="déjà été utilisée"):
+        stack.backups.update_config(
+            auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(destination),
+            retention=10, encryption_enabled=True,
+        )
+
+
+def test_activating_encryption_fails_explicitly_when_the_vault_is_unavailable(login_as, tmp_path) -> None:
+    from app.utils.exceptions import CredentialVaultUnavailableError
+
+    class _UnavailableVault:
+        def get_password(self, profile_id):
+            raise CredentialVaultUnavailableError("coffre simulé indisponible")
+
+        def set_password(self, profile_id, password):
+            raise CredentialVaultUnavailableError("coffre simulé indisponible")
+
+        def delete_password(self, profile_id):
+            raise CredentialVaultUnavailableError("coffre simulé indisponible")
+
+    stack, _ = login_as("Administrateur")
+    stack.backups._encryption_vault = _UnavailableVault()
+
+    with pytest.raises(ValidationError, match="coffre d'identifiants Windows"):
+        stack.backups.update_config(
+            auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(tmp_path / "backups"),
+            retention=10, encryption_enabled=True,
+        )
+    assert stack.backups.get_config().encryption_enabled is False
+
+
+def test_import_encryption_key_updates_the_stored_fingerprint(login_as, tmp_path) -> None:
+    from app.services.backups import archive_encryption
+
+    stack, _ = login_as("Administrateur")
+    old_vault = _FakeEncryptionVault()
+    stack.backups._encryption_vault = old_vault
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(tmp_path / "backups"),
+        retention=10, encryption_enabled=True,
+    )
+    transfer_file = tmp_path / "cle.json"
+    stack.backups.export_encryption_key(str(transfer_file), "mot-de-passe-solide")
+
+    new_vault = _FakeEncryptionVault()
+    stack.backups._encryption_vault = new_vault
+    stack.backups.import_encryption_key(str(transfer_file), "mot-de-passe-solide")
+
+    imported_key = archive_encryption.require_existing_encryption_key(new_vault)
+    assert _stored_fingerprint(get_settings()) == archive_encryption.fingerprint_of(imported_key)
+
+
+class TestEncryptionStatus:
+    """Mission corrective, §3.3/§5.4 : jamais confondre « chiffrement
+    activé » (paramètre) et « clé réellement disponible » (coffre)."""
+
+    def test_disabled_when_encryption_is_off(self, login_as) -> None:
+        stack, _ = login_as("Administrateur")
+
+        assert stack.backups.encryption_status() == "disabled"
+
+    def test_ready_when_enabled_with_a_configured_key(self, login_as, tmp_path) -> None:
+        stack, _ = login_as("Administrateur")
+        stack.backups._encryption_vault = _FakeEncryptionVault()
+        stack.backups.update_config(
+            auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(tmp_path / "backups"),
+            retention=10, encryption_enabled=True,
+        )
+
+        assert stack.backups.encryption_status() == "ready"
+
+    def test_key_missing_when_enabled_but_vault_has_no_key(self, login_as, tmp_path, monkeypatch) -> None:
+        stack, _ = login_as("Administrateur")
+        stack.backups._encryption_vault = _FakeEncryptionVault()
+        stack.backups.update_config(
+            auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(tmp_path / "backups"),
+            retention=10, encryption_enabled=True,
+        )
+        stack.backups._encryption_vault = _FakeEncryptionVault()  # coffre vidé après coup
+
+        assert stack.backups.encryption_status() == "key_missing"
+
+    def test_vault_unavailable_when_enabled_but_vault_raises(self, login_as, tmp_path) -> None:
+        from app.utils.exceptions import CredentialVaultUnavailableError
+
+        class _UnavailableVault:
+            def get_password(self, profile_id):
+                raise CredentialVaultUnavailableError("simulation")
+
+            def set_password(self, profile_id, password):
+                raise CredentialVaultUnavailableError("simulation")
+
+            def delete_password(self, profile_id):
+                raise CredentialVaultUnavailableError("simulation")
+
+        stack, _ = login_as("Administrateur")
+        stack.backups._encryption_vault = _FakeEncryptionVault()
+        stack.backups.update_config(
+            auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(tmp_path / "backups"),
+            retention=10, encryption_enabled=True,
+        )
+        stack.backups._encryption_vault = _UnavailableVault()
+
+        assert stack.backups.encryption_status() == "vault_unavailable"
+
+    def test_requires_view_permission(self, login_as) -> None:
+        stack, _ = login_as("Vendeur")
+
+        with pytest.raises(PermissionDeniedError):
+            stack.backups.encryption_status()
 
 
 def test_create_manual_backup_writes_a_manifest(login_as, tmp_path) -> None:
@@ -968,11 +1210,11 @@ def test_export_then_import_round_trip_allows_decrypting_on_a_second_vault(login
     second ordinateur)."""
     stack, _ = login_as("Administrateur")
     destination = tmp_path / "backups"
+    stack.backups._encryption_vault = _FakeEncryptionVault()
     stack.backups.update_config(
         auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(destination),
         retention=10, encryption_enabled=True,
     )
-    stack.backups._encryption_vault = _FakeEncryptionVault()
     backup_result = stack.backups.create_manual_backup()
     assert backup_result.success is True
 
@@ -1032,12 +1274,12 @@ def test_test_encryption_key_against_archive_only_requires_view_permission(login
 
     admin_stack, _ = login_as("Administrateur")
     destination = tmp_path / "backups"
+    vault = _FakeEncryptionVault()
+    admin_stack.backups._encryption_vault = vault
     admin_stack.backups.update_config(
         auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(destination),
         retention=10, encryption_enabled=True,
     )
-    vault = _FakeEncryptionVault()
-    admin_stack.backups._encryption_vault = vault
     backup_result = admin_stack.backups.create_manual_backup()
 
     consultation_stack, _ = login_as("Consultation")

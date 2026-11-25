@@ -6,7 +6,7 @@ from app.config.settings import get_settings
 from app.db.session import session_scope
 from app.models.audit import AuditLog
 from app.models.enums import ResultatAudit
-from app.services.backups import archive_manifest
+from app.services.backups import archive_manifest, external_media
 from app.services.backups.external_backup_service import MAX_RETENTION, MIN_RETENTION
 from app.utils.exceptions import PermissionDeniedError, ValidationError
 
@@ -65,8 +65,158 @@ def test_configure_media_rejects_empty_label(login_as, tmp_path) -> None:
         stack.external_backups.configure_media(drive, "   ")
 
 
+# -- mission corrective §1/§3.1/§2.4 : pipeline robuste de configuration -------
+
+
+def test_configure_media_rejects_a_root_that_does_not_exist(login_as, tmp_path) -> None:
+    """Scénario exact diagnostiqué dans son principe (jamais une
+    confirmation de succès pour un support qui ne peut pas réellement
+    être retrouvé ensuite) : un support absent au moment de la
+    configuration doit être refusé explicitement, jamais accepté avec un
+    message générique de succès."""
+    stack, _ = login_as("Administrateur")
+
+    with pytest.raises(ValidationError, match="n'existe pas"):
+        stack.external_backups.configure_media(tmp_path / "support_absent", "Support")
+
+
+def test_configure_media_rejects_a_root_that_refuses_writes(login_as, tmp_path, monkeypatch) -> None:
+    drive = tmp_path / "usb"
+    drive.mkdir()
+    stack, _ = login_as("Administrateur")
+    monkeypatch.setattr(
+        "app.services.backups.external_backup_service.check_root_accessible",
+        lambda root: "simulation : accès en écriture refusé.",
+    )
+
+    with pytest.raises(ValidationError, match="accès en écriture refusé"):
+        stack.external_backups.configure_media(drive, "Support")
+
+
+def test_configure_media_refuses_success_when_the_marker_cannot_be_reread(
+    login_as, tmp_path, monkeypatch
+) -> None:
+    """Mission corrective, §1/§3.1 : le défaut diagnostiqué était « succès
+    affiché, test d'accessibilité en échec immédiat ensuite » — même si
+    ``create_marker`` n'a levé aucune exception, une relecture qui ne
+    retrouve pas exactement ce qui vient d'être écrit doit faire échouer
+    la configuration elle-même, jamais seulement le test ultérieur."""
+    drive = tmp_path / "usb"
+    drive.mkdir()
+    stack, _ = login_as("Administrateur")
+    monkeypatch.setattr(
+        "app.services.backups.external_backup_service.read_marker", lambda root: None,
+    )
+
+    with pytest.raises(ValidationError, match="relu"):
+        stack.external_backups.configure_media(drive, "Support")
+
+    # Rien n'a été persisté : aucune configuration partielle.
+    config = stack.external_backups.get_config()
+    assert config.is_configured is False
+
+
+def test_a_failed_reconfiguration_attempt_never_erases_the_previous_working_configuration(
+    login_as, tmp_path,
+) -> None:
+    """Un support déjà configuré avec succès reste la configuration
+    active si une TENTATIVE ultérieure de reconfiguration échoue (racine
+    inexistante, support retiré avant validation, etc.) — jamais une
+    perte silencieuse de la configuration précédente qui fonctionnait
+    (même principe que la protection des archives : configure_media
+    n'écrit la nouvelle configuration qu'après son pipeline de
+    vérifications complet, voir §1/§3.1 du mandat correctif)."""
+    stack, _ = login_as("Administrateur")
+    working_drive = tmp_path / "usb"
+    working_drive.mkdir()
+    stack.external_backups.configure_media(working_drive, "Support fonctionnel")
+
+    with pytest.raises(ValidationError, match="n'existe pas"):
+        stack.external_backups.configure_media(tmp_path / "support-inexistant", "Nouveau support")
+
+    config = stack.external_backups.get_config()
+    assert config.is_configured is True
+    assert config.label == "Support fonctionnel"
+
+
+def test_configure_media_normalizes_a_bare_drive_letter_before_writing_the_marker(
+    login_as, tmp_path, monkeypatch
+) -> None:
+    """Reproduit directement la cause racine diagnostiquée : une forme
+    ``« E: »`` sans barre finale (chemin relatif au lecteur en
+    pathlib/Windows, jamais sa racine) doit être normalisée AVANT toute
+    écriture — vérifié ici en interceptant l'appel à ``create_marker`` et
+    en confirmant qu'il reçoit bien la racine canonique, jamais la forme
+    brute reçue."""
+    from app.services.backups import external_backup_service as ebs
+
+    drive = tmp_path / "usb"
+    drive.mkdir()
+    stack, _ = login_as("Administrateur")
+    received_roots = []
+    original_create_marker = ebs.create_marker
+
+    def _spy_create_marker(root, label):
+        received_roots.append(root)
+        return original_create_marker(root, label)
+
+    monkeypatch.setattr(ebs, "normalize_drive_root", lambda path: drive)
+    monkeypatch.setattr(ebs, "create_marker", _spy_create_marker)
+
+    stack.external_backups.configure_media("E:", "Support")
+
+    assert received_roots == [drive]
+
+
+def test_reconfiguring_the_same_media_never_deletes_its_existing_archives(login_as, tmp_path) -> None:
+    """§2.4 du mandat : « ne jamais supprimer ses archives existantes lors
+    de sa configuration » — reconfigurer (ré-associer) le même support,
+    ou un nouveau, ne doit jamais toucher aux fichiers déjà présents sur
+    le support physique lui-même."""
+    stack, _ = login_as("Administrateur")
+    drive = tmp_path / "usb"
+    drive.mkdir()
+    existing_archive = drive / "StockManager_Sauvegardes" / "stockmanager_backup_20200101_020000.db"
+    existing_archive.parent.mkdir(parents=True)
+    existing_archive.write_bytes(b"ancienne archive")
+
+    stack.external_backups.configure_media(drive, "Premier nom")
+    stack.external_backups.configure_media(drive, "Nouveau nom")
+
+    assert existing_archive.exists()
+    assert existing_archive.read_bytes() == b"ancienne archive"
+
+
+def test_list_available_drives_requires_permission(login_as) -> None:
+    from app.utils.exceptions import PermissionDeniedError
+
+    stack, _ = login_as("Vendeur")
+
+    with pytest.raises(PermissionDeniedError):
+        stack.external_backups.list_available_drives()
+
+
+def test_list_available_drives_delegates_to_external_media(login_as, tmp_path, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    drive = tmp_path / "usb"
+    drive.mkdir()
+    stack.external_backups._media_roots_provider = lambda: [drive]
+    monkeypatch.setattr(
+        external_media, "list_drives_with_info",
+        lambda **kwargs: [
+            external_media.DriveInfo(root=drive, drive_type="removable", volume_label="USB", marker=None)
+        ],
+    )
+
+    drives = stack.external_backups.list_available_drives()
+
+    assert len(drives) == 1
+    assert drives[0].root == drive
+
+
 def test_update_config_rejects_retention_below_minimum(login_as, tmp_path) -> None:
     stack, _ = login_as("Administrateur")
+    (tmp_path / "usb").mkdir()
     stack.external_backups.configure_media(tmp_path / "usb", "Support")
 
     with pytest.raises(ValidationError):
@@ -75,6 +225,7 @@ def test_update_config_rejects_retention_below_minimum(login_as, tmp_path) -> No
 
 def test_update_config_rejects_retention_above_maximum(login_as, tmp_path) -> None:
     stack, _ = login_as("Administrateur")
+    (tmp_path / "usb").mkdir()
     stack.external_backups.configure_media(tmp_path / "usb", "Support")
 
     with pytest.raises(ValidationError):
@@ -83,6 +234,7 @@ def test_update_config_rejects_retention_above_maximum(login_as, tmp_path) -> No
 
 def test_update_config_accepts_boundary_retention_values(login_as, tmp_path) -> None:
     stack, _ = login_as("Administrateur")
+    (tmp_path / "usb").mkdir()
     stack.external_backups.configure_media(tmp_path / "usb", "Support")
 
     low = stack.external_backups.update_config(enabled=False, retention=MIN_RETENTION)
@@ -101,6 +253,7 @@ def test_update_config_rejects_enabling_without_configured_media(login_as) -> No
 
 def test_update_config_succeeds_after_media_configured(login_as, tmp_path) -> None:
     stack, _ = login_as("Administrateur")
+    (tmp_path / "usb").mkdir()
     stack.external_backups.configure_media(tmp_path / "usb", "Support")
 
     config = stack.external_backups.update_config(enabled=True, retention=40)
@@ -145,6 +298,54 @@ def test_media_not_accessible_when_not_configured(login_as) -> None:
     stack, _ = login_as("Administrateur")
 
     assert stack.external_backups.test_media_accessible() is False
+
+
+def test_media_still_recognized_after_a_simulated_drive_letter_change(login_as, tmp_path) -> None:
+    """§3.4 du mandat : le support doit rester reconnu même si Windows lui
+    attribue une lettre différente — jamais une lettre mémorisée, toujours
+    l'identifiant du marqueur retrouvé parmi les lecteurs actuellement
+    montés, quelle que soit leur lettre."""
+    stack, _ = login_as("Administrateur")
+    first_root = tmp_path / "e_drive"
+    first_root.mkdir()
+    stack.external_backups.configure_media(first_root, "Support")
+
+    # Simule un rebranchement sous une lettre différente : le même disque
+    # physique (même marqueur, donc même identité) apparaît maintenant à
+    # un chemin différent — jamais le même objet Path que la configuration
+    # initiale.
+    second_root = tmp_path / "f_drive"
+    second_root.mkdir()
+    import shutil
+
+    shutil.move(str(first_root / external_media.MARKER_DIRNAME), str(second_root / external_media.MARKER_DIRNAME))
+    stack.external_backups._media_roots_provider = lambda: [second_root]
+
+    assert stack.external_backups.test_media_accessible() is True
+    assert stack.external_backups.find_current_media_root() == second_root
+
+
+def test_reformatted_media_is_never_silently_recognized(login_as, tmp_path) -> None:
+    """§3.4/§2.4 du mandat : un support reformaté (marqueur disparu) ne
+    doit jamais être reconnu à tort — ``marker_id`` reste enregistré côté
+    StockManager, mais le support doit être signalé inaccessible tant
+    qu'une nouvelle configuration explicite n'a pas été faite, jamais une
+    correspondance approximative sur le seul chemin ou le seul libellé."""
+    stack, _ = login_as("Administrateur")
+    drive = tmp_path / "usb"
+    drive.mkdir()
+    stack.external_backups.configure_media(drive, "Support")
+
+    # Reformatage simulé : le marqueur disparaît, le support (même chemin,
+    # même lettre) reste physiquement présent.
+    import shutil
+
+    shutil.rmtree(drive / external_media.MARKER_DIRNAME)
+
+    config = stack.external_backups.get_config()
+    assert config.is_configured is True  # toujours "configuré" du point de vue de StockManager
+    assert stack.external_backups.test_media_accessible() is False
+    assert stack.external_backups.find_current_media_root() is None
 
 
 # -- copie ------------------------------------------------------------------------

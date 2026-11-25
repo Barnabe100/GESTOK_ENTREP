@@ -65,6 +65,47 @@ class TestErrorTranslation:
         with pytest.raises(stm.ScheduledTaskError):
             stm.create_or_repair_task("StockManager - Sauvegarde", "C:/StockManager/StockManager.exe", [], "20:00")
 
+    def test_create_or_repair_task_error_message_contains_the_real_windows_cause(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Mission corrective « Correction et validation du module de
+        sauvegarde sous Windows », §4.3 : jamais seulement « code 1 » —
+        toujours le détail Windows réel (``stderr``), ici à l'utilisateur
+        et pas seulement au journal (voir ``_sanitized_stderr_excerpt``)."""
+        import subprocess
+
+        monkeypatch.setattr(
+            stm, "_run_schtasks",
+            lambda args: subprocess.CompletedProcess(
+                args, returncode=1, stdout="",
+                stderr="ERROR: The filename, directory name, or volume label syntax is incorrect.",
+            ),
+        )
+
+        with pytest.raises(stm.ScheduledTaskError, match="filename, directory name, or volume label"):
+            stm.create_or_repair_task("StockManager - Sauvegarde", "C:/StockManager/StockManager.exe", [], "20:00")
+
+    def test_create_or_repair_task_cleans_up_temp_xml_file_even_on_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from pathlib import Path
+
+        import subprocess
+
+        captured_path = {}
+
+        def _fake_run_schtasks(args):
+            captured_path["path"] = Path(args[args.index("/xml") + 1])
+            assert captured_path["path"].exists()
+            return subprocess.CompletedProcess(args, returncode=1, stdout="", stderr="Échec simulé.")
+
+        monkeypatch.setattr(stm, "_run_schtasks", _fake_run_schtasks)
+
+        with pytest.raises(stm.ScheduledTaskError):
+            stm.create_or_repair_task("StockManager - Sauvegarde", "C:/StockManager/StockManager.exe", [], "20:00")
+
+        assert not captured_path["path"].exists()
+
     def test_delete_task_raises_on_permission_denied(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import subprocess
 
@@ -118,21 +159,112 @@ class TestValidateTimeOfDay:
             stm._validate_time_of_day(invalid)
 
 
-class TestBuildTaskRunValue:
-    def test_quotes_executable_path(self) -> None:
-        value = stm._build_task_run_value("C:/Program Files/StockManager/StockManager.exe", [])
+class TestBuildTaskXml:
+    """Mission corrective « Correction et validation du module de
+    sauvegarde sous Windows », §3.2 : la définition de tâche est désormais
+    un document XML (``schtasks /create /xml``), jamais une valeur ``/tr``
+    en ligne de commande — ``executable``/``arguments`` vivent dans des
+    éléments XML distincts (``<Command>``/``<Arguments>``), jamais
+    concaténés en une seule chaîne nécessitant des guillemets imbriqués
+    (voir la docstring de module de ``scheduled_task_manager`` pour le
+    défaut ainsi éliminé, confirmé par simulation de
+    ``subprocess.list2cmdline`` lors du diagnostic)."""
 
-        assert value == '"C:/Program Files/StockManager/StockManager.exe"'
+    @staticmethod
+    def _parse(xml_bytes: bytes):
+        import xml.etree.ElementTree as ET
 
-    def test_appends_arguments_unquoted(self) -> None:
-        value = stm._build_task_run_value("C:/StockManager/StockManager.exe", ["--run-backup-agent"])
+        return ET.fromstring(xml_bytes.decode("utf-16"))
 
-        assert value == '"C:/StockManager/StockManager.exe" --run-backup-agent'
+    def test_is_encoded_as_utf16_with_declaration(self) -> None:
+        xml_bytes = stm._build_task_xml(
+            "C:/StockManager/StockManager.exe", ["--run-backup-agent"],
+            schedule=stm.SCHEDULE_DAILY, time_of_day="20:00",
+        )
 
-    def test_supports_multiple_arguments(self) -> None:
-        value = stm._build_task_run_value("app.exe", ["--a", "--b"])
+        assert xml_bytes.startswith(b"\xff\xfe")  # BOM UTF-16 LE
+        assert "utf-16" in xml_bytes.decode("utf-16").splitlines()[0].lower()
 
-        assert value == '"app.exe" --a --b'
+    def test_command_and_arguments_are_never_concatenated_or_requoted(self) -> None:
+        """Régression directe du défaut diagnostiqué : un exécutable dont
+        le chemin contient un espace (ex. « Program Files ») ne doit
+        jamais produire de guillemets échappés imbriqués — ``<Command>``
+        contient le chemin tel quel, sans aucun guillemet ajouté."""
+        xml_bytes = stm._build_task_xml(
+            "C:/Program Files/StockManager/StockManager.exe", ["--run-backup-agent"],
+            schedule=stm.SCHEDULE_DAILY, time_of_day="20:00",
+        )
+
+        root = self._parse(xml_bytes)
+        ns = {"t": stm._TASK_XML_NS}
+        command = root.find(".//t:Actions/t:Exec/t:Command", ns)
+        arguments = root.find(".//t:Actions/t:Exec/t:Arguments", ns)
+
+        assert command.text == "C:/Program Files/StockManager/StockManager.exe"
+        assert '"' not in command.text
+        assert arguments.text == "--run-backup-agent"
+
+    def test_daily_schedule_builds_a_calendar_trigger(self) -> None:
+        xml_bytes = stm._build_task_xml(
+            "C:/StockManager/StockManager.exe", ["--run-backup-agent"],
+            schedule=stm.SCHEDULE_DAILY, time_of_day="20:00",
+        )
+
+        root = self._parse(xml_bytes)
+        ns = {"t": stm._TASK_XML_NS}
+        trigger = root.find(".//t:Triggers/t:CalendarTrigger", ns)
+        assert trigger is not None
+        assert trigger.find("t:StartBoundary", ns).text.endswith("T20:00:00")
+        assert trigger.find("t:ScheduleByDay/t:DaysInterval", ns).text == "1"
+        assert root.find(".//t:Triggers/t:LogonTrigger", ns) is None
+
+    def test_onlogon_schedule_builds_a_logon_trigger_without_time(self) -> None:
+        xml_bytes = stm._build_task_xml(
+            "C:/StockManager/StockManager.exe", ["--run-backup-agent"],
+            schedule=stm.SCHEDULE_ONLOGON, time_of_day="heure ignorée pour ce déclencheur",
+        )
+
+        root = self._parse(xml_bytes)
+        ns = {"t": stm._TASK_XML_NS}
+        assert root.find(".//t:Triggers/t:LogonTrigger", ns) is not None
+        assert root.find(".//t:Triggers/t:CalendarTrigger", ns) is None
+
+    def test_daily_schedule_still_validates_time_of_day(self) -> None:
+        with pytest.raises(stm.ScheduledTaskError):
+            stm._build_task_xml(
+                "C:/StockManager/StockManager.exe", [], schedule=stm.SCHEDULE_DAILY, time_of_day="heure invalide",
+            )
+
+    def test_principal_never_requests_elevation_or_stored_credentials(self) -> None:
+        """§4 du mandat initial : jamais d'élévation, jamais
+        d'identifiants stockés — ``InteractiveToken``/``LeastPrivilege``,
+        jamais ``Password``/``S4U``/``HighestAvailable``."""
+        xml_bytes = stm._build_task_xml(
+            "C:/StockManager/StockManager.exe", [], schedule=stm.SCHEDULE_DAILY, time_of_day="20:00",
+        )
+
+        root = self._parse(xml_bytes)
+        ns = {"t": stm._TASK_XML_NS}
+        principal = root.find(".//t:Principals/t:Principal", ns)
+        assert principal.find("t:LogonType", ns).text == "InteractiveToken"
+        assert principal.find("t:RunLevel", ns).text == "LeastPrivilege"
+
+    def test_never_skips_backups_on_battery_power(self) -> None:
+        """Un poste portable ne doit jamais sauter silencieusement sa
+        sauvegarde planifiée simplement parce qu'il fonctionne sur
+        batterie — contrairement au réglage par défaut de l'interface
+        graphique du Planificateur de tâches."""
+        xml_bytes = stm._build_task_xml(
+            "C:/StockManager/StockManager.exe", [], schedule=stm.SCHEDULE_DAILY, time_of_day="20:00",
+        )
+
+        root = self._parse(xml_bytes)
+        ns = {"t": stm._TASK_XML_NS}
+        settings = root.find(".//t:Settings", ns)
+        assert settings.find("t:DisallowStartIfOnBatteries", ns).text == "false"
+        assert settings.find("t:StopIfGoingOnBatteries", ns).text == "false"
+        assert settings.find("t:StartWhenAvailable", ns).text == "true"
+        assert settings.find("t:MultipleInstancesPolicy", ns).text == "IgnoreNew"
 
 
 class TestParseSchtasksVerboseList:
@@ -184,11 +316,22 @@ class TestOnLogonSchedule:
         monkeypatch.setattr(stm.sys, "platform", "win32")
 
     def test_onlogon_builds_the_right_schtasks_arguments(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Depuis le passage à ``/xml`` (mission corrective, §3.2), la
+        commande ``schtasks`` elle-même ne porte plus ``/sc``/``/st`` — le
+        type de déclencheur vit désormais dans le fichier XML référencé
+        par ``/xml`` (voir ``TestBuildTaskXml`` pour son contenu) ; ce test
+        vérifie que c'est bien ce fichier, portant un ``LogonTrigger``, qui
+        est transmis, et qu'il est supprimé après l'appel."""
+        import subprocess
+        from pathlib import Path
+
         captured = {}
 
         def _fake_run_schtasks(args):
             captured["args"] = args
-            import subprocess
+            xml_path = Path(args[args.index("/xml") + 1])
+            captured["xml_content"] = xml_path.read_bytes()
+            captured["xml_path"] = xml_path
             return subprocess.CompletedProcess(args, returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(stm, "_run_schtasks", _fake_run_schtasks)
@@ -198,9 +341,10 @@ class TestOnLogonSchedule:
             "20:00", schedule=stm.SCHEDULE_ONLOGON,
         )
 
-        assert "/onlogon" not in captured["args"]  # schtasks attend "onlogon" sans slash après /sc
-        assert captured["args"][captured["args"].index("/sc") + 1] == "onlogon"
-        assert "/st" not in captured["args"]  # jamais transmis pour ce type de déclencheur
+        assert "/sc" not in captured["args"]  # porté par le XML désormais, jamais en ligne de commande
+        assert "/st" not in captured["args"]
+        assert "LogonTrigger" in captured["xml_content"].decode("utf-16")
+        assert not captured["xml_path"].exists()  # fichier temporaire toujours nettoyé après l'appel
 
     def test_onlogon_never_validates_time_of_day(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Une heure invalide ne doit jamais faire échouer une tâche
