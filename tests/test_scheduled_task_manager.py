@@ -170,3 +170,56 @@ class TestParseSchtasksVerboseList:
         fields = stm._parse_schtasks_verbose_list("ligne sans deux-points\nStatus: Disabled")
 
         assert fields == {"status": "Disabled"}
+
+
+class TestOnLogonSchedule:
+    """Mission corrective « Fiabilisation du module de sauvegarde », §3.5 :
+    déclencheur à l'ouverture de session, en complément du quotidien —
+    jamais invoqué réellement sur schtasks.exe ici (voir
+    test_scheduled_task_manager_windows_integration.py pour l'intégration
+    Windows réelle), seulement la construction de la ligne de commande."""
+
+    @pytest.fixture(autouse=True)
+    def _force_windows_guard(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(stm.sys, "platform", "win32")
+
+    def test_onlogon_builds_the_right_schtasks_arguments(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured = {}
+
+        def _fake_run_schtasks(args):
+            captured["args"] = args
+            import subprocess
+            return subprocess.CompletedProcess(args, returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(stm, "_run_schtasks", _fake_run_schtasks)
+
+        stm.create_or_repair_task(
+            "StockManager - Sauvegarde (ouverture de session)", "C:/StockManager/StockManager.exe", [],
+            "20:00", schedule=stm.SCHEDULE_ONLOGON,
+        )
+
+        assert "/onlogon" not in captured["args"]  # schtasks attend "onlogon" sans slash après /sc
+        assert captured["args"][captured["args"].index("/sc") + 1] == "onlogon"
+        assert "/st" not in captured["args"]  # jamais transmis pour ce type de déclencheur
+
+    def test_onlogon_never_validates_time_of_day(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Une heure invalide ne doit jamais faire échouer une tâche
+        « onlogon », puisqu'elle n'est de toute façon jamais utilisée."""
+        import subprocess
+
+        monkeypatch.setattr(
+            stm, "_run_schtasks",
+            lambda args: subprocess.CompletedProcess(args, returncode=0, stdout="", stderr=""),
+        )
+
+        stm.create_or_repair_task(
+            "StockManager - Sauvegarde (ouverture de session)", "C:/StockManager/StockManager.exe", [],
+            "heure invalide", schedule=stm.SCHEDULE_ONLOGON,
+        )  # ne doit jamais lever.
+
+    def test_daily_schedule_still_requires_a_valid_time(self) -> None:
+        with pytest.raises(stm.ScheduledTaskError):
+            stm.create_or_repair_task(
+                "StockManager - Sauvegarde", "C:/StockManager/StockManager.exe", [],
+                "heure invalide", schedule=stm.SCHEDULE_DAILY,
+            )

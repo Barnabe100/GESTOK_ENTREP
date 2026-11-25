@@ -582,16 +582,17 @@ Deux chemins, tous deux portés par le même mécanisme de service interne (jama
 
 Dans les deux cas, la restauration suit un ordre strict et sécurisé :
 1. Vérification d'intégrité du fichier de sauvegarde choisi (déchiffrement préalable si l'archive est chiffrée).
-2. Vérification que sa version de schéma correspond à celle de la base actuelle, et que son moteur (SQLite/PostgreSQL) correspond au moteur actif.
+2. Vérification que son moteur (SQLite/PostgreSQL) correspond au moteur actif, et que sa version de schéma est soit identique à celle de la base actuelle, soit **antérieure et compatible** (une version plus ancienne mais pour laquelle aucune migration n'a jamais été retirée) — une version plus récente que l'application actuelle, ou incompatible, est refusée.
 3. **Création automatique d'une sauvegarde de sécurité de la base actuelle avant toute écriture** (préfixe dédié, jamais supprimée par la rotation automatique).
-4. Remplacement effectif de la base de données.
-5. En cas d'échec à cette étape, tentative automatique de restauration de la sauvegarde de sécurité créée à l'étape 3.
+4. Remplacement effectif de la base de données : la base active n'est jamais modifiée tant que la copie restaurée n'est pas intégralement recopiée et vérifiée — une interruption pendant cette étape (coupure de courant, fermeture forcée) laisse donc toujours la base active intacte, sans jamais nécessiter de restauration de secours automatique.
+5. Si la sauvegarde restaurée était à une version de schéma antérieure (étape 2), le schéma est automatiquement mis à niveau vers la version actuelle juste après, exactement comme au premier démarrage de l'application. Si cette mise à niveau échoue, la base est automatiquement rétablie dans son état d'avant restauration à partir de la sauvegarde de sécurité de l'étape 3.
+6. Le dossier de destination des sauvegardes, qui fait partie des données restaurées, est revérifié automatiquement sur ce poste : s'il n'existe pas ou n'est plus accessible en écriture (cas typique d'un changement d'ordinateur, voir ci-dessous), StockManager le signale immédiatement et propose de choisir un nouveau dossier.
 
 Un redémarrage de l'application est nécessaire après une restauration réussie.
 
 ### Récupération après panne ou changement d'ordinateur
 
-C'est le scénario que couvre spécifiquement l'assistant de restauration ci-dessus : après installation de StockManager sur un nouvel ordinateur (et importation de la licence si nécessaire), ouvrir le menu Sauvegardes, cliquer sur « Assistant de restauration… », brancher le support externe contenant la dernière sauvegarde externe du poste précédent, puis sélectionner l'archive à restaurer. La configuration de la sauvegarde locale et de la protection externe elles-mêmes n'est pas transférée automatiquement : elle doit être reconfigurée une fois sur le nouveau poste.
+C'est le scénario que couvre spécifiquement l'assistant de restauration ci-dessus : après installation de StockManager sur un nouvel ordinateur (et importation de la licence si nécessaire), ouvrir le menu Sauvegardes, cliquer sur « Assistant de restauration… », brancher le support externe contenant la dernière sauvegarde externe du poste précédent, puis sélectionner l'archive à restaurer. La configuration de la sauvegarde locale et de la protection externe (fréquence, rétention, dossier de destination, activation) est en réalité transférée automatiquement avec le reste des données, puisqu'elle fait partie de la base restaurée — elle n'a donc normalement pas besoin d'être ressaisie. Le dossier de destination indiqué peut toutefois très bien ne pas exister sur ce nouvel ordinateur (ex. un chemin propre au poste précédent) : StockManager le détecte automatiquement juste après la restauration et propose alors de choisir un nouveau dossier (voir l'étape 6 ci-dessus). Seule la **tâche planifiée Windows** elle-même n'est jamais transférée automatiquement (elle est propre à chaque système Windows, jamais stockée dans la base de données) : cliquer sur « Configurer/réparer la tâche planifiée Windows… » pour la recréer sur ce nouveau poste.
 
 ### Précautions
 

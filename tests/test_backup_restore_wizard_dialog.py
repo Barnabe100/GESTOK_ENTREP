@@ -1,7 +1,10 @@
+from pathlib import Path
+
 import pytest
+from PySide6.QtWidgets import QMessageBox
 
 from app.services.backups import archive_manifest
-from app.services.backups.backup_service import RestoreResult
+from app.services.backups.backup_service import BackupConfig, RestoreResult
 from app.utils.exceptions import ValidationError
 from app.views.backup_restore_wizard_dialog import BackupRestoreWizardDialog
 
@@ -26,6 +29,11 @@ class _FakeBackupService:
         self._restore_result = restore_result
         self._restore_error = restore_error
         self.restore_calls: list[str] = []
+        self.update_config_calls: list[dict] = []
+        self._config = BackupConfig(
+            auto_enabled=False, frequency="daily", time_of_day="02:00",
+            destination=Path("/ancien/dossier"), retention=30,
+        )
 
     def active_engine(self) -> str:
         return self._active_engine
@@ -38,6 +46,17 @@ class _FakeBackupService:
         if self._restore_error is not None:
             raise self._restore_error
         return self._restore_result
+
+    def get_config(self) -> BackupConfig:
+        return self._config
+
+    def update_config(self, **kwargs):
+        self.update_config_calls.append(kwargs)
+        self._config = BackupConfig(
+            auto_enabled=kwargs["auto_enabled"], frequency=kwargs["frequency"], time_of_day=kwargs["time_of_day"],
+            destination=Path(kwargs["destination"]), retention=kwargs["retention"],
+            encryption_enabled=kwargs.get("encryption_enabled", False),
+        )
 
 
 def _make_archive(tmp_path, *, engine="sqlite", with_manifest=True):
@@ -148,6 +167,79 @@ def test_restore_selected_success_accepts_dialog(qtbot, tmp_path) -> None:
     assert service.restore_calls == [str(archive)]
     from PySide6.QtWidgets import QDialog
     assert dialog.result() == QDialog.DialogCode.Accepted
+
+
+def test_restore_offers_to_reconfigure_destination_when_warning_is_present(qtbot, tmp_path, monkeypatch) -> None:
+    """Mission corrective §3.11 : même comportement que
+    ``BackupsPage._offer_to_reconfigure_destination`` — ici aussi, jamais
+    une notification silencieuse du dossier de destination inaccessible,
+    toujours une proposition immédiate d'en choisir un nouveau."""
+    archive = _make_archive(tmp_path)
+    service = _FakeBackupService(
+        restore_result=RestoreResult(
+            True, "Restauration réussie.",
+            destination_warning="Le dossier de destination des sauvegardes (« /ancien/poste ») n'existe pas.",
+        ),
+    )
+    dialog = BackupRestoreWizardDialog(service, parent=None)
+    qtbot.addWidget(dialog)
+    dialog.select_file(archive)
+
+    new_destination = tmp_path / "nouveau_dossier"
+    new_destination.mkdir()
+    monkeypatch.setattr(
+        "app.views.backup_restore_wizard_dialog.QMessageBox.question",
+        lambda *a, **k: QMessageBox.StandardButton.Yes,
+    )
+    monkeypatch.setattr(
+        "app.views.backup_restore_wizard_dialog.QFileDialog.getExistingDirectory",
+        lambda *a, **k: str(new_destination),
+    )
+
+    success = dialog._restore_selected()
+
+    assert success is True
+    assert service.get_config().destination == new_destination
+
+
+def test_restore_destination_warning_declined_leaves_config_untouched(qtbot, tmp_path, monkeypatch) -> None:
+    archive = _make_archive(tmp_path)
+    service = _FakeBackupService(
+        restore_result=RestoreResult(
+            True, "Restauration réussie.", destination_warning="Dossier de destination introuvable.",
+        ),
+    )
+    dialog = BackupRestoreWizardDialog(service, parent=None)
+    qtbot.addWidget(dialog)
+    dialog.select_file(archive)
+    original_destination = service.get_config().destination
+
+    monkeypatch.setattr(
+        "app.views.backup_restore_wizard_dialog.QMessageBox.question",
+        lambda *a, **k: QMessageBox.StandardButton.No,
+    )
+
+    dialog._restore_selected()
+
+    assert service.get_config().destination == original_destination
+    assert service.update_config_calls == []
+
+
+def test_restore_without_destination_warning_never_prompts(qtbot, tmp_path, monkeypatch) -> None:
+    archive = _make_archive(tmp_path)
+    service = _FakeBackupService(restore_result=RestoreResult(True, "Restauration réussie."))
+    dialog = BackupRestoreWizardDialog(service, parent=None)
+    qtbot.addWidget(dialog)
+    dialog.select_file(archive)
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("confirm_action n'aurait jamais dû être sollicité sans avertissement.")
+
+    monkeypatch.setattr("app.views.backup_restore_wizard_dialog.QMessageBox.question", _fail_if_called)
+
+    success = dialog._restore_selected()
+
+    assert success is True
 
 
 def test_restore_selected_failure_does_not_accept(qtbot, tmp_path) -> None:

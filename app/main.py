@@ -313,4 +313,19 @@ if __name__ == "__main__":
 
         sys.exit(run_agent())
 
+    # Mission corrective « Fiabilisation du module de sauvegarde », §3.3 :
+    # même principe que ci-dessus, pour l'outil de récupération autonome
+    # (voir app.backup_cli, sous-commande « recover ») — interception avant
+    # toute construction de QApplication, précisément parce que ce drapeau
+    # sert au cas où la base active empêche l'application elle-même de
+    # démarrer (voir app.services.backups.recovery) : jamais une dépendance
+    # au code d'amorçage normal de l'application (bootstrap()/init_database()),
+    # qui échouerait exactement dans ce cas.
+    _RECOVER_FLAG = "--recover"
+    if _RECOVER_FLAG in sys.argv[1:]:
+        from app.backup_cli import main as run_recovery_cli
+
+        _flag_index = sys.argv.index(_RECOVER_FLAG)
+        sys.exit(run_recovery_cli(["recover", *sys.argv[_flag_index + 1 :]]))
+
     sys.exit(main())

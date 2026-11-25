@@ -270,10 +270,37 @@ class BackupRestoreWizardDialog(QDialog):
                 self, "Restauration réussie",
                 result.message + "\n\nVeuillez fermer et relancer StockManager Desktop maintenant.",
             )
+            if result.destination_warning:
+                self._offer_to_reconfigure_destination(result.destination_warning)
             self.accept()
         else:
             QMessageBox.critical(self, "Échec de la restauration", result.message)
         return result.success
+
+    def _offer_to_reconfigure_destination(self, warning: str) -> None:
+        """Même principe que ``BackupsPage._offer_to_reconfigure_destination``
+        (mission corrective, §3.11) — ce dialogue n'a pas de formulaire de
+        configuration à rafraîchir ensuite (il se ferme juste après, voir
+        ``_show_restore_result``), seul l'enregistrement du nouveau dossier
+        via le service compte ici."""
+        if not confirm_action(
+            self, "Dossier de destination à reconfigurer",
+            warning + "\n\nVoulez-vous choisir un nouveau dossier de destination maintenant ?",
+        ):
+            return
+        directory = QFileDialog.getExistingDirectory(self, "Nouveau dossier de destination des sauvegardes", "")
+        if not directory:
+            return
+        config = self._backup_service.get_config()
+        try:
+            self._backup_service.update_config(
+                auto_enabled=config.auto_enabled, frequency=config.frequency, time_of_day=config.time_of_day,
+                destination=directory, retention=config.retention, encryption_enabled=config.encryption_enabled,
+            )
+        except AppError as exc:
+            QMessageBox.warning(self, "Configuration refusée", str(exc))
+            return
+        QMessageBox.information(self, "Dossier mis à jour", "Le nouveau dossier de destination a été enregistré.")
 
     def _restore_selected(self) -> bool:
         """Isolé de ``_on_restore_clicked`` pour rester testable sans

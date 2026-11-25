@@ -147,6 +147,37 @@ validée sous Linux (voir les tests unitaires et d'intégration dédiés,
 `tests/test_scheduled_task_manager_windows_integration.py` entre autres,
 tous ignorés automatiquement hors Windows).
 
+## Mission corrective « Fiabilisation du module de sauvegarde »
+
+Aucune dépendance d'exécution supplémentaire introduite (ni dans
+`requirements.txt`, ni dans `hiddenimports`/`datas` de `stockmanager.spec`) :
+tout ce qui suit réutilise exclusivement des modules déjà empaquetés
+(`cryptography` pour la dérivation de clé PBKDF2 du transfert de clé de
+chiffrement, `alembic`/SQLAlchemy déjà embarqués pour la détection de
+compatibilité de version, bibliothèque standard pour le reste).
+
+- **Récupération autonome (`--recover`)** : même principe que
+  `--run-backup-agent` ci-dessus — un second drapeau intercepté dans
+  `app/main.py` avant toute initialisation Qt/base de données, toujours servi
+  par le même exécutable unique `StockManager.exe`. Volontairement
+  indépendant de toute session SQLAlchemy/base active (voir
+  `app/services/backups/recovery.py`) : conçu pour fonctionner même lorsque
+  la base de données elle-même est inaccessible ou corrompue, cas où le
+  reste de l'application ne démarre plus.
+- **Second déclencheur de tâche planifiée (« à l'ouverture de session »)** :
+  `ExternalBackupService.configure_scheduled_task` enregistre désormais DEUX
+  tâches `schtasks.exe` (la tâche quotidienne existante, inchangée, plus une
+  seconde au déclencheur `onlogon`, pointant vers la même ligne de commande)
+  — toujours aucune dépendance `pywin32`/API COM, même mécanisme déjà
+  documenté ci-dessus pour la tâche quotidienne.
+
+**Non revérifié sous Windows réel** (s'ajoute à la liste « Tests obligatoires
+sous Windows » ci-dessous, point 7) : la création effective des DEUX tâches
+planifiées (quotidienne et à l'ouverture de session) depuis l'exécutable
+packagé, et le comportement réel de `StockManager.exe --recover` exécuté
+depuis une invite de commande sur un poste où la base de données a été
+rendue délibérément inaccessible.
+
 ## Procédure de build (à exécuter sur Windows)
 
 ```text
@@ -287,10 +318,11 @@ Windows ») :
 6. L'installateur Inno Setup s'installe, se désinstalle, et préserve les
    données utilisateur (`%APPDATA%\StockManager`) dans les deux cas.
 7. Depuis l'écran Sauvegardes de l'exécutable packagé, « Configurer/réparer
-   la tâche planifiée Windows… » crée réellement une tâche visible dans le
-   Planificateur de tâches Windows (`taskschd.msc`), pointant vers
-   `StockManager.exe --run-backup-agent` ; « Supprimer la tâche planifiée… »
-   la retire proprement.
+   la tâche planifiée Windows… » crée réellement DEUX tâches visibles dans
+   le Planificateur de tâches Windows (`taskschd.msc`) — l'une quotidienne,
+   l'autre au déclencheur « à l'ouverture de session » (mission corrective) —
+   toutes deux pointant vers `StockManager.exe --run-backup-agent` ;
+   « Supprimer la tâche planifiée… » les retire proprement toutes les deux.
 8. **StockManager fermé**, déclencher manuellement cette tâche depuis le
    Planificateur de tâches (ou attendre l'heure programmée) : une nouvelle
    sauvegarde locale apparaît bien dans le dossier de destination configuré,

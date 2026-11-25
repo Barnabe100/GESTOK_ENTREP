@@ -40,9 +40,16 @@ from __future__ import annotations
 
 import sys
 
+from app.utils.process_lock import BACKUP_LOCK_FILENAME
+
 AGENT_FLAG = "--run-backup-agent"
 
-_LOCK_FILENAME = "backup_agent.lock"
+# Mission corrective « Fiabilisation du module de sauvegarde », §3.7 :
+# alias conservé pour ne pas renommer ses usages ci-dessous — la valeur
+# elle-même vit désormais dans ``app.utils.process_lock`` (constante
+# partagée avec ``BackupService``/``ExternalBackupService``, voir sa
+# docstring), jamais dupliquée.
+_LOCK_FILENAME = BACKUP_LOCK_FILENAME
 
 
 def resolve_agent_invocation() -> tuple[str, list[str]]:
@@ -59,14 +66,17 @@ def resolve_agent_invocation() -> tuple[str, list[str]]:
 
 def run_cycle(backup_service, external_service, logger) -> int:
     """Logique pure du cycle verrou -> sauvegarde locale si due -> copie
-    externe si due (hors acquisition du verrou, voir :func:`run_agent`) —
-    isolée pour rester testable avec des services déjà construits (``stack``
-    de test), sans jamais appeler ``setup_logging`` ni en construire de
-    nouveaux (la reconfiguration du logger racine est un effet global sur le
+    externe si due -> nettoyage des temporaires orphelins (hors
+    acquisition du verrou, voir :func:`run_agent`) — isolée pour rester
+    testable avec des services déjà construits (``stack`` de test), sans
+    jamais appeler ``setup_logging`` ni en construire de nouveaux (la
+    reconfiguration du logger racine est un effet global sur le
     processus, jamais souhaitable pendant une suite de tests — voir
     ``tests/test_backup_external_agent_cli.py``). Retourne un code de sortie
-    non nul si l'une des deux étapes a échoué (jamais si l'une des deux
-    était simplement « rien à faire », qui n'est jamais un échec)."""
+    non nul si l'une des deux premières étapes a échoué (jamais si l'une
+    des deux était simplement « rien à faire », qui n'est jamais un
+    échec ; le nettoyage, lui, ne fait jamais échouer le cycle — voir
+    ci-dessous)."""
     exit_code = 0
 
     local_result = backup_service.run_scheduled_backup_if_due()
@@ -86,6 +96,22 @@ def run_cycle(backup_service, external_service, logger) -> int:
         exit_code = 1
     else:
         logger.info("Copie externe planifiée réussie : %s", external_result.file_path)
+
+    # Mission corrective, §3.13 : nettoyage des fichiers temporaires
+    # orphelins (coupure de courant, fermeture forcée pendant une
+    # opération précédente) — toujours exécuté ici, puisque le cycle
+    # détient déjà le verrou partagé pour toute sa durée (voir
+    # ``run_agent_locked``), garantie exigée par
+    # ``temp_cleanup.cleanup_orphaned_temp_files`` (voir sa docstring de
+    # module). Jamais un échec de cycle pour autant : un fichier qui
+    # n'aurait pas pu être supprimé reste simplement là jusqu'au prochain
+    # cycle, jamais un incident à journaliser comme une erreur.
+    removed = backup_service.cleanup_orphaned_temp_files() + external_service.cleanup_orphaned_temp_files()
+    if removed:
+        logger.info(
+            "Nettoyage : %d fichier(s) temporaire(s) orphelin(s) supprimé(s) (%s).",
+            len(removed), ", ".join(str(path) for path in removed),
+        )
 
     return exit_code
 

@@ -121,18 +121,39 @@ def task_exists(task_name: str) -> bool:
     return result.returncode == 0
 
 
-def create_or_repair_task(task_name: str, executable: str, arguments: list[str], time_of_day: str) -> None:
+SCHEDULE_DAILY = "daily"
+SCHEDULE_ONLOGON = "onlogon"
+
+
+def create_or_repair_task(
+    task_name: str, executable: str, arguments: list[str], time_of_day: str, *, schedule: str = SCHEDULE_DAILY,
+) -> None:
     """Crée la tâche si absente, ou la recrée à l'identique si déjà
     présente (``/f``, « force ») — un seul chemin de code pour la création
     ET la réparation d'une tâche supprimée ou endommagée manuellement (§4
-    du mandat), jamais deux mécanismes distincts à maintenir en parallèle."""
-    _ensure_windows()
-    _validate_time_of_day(time_of_day)
+    du mandat), jamais deux mécanismes distincts à maintenir en parallèle.
 
+    ``schedule="daily"`` (défaut, comportement historique) : déclenchement
+    quotidien à l'heure exacte ``time_of_day``. ``schedule="onlogon"``
+    (mission corrective, §3.5) : déclenchement à chaque ouverture de
+    session de l'utilisateur courant — ``time_of_day`` est alors ignoré
+    (jamais validé ni transmis, ``schtasks`` ne l'accepte pas pour ce type
+    de déclencheur) ; sert exclusivement de rattrapage (voir
+    ``ExternalBackupService.configure_scheduled_task`` et §3.4/§3.6 du
+    mandat correctif) en complément de la tâche quotidienne, jamais à sa
+    place."""
+    _ensure_windows()
     tr_value = _build_task_run_value(executable, arguments)
-    result = _run_schtasks(
-        ["/create", "/tn", task_name, "/tr", tr_value, "/sc", "daily", "/st", time_of_day, "/f"]
-    )
+
+    if schedule == SCHEDULE_ONLOGON:
+        args = ["/create", "/tn", task_name, "/tr", tr_value, "/sc", "onlogon", "/f"]
+        schedule_description = "à l'ouverture de session"
+    else:
+        _validate_time_of_day(time_of_day)
+        args = ["/create", "/tn", task_name, "/tr", tr_value, "/sc", "daily", "/st", time_of_day, "/f"]
+        schedule_description = f"quotidienne, {time_of_day}"
+
+    result = _run_schtasks(args)
     if result.returncode != 0:
         logger.error(
             "Échec de création de la tâche planifiée %r : %s", task_name, (result.stderr or "").strip()
@@ -140,7 +161,7 @@ def create_or_repair_task(task_name: str, executable: str, arguments: list[str],
         raise ScheduledTaskError(
             f"La création de la tâche planifiée Windows a échoué (code {result.returncode})."
         )
-    logger.info("Tâche planifiée %r créée/réparée (quotidienne, %s).", task_name, time_of_day)
+    logger.info("Tâche planifiée %r créée/réparée (%s).", task_name, schedule_description)
 
 
 def delete_task(task_name: str) -> None:

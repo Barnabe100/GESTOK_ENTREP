@@ -13,12 +13,46 @@ existant dont le PID ne correspond plus à aucun processus actif (processus
 tué brutalement, redémarrage du poste sans nettoyage) est considéré comme
 périmé et repris automatiquement — jamais laissé bloquer indéfiniment une
 sauvegarde légitime pour cette seule raison.
-"""
+
+Réentrance intra-processus (mission corrective « Fiabilisation du module
+de sauvegarde », §3.7) : ce même verrou protège désormais aussi bien
+l'agent auxiliaire (``run_agent_locked``, qui l'acquiert une fois pour tout
+le cycle verrou -> sauvegarde locale -> copie externe) que les actions
+manuelles de l'interface (``BackupService.create_manual_backup``/
+``restore_backup``, ``ExternalBackupService.copy_now``, voir leurs
+docstrings) — ces dernières appelant les MÊMES méthodes de service que
+celles déjà protégées à l'intérieur du cycle de l'agent. Sans réentrance,
+un appel imbriqué (agent tenant déjà le verrou, puis appelant une méthode
+qui tente de l'acquérir à nouveau) se bloquerait lui-même indéfiniment —
+jamais souhaitable (voir l'exigence explicite du mandat correctif : « ne
+pas introduire de verrouillage récursif »). :data:`_OWNED_LOCKS` compte,
+PAR CHEMIN DE VERROU résolu, le nombre d'acquisitions effectuées par CE
+PROCESSUS (jamais par un autre : ``os.getpid()`` fait toujours foi) — le
+fichier physique n'est créé qu'à la toute première acquisition et supprimé
+qu'à la toute dernière libération correspondante, quel que soit le nombre
+d'objets :class:`ProcessLock` distincts utilisés pour l'acquérir/le
+libérer. Un second PROCESSUS détenant réellement le verrou continue, lui,
+d'être refusé exactement comme avant (le fichier existe toujours, son PID
+ne correspond pas au processus appelant)."""
 from __future__ import annotations
 
 import os
 import sys
 from pathlib import Path
+
+# État au niveau du module (jamais par instance) : chemin de verrou résolu
+# -> nombre d'acquisitions actives par CE processus. Voir la docstring de
+# module pour la justification de la réentrance qu'il permet.
+_OWNED_LOCKS: dict[str, int] = {}
+
+# Nom de fichier partagé par TOUS les appelants protégeant une opération de
+# sauvegarde/restauration (mission corrective, §3.7) — agent auxiliaire
+# (``app.backup_external_agent_cli``) comme actions manuelles de
+# l'interface (``BackupService``/``ExternalBackupService``) : une seule
+# constante, jamais une valeur dupliquée dans chaque module appelant, pour
+# qu'ils protègent réellement la même ressource (``settings.data_dir /
+# BACKUP_LOCK_FILENAME``).
+BACKUP_LOCK_FILENAME = "backup_agent.lock"
 
 
 class ProcessLockHeldError(Exception):
@@ -63,12 +97,27 @@ class ProcessLock:
         self._lock_path = lock_path
         self._acquired = False
 
+    def _key(self) -> str:
+        return str(self._lock_path.resolve())
+
     def acquire(self) -> bool:
         """Tente d'acquérir le verrou. Retourne ``False`` sans lever si un
-        autre processus réellement actif le détient déjà — jamais une
+        autre PROCESSUS réellement actif le détient déjà — jamais une
         exception dans ce cas précis, pour laisser l'appelant décider
         (reporter, journaliser, abandonner) sans avoir à traiter une
-        exception pour un cas parfaitement attendu."""
+        exception pour un cas parfaitement attendu.
+
+        Réentrant au sein de CE processus (voir la docstring de module) :
+        si ce même verrou est déjà détenu par le processus courant (par
+        cette instance ou par une autre, peu importe), cette acquisition
+        réussit immédiatement sans toucher au fichier, en incrémentant
+        simplement le compteur de :data:`_OWNED_LOCKS`."""
+        key = self._key()
+        if _OWNED_LOCKS.get(key, 0) > 0:
+            _OWNED_LOCKS[key] += 1
+            self._acquired = True
+            return True
+
         self._lock_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             fd = os.open(str(self._lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -78,6 +127,7 @@ class ProcessLock:
             os.write(fd, str(os.getpid()).encode("utf-8"))
         finally:
             os.close(fd)
+        _OWNED_LOCKS[key] = 1
         self._acquired = True
         return True
 
@@ -86,12 +136,19 @@ class ProcessLock:
         toujours actif. Si non (processus disparu) ou si le contenu est
         illisible/corrompu, le verrou est considéré périmé et repris —
         jamais laissé bloquer indéfiniment une sauvegarde légitime pour
-        cette seule raison (voir la docstring de module)."""
+        cette seule raison (voir la docstring de module). Un fichier
+        portant déjà le PID du processus courant (cas normalement
+        inatteignable en pratique — :data:`_OWNED_LOCKS` aurait dû
+        intercepter l'acquisition avant d'en arriver ici — mais possible
+        si ce compteur en mémoire et le fichier sur disque divergent pour
+        une raison quelconque) est traité de la même façon qu'un verrou
+        périmé : jamais une raison de refuser le processus qui le détient
+        déjà réellement."""
         try:
             existing_pid = int(self._lock_path.read_text(encoding="utf-8").strip())
         except (OSError, ValueError):
             existing_pid = -1
-        if existing_pid > 0 and _process_is_running(existing_pid):
+        if existing_pid > 0 and existing_pid != os.getpid() and _process_is_running(existing_pid):
             return False
         try:
             self._lock_path.unlink()
@@ -102,9 +159,19 @@ class ProcessLock:
     def release(self) -> None:
         """Libère le verrou si détenu par cette instance — sans effet
         sinon (jamais une erreur si déjà libéré, ou si cette instance ne
-        l'a jamais acquis)."""
+        l'a jamais acquis). Réentrant (voir la docstring de module) : ne
+        supprime le fichier physique qu'à la toute dernière libération
+        correspondant aux acquisitions de ce processus — une libération
+        intermédiaire se limite à décrémenter le compteur."""
         if not self._acquired:
             return
+        key = self._key()
+        depth = _OWNED_LOCKS.get(key, 0)
+        if depth > 1:
+            _OWNED_LOCKS[key] = depth - 1
+            self._acquired = False
+            return
+        _OWNED_LOCKS.pop(key, None)
         try:
             self._lock_path.unlink()
         except OSError:

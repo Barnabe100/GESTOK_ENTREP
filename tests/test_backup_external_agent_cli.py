@@ -16,7 +16,9 @@ testé indépendamment dans tests/test_process_lock.py ; les tests ci-dessous
 ne vérifient que son intégration (exécution simultanée empêchée, verrou
 toujours relâché) via ``run_agent_locked``, jamais ``setup_logging``."""
 import logging
+import subprocess
 import sys
+import time
 
 from app.backup_external_agent_cli import (
     AGENT_FLAG,
@@ -143,15 +145,22 @@ def test_run_agent_locked_runs_cycle_when_lock_free(login_as, tmp_path) -> None:
 
 
 def test_run_agent_locked_skips_cleanly_when_already_held(login_as, tmp_path) -> None:
+    """Le verrou étant désormais réentrant au sein d'un même processus
+    (mission corrective, §3.7 — voir ``app.utils.process_lock``), seul un
+    AUTRE processus réellement actif détenant le verrou doit faire
+    abandonner proprement l'agent — jamais une seconde instance
+    ``ProcessLock`` du même processus, qui réussirait désormais à
+    l'acquérir (voir ``tests/test_process_lock.py`` pour la distinction)."""
     stack, _ = login_as("Administrateur")
     stack.backups.update_config(
         auto_enabled=True, frequency="daily", time_of_day="00:00",
         destination=str(tmp_path / "local_backups"), retention=30,
     )
     lock_path = tmp_path / "backup_agent.lock"
-    holder = ProcessLock(lock_path)
-    assert holder.acquire() is True
+    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    time.sleep(0.2)
     try:
+        lock_path.write_text(str(other.pid), encoding="utf-8")
         contender = ProcessLock(lock_path)
 
         exit_code = run_agent_locked(contender, stack.backups, stack.external_backups, _logger())
@@ -160,7 +169,8 @@ def test_run_agent_locked_skips_cleanly_when_already_held(login_as, tmp_path) ->
         # Jamais exécuté : la sauvegarde locale, pourtant due, n'a pas eu lieu.
         assert list((tmp_path / "local_backups").glob("stockmanager_backup_*.db")) == []
     finally:
-        holder.release()
+        other.terminate()
+        other.wait(timeout=5)
 
 
 def test_run_agent_locked_releases_lock_after_success(login_as, tmp_path) -> None:

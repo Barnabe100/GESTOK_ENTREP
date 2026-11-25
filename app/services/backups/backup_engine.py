@@ -19,8 +19,11 @@ inversées — aucune deuxième méthode de copie n'est introduite.
 """
 from __future__ import annotations
 
+import os
 import re
 import sqlite3
+import tempfile
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -30,6 +33,60 @@ from app.models import Base
 
 BACKUP_PREFIX = "stockmanager_backup"
 PRERESTORE_PREFIX = "stockmanager_prerestore"
+
+# Mission corrective « Fiabilisation du module de sauvegarde », §3.2/§3.9 :
+# un remplacement de fichier (ex. sous Windows, antivirus/indexeur détenant
+# brièvement une poignée sur le fichier) peut échouer transitoirement — ces
+# quelques nouvelles tentatives rapprochées restent très rapides (1 s au
+# total au maximum) et sans effet perceptible sur une opération qui dure de
+# toute façon plusieurs secondes.
+_REPLACE_RETRY_ATTEMPTS = 5
+_REPLACE_RETRY_DELAY_SECONDS = 0.2
+
+
+class RestoreValidationError(Exception):
+    """Le fichier restauré vers un emplacement temporaire n'a pas passé la
+    vérification d'intégrité SQLite (``PRAGMA integrity_check``) avant tout
+    remplacement de la base de destination — celle-ci n'a, dans ce cas,
+    jamais été touchée (voir :func:`restore_database_from_backup`)."""
+
+
+class AtomicReplaceError(Exception):
+    """Le remplacement atomique final (``os.replace``) a échoué après
+    plusieurs tentatives — typiquement un verrou transitoire sous Windows
+    (antivirus, indexeur, sauvegarde système). La destination d'origine n'a
+    jamais été modifiée (``os.replace`` est tout-ou-rien, jamais un état
+    intermédiaire) ; la copie déjà créée et déjà vérifiée reste disponible
+    à :attr:`recovered_path`, jamais perdue ni supprimée automatiquement."""
+
+    def __init__(self, message: str, recovered_path: Path) -> None:
+        super().__init__(message)
+        self.recovered_path = recovered_path
+
+
+def _replace_atomically_with_retry(source: Path, destination: Path) -> None:
+    """``os.replace(source, destination)`` avec quelques nouvelles
+    tentatives rapprochées en cas d'``OSError`` — jamais supposé réussir du
+    premier coup sous Windows (§3.2 de la mission corrective : « ne pas
+    supposer que os.replace fonctionnera automatiquement sur une base
+    encore ouverte »). Sans effet perceptible sous POSIX, où ce genre
+    d'échec transitoire de renommage n'existe normalement pas. En cas
+    d'échec persistant, ``source`` n'est jamais supprimé — voir
+    :class:`AtomicReplaceError`."""
+    last_exc: Optional[OSError] = None
+    for attempt in range(_REPLACE_RETRY_ATTEMPTS):
+        try:
+            os.replace(source, destination)
+            return
+        except OSError as exc:
+            last_exc = exc
+            if attempt < _REPLACE_RETRY_ATTEMPTS - 1:
+                time.sleep(_REPLACE_RETRY_DELAY_SECONDS)
+    raise AtomicReplaceError(
+        f"Le remplacement de « {destination} » a échoué après {_REPLACE_RETRY_ATTEMPTS} tentative(s) "
+        f"({last_exc}) — probablement un verrou transitoire (ex. antivirus) sous Windows.",
+        recovered_path=source,
+    )
 
 # Nom de fichier strictement reconnaissable : c'est ce motif, et lui seul,
 # qui identifie un fichier comme appartenant à StockManager pour la rotation
@@ -93,18 +150,79 @@ def create_backup_file(
     et retourne le chemin créé. Lève ``OSError``/``sqlite3.Error`` telle
     quelle en cas d'échec (dossier non accessible, disque plein, ...) —
     c'est à l'appelant (``BackupService``) de traduire cet échec en réponse
-    métier propre et de l'auditer, jamais de prétendre un succès."""
+    métier propre et de l'auditer, jamais de prétendre un succès.
+
+    Écrit d'abord dans un fichier temporaire du même répertoire (nom ne
+    correspondant jamais au motif de nommage StockManager, donc invisible
+    de ``list_backup_files``/la rotation tant qu'il existe), puis ne
+    renomme vers le nom final qu'une fois la copie terminée (§3.9 de la
+    mission corrective) : une interruption brutale pendant la copie ne
+    laisse ainsi jamais de fichier partiel visible sous un nom de
+    sauvegarde reconnu — jamais besoin que l'appelant le découvre a
+    posteriori via une vérification d'intégrité."""
     destination_dir.mkdir(parents=True, exist_ok=True)
     target = _next_available_path(destination_dir, generate_backup_filename(prefix, when))
-    _sqlite_backup(db_path, target)
+    fd, tmp_path_str = tempfile.mkstemp(dir=str(destination_dir), prefix=f".{target.name}_", suffix=".creating.tmp")
+    os.close(fd)
+    tmp_path = Path(tmp_path_str)
+    try:
+        _sqlite_backup(db_path, tmp_path)
+        _replace_atomically_with_retry(tmp_path, target)
+    except AtomicReplaceError:
+        # Remplacement final impossible malgré les nouvelles tentatives :
+        # la copie reste disponible (voir AtomicReplaceError), mais jamais
+        # sous le nom de sauvegarde final tant qu'elle n'y a pas été
+        # effectivement renommée — jamais supprimée ici pour autant,
+        # contrairement aux autres échecs, afin de ne pas perdre une copie
+        # par ailleurs entièrement valide.
+        raise
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
     return target
 
 
 def restore_database_from_backup(backup_path: Path, db_path: Path) -> None:
-    """Restaure ``db_path`` à partir de ``backup_path`` via la même API de
-    sauvegarde en ligne (source et destination inversées par rapport à
-    ``create_backup_file``)."""
-    _sqlite_backup(backup_path, db_path)
+    """Restaure ``db_path`` à partir de ``backup_path``.
+
+    Jamais un remplacement direct (§3.2 de la mission corrective) : copie
+    d'abord vers un fichier temporaire du même répertoire que ``db_path``,
+    vérifie son intégrité structurelle SQLite (``PRAGMA integrity_check``,
+    via :func:`verify_backup_file`) — la vérification de compatibilité de
+    version/moteur reste de la responsabilité de l'appelant, avant même
+    d'arriver ici — puis ne remplace ``db_path`` que si cette vérification
+    réussit, via un remplacement atomique (``os.replace``, avec quelques
+    nouvelles tentatives, voir :func:`_replace_atomically_with_retry`).
+
+    ``db_path`` n'est, dans tous les cas, jamais touché avant que la copie
+    temporaire ne soit intégralement écrite et vérifiée : une interruption
+    à n'importe quelle étape qui précède laisse ``db_path`` parfaitement
+    intact. Lève :class:`RestoreValidationError` si la vérification
+    échoue, ou :class:`AtomicReplaceError` si le remplacement final échoue
+    malgré les nouvelles tentatives (dans les deux cas, ``db_path`` reste
+    intact ; voir leurs docstrings pour la suite)."""
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path_str = tempfile.mkstemp(
+        dir=str(db_path.parent), prefix=f".{db_path.name}_restore_", suffix=".tmp"
+    )
+    os.close(fd)
+    tmp_path = Path(tmp_path_str)
+    try:
+        _sqlite_backup(backup_path, tmp_path)
+        verification = verify_backup_file(tmp_path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+    if not verification.integrity_ok:
+        tmp_path.unlink(missing_ok=True)
+        raise RestoreValidationError(
+            "Le fichier restauré n'a pas passé la vérification d'intégrité SQLite avant "
+            "remplacement : " + "; ".join(verification.errors or ["échec de PRAGMA integrity_check."])
+        )
+    # Jamais supprimé par ce chemin si le remplacement échoue (voir
+    # AtomicReplaceError.recovered_path) : seul le chemin de vérification
+    # ci-dessus supprime la copie temporaire, jamais celui-ci.
+    _replace_atomically_with_retry(tmp_path, db_path)
 
 
 @dataclass(frozen=True)

@@ -50,6 +50,7 @@ from PySide6.QtWidgets import (
 
 from app.services.auth.permission_service import PermissionService
 from app.services.backups import archive_manifest
+from app.services.backups.archive_encryption import EncryptionKeyAlreadyConfiguredError
 from app.services.backups.backup_service import BackupConfig, BackupService, FREQUENCY_DAILY, FREQUENCY_WEEKLY
 from app.services.backups.external_backup_service import (
     MAX_RETENTION,
@@ -275,10 +276,22 @@ class BackupsPage(QWidget):
         self.retention_spin.setMinimumWidth(100)
         form.addRow("Sauvegardes à conserver", self.retention_spin)
 
+        # Mission corrective « Fiabilisation du module de sauvegarde »,
+        # §3.1 : cette case n'existait jusqu'ici dans aucun écran — sans
+        # elle, ``encryption_enabled`` retombait systématiquement à sa
+        # valeur par défaut (False) à chaque enregistrement de CETTE MÊME
+        # configuration, puisque ``_save_config`` ne la transmettait jamais
+        # (voir l'audit ayant motivé cette mission). Son activation reste
+        # irréversible en pratique sans la clé : avertissement explicite
+        # avant la première activation, voir ``_on_encryption_enabled_toggled``.
+        self.encryption_enabled_checkbox = QCheckBox("Chiffrer les sauvegardes (avancé)", self)
+        form.addRow(self.encryption_enabled_checkbox)
+
         can_configure = self._permissions.has_permission("BACKUP_CREATE")
         for widget in (
             self.auto_enabled_checkbox, self.frequency_combo, self.time_edit,
             self.destination_edit, self.browse_button, self.retention_spin,
+            self.encryption_enabled_checkbox,
         ):
             widget.setEnabled(can_configure)
 
@@ -287,8 +300,31 @@ class BackupsPage(QWidget):
         self.save_config_button.setEnabled(can_configure)
         form.addRow(self.save_config_button)
 
+        # §3.1 : transfert de la clé vers un autre ordinateur — permission
+        # dédiée BACKUP_ENCRYPTION_MANAGE, distincte de BACKUP_CREATE
+        # (opération suffisamment sensible pour son propre contrôle d'accès
+        # et sa propre trace d'audit). « Importer… » reste accessible même
+        # si le chiffrement est désactivé sur ce poste : c'est précisément
+        # le cas d'un poste neuf préparant la restauration d'une archive
+        # chiffrée apportée depuis un autre ordinateur.
+        can_manage_encryption_key = self._permissions.has_permission("BACKUP_ENCRYPTION_MANAGE")
+        key_transfer_row = QHBoxLayout()
+        self.export_key_button = QPushButton("Exporter la clé de chiffrement…", self)
+        self.export_key_button.setEnabled(can_manage_encryption_key)
+        key_transfer_row.addWidget(self.export_key_button)
+        self.import_key_button = QPushButton("Importer la clé de chiffrement…", self)
+        self.import_key_button.setEnabled(can_manage_encryption_key)
+        key_transfer_row.addWidget(self.import_key_button)
+        self.test_key_button = QPushButton("Tester la clé sur une archive…", self)
+        self.test_key_button.setEnabled(self._permissions.has_permission("BACKUP_VIEW"))
+        key_transfer_row.addWidget(self.test_key_button)
+        form.addRow(key_transfer_row)
+
         self.browse_button.clicked.connect(self._on_browse_clicked)
         self.save_config_button.clicked.connect(self._on_save_config_clicked)
+        self.export_key_button.clicked.connect(self._on_export_encryption_key_clicked)
+        self.import_key_button.clicked.connect(self._on_import_encryption_key_clicked)
+        self.test_key_button.clicked.connect(self._on_test_encryption_key_clicked)
 
         return group
 
@@ -305,6 +341,7 @@ class BackupsPage(QWidget):
         self.time_edit.setText(config.time_of_day)
         self.destination_edit.setText(str(config.destination))
         self.retention_spin.setValue(config.retention)
+        self.encryption_enabled_checkbox.setChecked(config.encryption_enabled)
 
     def _on_browse_clicked(self) -> None:
         directory = QFileDialog.getExistingDirectory(self, "Dossier de destination des sauvegardes", self.destination_edit.text())
@@ -316,7 +353,10 @@ class BackupsPage(QWidget):
 
     def _save_config(self) -> bool:
         """Isolé de ``_on_save_config_clicked`` pour rester testable sans
-        dialogue modal."""
+        dialogue modal. Transmet désormais ``encryption_enabled`` (§3.1 —
+        voir le commentaire sur ``encryption_enabled_checkbox`` ci-dessus) :
+        jamais d'omission qui le ferait silencieusement retomber à
+        désactivé à chaque enregistrement."""
         try:
             self._backup_service.update_config(
                 auto_enabled=self.auto_enabled_checkbox.isChecked(),
@@ -324,12 +364,147 @@ class BackupsPage(QWidget):
                 time_of_day=self.time_edit.text(),
                 destination=self.destination_edit.text(),
                 retention=self.retention_spin.value(),
+                encryption_enabled=self.encryption_enabled_checkbox.isChecked(),
             )
             QMessageBox.information(self, "Configuration enregistrée", "La configuration des sauvegardes a été enregistrée.")
         except AppError as exc:
             QMessageBox.warning(self, "Configuration refusée", str(exc))
             return False
+        # §3.5 : l'heure vient peut-être de changer — signale immédiatement
+        # si la tâche planifiée Windows déjà créée ne la reflète plus,
+        # jamais après coup seulement au prochain rafraîchissement.
+        self._refresh_task_time_sync_warning()
         return True
+
+    # -- transfert de la clé de chiffrement (§3.1) -------------------------------
+
+    def _on_export_encryption_key_clicked(self) -> None:
+        """Rassemble les entrées via des dialogues modaux (avertissement de
+        sensibilité — §3.1 : « présenter un avertissement sur la
+        sensibilité de cette clé » —, mot de passe, emplacement), puis
+        délègue à :meth:`_export_encryption_key`, qui reste testable sans
+        aucun dialogue (même principe que ``_on_choose_media_clicked`` ->
+        ``_configure_media``)."""
+        if not confirm_action(
+            self, "Exporter la clé de chiffrement",
+            "Cette clé permet de déchiffrer TOUTES les sauvegardes chiffrées de ce poste. "
+            "Conservez le fichier exporté en lieu sûr, séparément de vos sauvegardes "
+            "(jamais sur la même clé USB ou le même disque), et ne le partagez qu'avec "
+            "une personne de confiance. Voulez-vous continuer ?",
+        ):
+            return
+
+        password, confirmed = QInputDialog.getText(
+            self, "Mot de passe de protection",
+            "Choisissez un mot de passe pour protéger le fichier exporté\n"
+            "(nécessaire pour l'importer sur le nouvel ordinateur — ce mot de passe "
+            "n'est pas enregistré, conservez-le vous-même) :",
+            QLineEdit.EchoMode.Password,
+        )
+        if not confirmed or not password:
+            return
+
+        suggested = str(Path.home() / "StockManager_cle_chiffrement.json")
+        destination, _filter = QFileDialog.getSaveFileName(
+            self, "Exporter la clé de chiffrement — choisissez un emplacement séparé des sauvegardes",
+            suggested,
+        )
+        if not destination:
+            return
+        self._export_encryption_key(destination, password)
+
+    def _export_encryption_key(self, destination: str, password: str) -> bool:
+        """Isolé de ``_on_export_encryption_key_clicked`` pour rester
+        testable sans dialogue modal."""
+        try:
+            self._backup_service.export_encryption_key(destination, password)
+        except AppError as exc:
+            QMessageBox.warning(self, "Export refusé", str(exc))
+            return False
+        QMessageBox.information(
+            self, "Clé exportée",
+            f"La clé de chiffrement a été exportée vers « {destination} ». "
+            "Conservez ce fichier et son mot de passe en lieu sûr.",
+        )
+        return True
+
+    def _on_import_encryption_key_clicked(self) -> None:
+        source, _filter = QFileDialog.getOpenFileName(
+            self, "Importer une clé de chiffrement", "", "Fichiers de transfert de clé (*.json);;Tous les fichiers (*)",
+        )
+        if not source:
+            return
+
+        password, confirmed = QInputDialog.getText(
+            self, "Mot de passe du fichier de transfert",
+            "Mot de passe choisi lors de l'export de cette clé :",
+            QLineEdit.EchoMode.Password,
+        )
+        if not confirmed or not password:
+            return
+        self._import_encryption_key(source, password)
+
+    def _import_encryption_key(self, source: str, password: str) -> bool:
+        """Isolé de ``_on_import_encryption_key_clicked`` pour rester
+        testable sans les dialogues de collecte des entrées ci-dessus — la
+        confirmation de remplacement, elle, reste ici (§3.1 : « ne jamais
+        remplacer silencieusement une clé déjà présente »), déclenchée
+        uniquement par l'échec distinctif du service dans ce cas précis,
+        jamais présentée par avance à l'utilisateur quand elle ne
+        s'applique pas."""
+        try:
+            self._backup_service.import_encryption_key(source, password)
+        except EncryptionKeyAlreadyConfiguredError:
+            if not confirm_action(
+                self, "Remplacer la clé existante",
+                "Une clé de chiffrement est déjà configurée sur ce poste. La remplacer rendra "
+                "illisibles toutes les archives déjà chiffrées avec la clé actuelle. "
+                "Voulez-vous vraiment la remplacer par la clé importée ?",
+            ):
+                return False
+            try:
+                self._backup_service.import_encryption_key(source, password, overwrite=True)
+            except AppError as exc:
+                QMessageBox.warning(self, "Import refusé", str(exc))
+                return False
+        except AppError as exc:
+            QMessageBox.warning(self, "Import refusé", str(exc))
+            return False
+
+        QMessageBox.information(
+            self, "Clé importée",
+            "La clé de chiffrement a été importée avec succès. Utilisez « Tester la clé sur une "
+            "archive… » pour vérifier qu'elle permet bien de déchiffrer une archive apportée de "
+            "l'ancien ordinateur.",
+        )
+        return True
+
+    def _on_test_encryption_key_clicked(self) -> None:
+        archive_path, _filter = QFileDialog.getOpenFileName(
+            self, "Sélectionner une archive chiffrée à tester", "",
+            "Archives StockManager (*.db *.dump);;Tous les fichiers (*)",
+        )
+        if not archive_path:
+            return
+        self._test_encryption_key(archive_path)
+
+    def _test_encryption_key(self, archive_path: str) -> bool:
+        """Isolé de ``_on_test_encryption_key_clicked`` pour rester
+        testable sans dialogue modal de sélection de fichier."""
+        try:
+            success = self._backup_service.test_encryption_key_against_archive(archive_path)
+        except AppError as exc:
+            QMessageBox.warning(self, "Test impossible", str(exc))
+            return False
+        if success:
+            QMessageBox.information(self, "Clé valide", "Cette clé permet bien de déchiffrer l'archive sélectionnée.")
+        else:
+            QMessageBox.warning(
+                self, "Clé invalide",
+                "Cette clé ne permet pas de déchiffrer l'archive sélectionnée — mauvaise clé, "
+                "archive non chiffrée, ou archive corrompue.",
+            )
+        return success
 
     # -- protection externe (Mission « Sauvegarde automatique et restauration ») -----
 
@@ -394,6 +569,20 @@ class BackupsPage(QWidget):
 
         layout.addLayout(form)
 
+        # Mission corrective « Fiabilisation du module de sauvegarde »,
+        # §3.5 : avertissement explicite si l'heure actuellement configurée
+        # (section « Configuration de la sauvegarde automatique » plus
+        # haut) ne correspond plus à celle réellement enregistrée dans la
+        # tâche planifiée Windows — jamais laisser croire, à tort, qu'elles
+        # restent synchronisées après une modification de l'heure suivie
+        # d'un simple « Enregistrer » sans reconfigurer la tâche (voir
+        # ``_save_config``/``_refresh_task_time_sync_warning`` ci-dessous).
+        self.task_time_sync_warning_label = QLabel("", group)
+        self.task_time_sync_warning_label.setWordWrap(True)
+        self.task_time_sync_warning_label.setStyleSheet(f"font-weight: 600; color: {COLOR_DANGER};")
+        self.task_time_sync_warning_label.setVisible(False)
+        layout.addWidget(self.task_time_sync_warning_label)
+
         for widget in (self.external_enabled_checkbox, self.choose_media_button, self.external_retention_spin):
             widget.setEnabled(can_configure)
 
@@ -416,6 +605,20 @@ class BackupsPage(QWidget):
 
         self.configure_task_button = QPushButton("Configurer/réparer la tâche planifiée", group)
         self.configure_task_button.setEnabled(can_configure)
+        # Mission corrective « Fiabilisation du module de sauvegarde »,
+        # §3.14 : cette action RECRÉE entièrement la tâche planifiée
+        # Windows (voir ``ExternalBackupService.configure_scheduled_task``)
+        # — toute personnalisation apportée manuellement à cette tâche
+        # directement depuis le Planificateur de tâches Windows (horaire
+        # modifié à la main, déclencheur supplémentaire, etc.) est donc
+        # perdue et remplacée par la configuration actuelle de
+        # StockManager. Jamais découvert après coup seulement : annoncé
+        # ici, au survol du bouton, avant même de cliquer.
+        self.configure_task_button.setToolTip(
+            "Recrée entièrement la tâche planifiée Windows à partir de la configuration actuelle de "
+            "StockManager. Toute personnalisation apportée manuellement à cette tâche depuis le "
+            "Planificateur de tâches Windows sera perdue et remplacée."
+        )
         buttons_row.addWidget(self.configure_task_button)
 
         self.remove_task_button = QPushButton("Supprimer la tâche planifiée", group)
@@ -468,14 +671,41 @@ class BackupsPage(QWidget):
             status = self._external_backup_service.scheduled_task_status()
         except AppError as exc:
             self.external_task_status_label.setText(f"Indisponible sur ce poste : {exc}")
+            self.task_time_sync_warning_label.setVisible(False)
             return
         if not status.exists:
             self.external_task_status_label.setText("Non configurée.")
+            self.task_time_sync_warning_label.setVisible(False)
             return
         self.external_task_status_label.setText(
             f"{status.status or '—'} — dernière exécution : {status.last_run_time or '—'} "
             f"(résultat : {status.last_result or '—'})"
         )
+        self._refresh_task_time_sync_warning()
+
+    def _refresh_task_time_sync_warning(self) -> None:
+        """Isolé de ``_refresh_scheduled_task_status`` pour être également
+        appelable juste après ``_save_config`` (§3.5 du mandat correctif) —
+        jamais une exception laissée remonter ici : l'absence de retour
+        fiable (ex. hors Windows) ne doit jamais faire échouer tout le
+        reste du rafraîchissement de l'écran."""
+        if self._external_backup_service is None:
+            return
+        try:
+            synchronized = self._external_backup_service.is_scheduled_task_time_synchronized()
+        except AppError:
+            self.task_time_sync_warning_label.setVisible(False)
+            return
+        if synchronized is False:
+            self.task_time_sync_warning_label.setText(
+                "⚠ L'heure configurée ci-dessus ne correspond plus à celle enregistrée dans la "
+                "tâche planifiée Windows — cliquez sur « Configurer/réparer la tâche planifiée » "
+                "pour la mettre à jour, sans quoi la sauvegarde planifiée continuera de se "
+                "déclencher à l'ancienne heure lorsque StockManager est fermé."
+            )
+            self.task_time_sync_warning_label.setVisible(True)
+        else:
+            self.task_time_sync_warning_label.setVisible(False)
 
     def _on_choose_media_clicked(self) -> None:
         directory = QFileDialog.getExistingDirectory(self, "Support externe (clé USB / disque externe)", "")
@@ -970,9 +1200,38 @@ class BackupsPage(QWidget):
                 self, "Restauration réussie",
                 result.message + "\n\nVeuillez fermer et relancer StockManager Desktop maintenant.",
             )
+            if result.destination_warning:
+                self._offer_to_reconfigure_destination(result.destination_warning)
         else:
             QMessageBox.critical(self, "Échec de la restauration", result.message)
         return result.success
+
+    def _offer_to_reconfigure_destination(self, warning: str) -> None:
+        """Mission corrective « Fiabilisation du module de sauvegarde »,
+        §3.11 : la sauvegarde restaurée désignait un dossier de
+        destination inaccessible sur CE poste (typiquement un changement
+        d'ordinateur, voir ``BackupService.RestoreResult.destination_warning``)
+        — proposé immédiatement, plutôt que laissé à découvrir seulement
+        au prochain échec de sauvegarde planifiée."""
+        if not confirm_action(
+            self, "Dossier de destination à reconfigurer",
+            warning + "\n\nVoulez-vous choisir un nouveau dossier de destination maintenant ?",
+        ):
+            return
+        directory = QFileDialog.getExistingDirectory(self, "Nouveau dossier de destination des sauvegardes", "")
+        if not directory:
+            return
+        config = self._backup_service.get_config()
+        try:
+            self._backup_service.update_config(
+                auto_enabled=config.auto_enabled, frequency=config.frequency, time_of_day=config.time_of_day,
+                destination=directory, retention=config.retention, encryption_enabled=config.encryption_enabled,
+            )
+        except AppError as exc:
+            QMessageBox.warning(self, "Configuration refusée", str(exc))
+            return
+        self._apply_config_to_form(self._backup_service.get_config())
+        QMessageBox.information(self, "Dossier mis à jour", "Le nouveau dossier de destination a été enregistré.")
 
     def _restore_selected(self, backup_path: str) -> bool:
         """Appel direct et synchrone, isolé de ``_on_restore_clicked`` pour

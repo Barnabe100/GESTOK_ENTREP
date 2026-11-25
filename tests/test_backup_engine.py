@@ -259,3 +259,142 @@ def test_restore_database_from_backup_replaces_content(tmp_path: Path) -> None:
     rows = conn.execute("SELECT valeur FROM demo").fetchall()
     conn.close()
     assert rows == [("a",)]  # état au moment de la sauvegarde, pas l'ajout ultérieur
+
+
+# -- atomicité (mission corrective §3.2/§3.9) --------------------------------------
+
+
+def test_create_backup_file_leaves_no_partial_file_on_interrupted_copy(tmp_path: Path, monkeypatch) -> None:
+    """Simule une interruption pendant la copie SQLite elle-même : le
+    fichier temporaire ne doit jamais apparaître sous le nom de sauvegarde
+    final, et aucun autre fichier visible ne doit rester dans le dossier."""
+    source = tmp_path / "source.db"
+    _make_source_db(source)
+    destination_dir = tmp_path / "backups"
+
+    def _boom(*args, **kwargs):
+        raise sqlite3.OperationalError("coupure simulée")
+
+    monkeypatch.setattr(backup_engine, "_sqlite_backup", _boom)
+
+    with pytest.raises(sqlite3.OperationalError):
+        backup_engine.create_backup_file(source, destination_dir)
+
+    assert backup_engine.list_backup_files(destination_dir) == []
+    assert list(destination_dir.iterdir()) == []
+
+
+def test_create_backup_file_final_file_never_partial_even_if_replace_fails(tmp_path: Path, monkeypatch) -> None:
+    """Si le remplacement final échoue (ex. verrou Windows simulé), la copie
+    déjà faite doit rester disponible (AtomicReplaceError.recovered_path),
+    jamais sous le nom final, jamais perdue."""
+    source = tmp_path / "source.db"
+    _make_source_db(source)
+    destination_dir = tmp_path / "backups"
+
+    def _boom(*args, **kwargs):
+        raise OSError("verrou Windows simulé")
+
+    monkeypatch.setattr(backup_engine.os, "replace", _boom)
+
+    with pytest.raises(backup_engine.AtomicReplaceError) as exc_info:
+        backup_engine.create_backup_file(source, destination_dir)
+
+    recovered = exc_info.value.recovered_path
+    assert recovered.is_file()
+    conn = sqlite3.connect(str(recovered))
+    rows = conn.execute("SELECT valeur FROM demo").fetchall()
+    conn.close()
+    assert rows == [("a",)]
+    assert backup_engine.list_backup_files(destination_dir) == []
+
+
+def test_restore_database_from_backup_never_touches_target_when_copy_is_corrupted(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Simule une copie corrompue (intégrité SQLite invalide) pendant la
+    restauration : la base cible doit rester totalement intacte."""
+    source = tmp_path / "source.db"
+    _make_source_db(source)
+    backup_path = backup_engine.create_backup_file(source, tmp_path / "backups")
+
+    target = tmp_path / "restored.db"
+    _make_source_db(target)
+    conn = sqlite3.connect(str(target))
+    conn.execute("INSERT INTO demo (valeur) VALUES ('etat original')")
+    conn.commit()
+    conn.close()
+
+    def _fake_verify(path):
+        return backup_engine.BackupVerification(
+            valid=False, integrity_ok=False, tables_ok=False, alembic_version=None,
+            errors=["corruption simulée"],
+        )
+
+    monkeypatch.setattr(backup_engine, "verify_backup_file", _fake_verify)
+
+    with pytest.raises(backup_engine.RestoreValidationError):
+        backup_engine.restore_database_from_backup(backup_path, target)
+
+    conn = sqlite3.connect(str(target))
+    rows = conn.execute("SELECT valeur FROM demo").fetchall()
+    conn.close()
+    assert rows == [("a",), ("etat original",)]  # base cible inchangée
+
+
+def test_restore_database_from_backup_leaves_target_intact_when_replace_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "source.db"
+    _make_source_db(source)
+    backup_path = backup_engine.create_backup_file(source, tmp_path / "backups")
+
+    target = tmp_path / "restored.db"
+    _make_source_db(target)
+    conn = sqlite3.connect(str(target))
+    conn.execute("INSERT INTO demo (valeur) VALUES ('etat original')")
+    conn.commit()
+    conn.close()
+
+    def _boom(*args, **kwargs):
+        raise OSError("verrou Windows simulé")
+
+    monkeypatch.setattr(backup_engine.os, "replace", _boom)
+
+    with pytest.raises(backup_engine.AtomicReplaceError) as exc_info:
+        backup_engine.restore_database_from_backup(backup_path, target)
+
+    conn = sqlite3.connect(str(target))
+    rows = conn.execute("SELECT valeur FROM demo").fetchall()
+    conn.close()
+    assert rows == [("a",), ("etat original",)]  # jamais remplacée
+
+    recovered = exc_info.value.recovered_path
+    assert recovered.is_file()
+    conn = sqlite3.connect(str(recovered))
+    rows = conn.execute("SELECT valeur FROM demo").fetchall()
+    conn.close()
+    assert rows == [("a",)]  # la copie restaurée, elle, est bien celle de la sauvegarde
+
+
+def test_restore_database_from_backup_no_orphan_tmp_file_on_verification_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "source.db"
+    _make_source_db(source)
+    backup_path = backup_engine.create_backup_file(source, tmp_path / "backups")
+    target = tmp_path / "restored.db"
+    _make_source_db(target)
+
+    def _fake_verify(path):
+        return backup_engine.BackupVerification(
+            valid=False, integrity_ok=False, tables_ok=False, alembic_version=None, errors=["x"],
+        )
+
+    monkeypatch.setattr(backup_engine, "verify_backup_file", _fake_verify)
+
+    with pytest.raises(backup_engine.RestoreValidationError):
+        backup_engine.restore_database_from_backup(backup_path, target)
+
+    leftovers = [p for p in tmp_path.iterdir() if p.name.startswith(".restored.db_restore_")]
+    assert leftovers == []

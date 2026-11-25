@@ -18,6 +18,24 @@ def _build_page(stack) -> BackupsPage:
     return BackupsPage(stack.backups, stack.permissions, external_backup_service=stack.external_backups)
 
 
+class _FakeEncryptionVault:
+    """Coffre d'identifiants en mémoire — même rôle que son équivalent dans
+    tests/test_backup_service.py, dupliqué ici volontairement (fichier de
+    test indépendant, jamais d'import croisé entre modules de test)."""
+
+    def __init__(self) -> None:
+        self._store: dict[str, str] = {}
+
+    def get_password(self, profile_id: str):
+        return self._store.get(profile_id)
+
+    def set_password(self, profile_id: str, password: str) -> None:
+        self._store[profile_id] = password
+
+    def delete_password(self, profile_id: str) -> None:
+        self._store.pop(profile_id, None)
+
+
 def test_sqlite_mode_shows_no_postgresql_target_line(qtbot, login_as) -> None:
     """Lot E.7, §E.7.2 : la ligne d'identification de cible (hôte/port/base)
     ne concerne que PostgreSQL — en SQLite, comportement historique
@@ -183,6 +201,73 @@ def test_restore_selected_shows_error_on_invalid_backup(qtbot, login_as, tmp_pat
     result = page._restore_selected(str(fake))
 
     assert result is False
+
+
+# -- mission corrective §3.11 : revalidation du dossier de destination ---------
+
+
+def test_restore_offers_to_reconfigure_destination_when_warning_is_present(qtbot, login_as, tmp_path, monkeypatch) -> None:
+    """Confirme que ``BackupsPage`` relaie bien l'avertissement de
+    ``RestoreResult.destination_warning`` : si l'administrateur accepte,
+    un nouveau dossier est choisi puis enregistré via
+    ``BackupService.update_config`` — jamais une simple notification
+    silencieuse qu'il faudrait aller corriger soi-même ailleurs."""
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    class _FakeResult:
+        success = True
+        message = "Restauration réussie."
+        destination_warning = "Le dossier de destination des sauvegardes (« /ancien/poste ») n'existe pas."
+
+    new_destination = tmp_path / "nouveau_dossier"
+    new_destination.mkdir()
+    monkeypatch.setattr("app.views.pages.backups_page.QMessageBox.question", lambda *a, **k: QMessageBox.StandardButton.Yes)
+    monkeypatch.setattr(
+        "app.views.pages.backups_page.QFileDialog.getExistingDirectory", lambda *a, **k: str(new_destination)
+    )
+
+    page._show_restore_result(_FakeResult())
+
+    assert stack.backups.get_config().destination == new_destination
+
+
+def test_restore_destination_warning_declined_leaves_config_untouched(qtbot, login_as, tmp_path, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    destination = tmp_path / "backups"
+    stack.backups.update_config(auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(destination), retention=10)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    class _FakeResult:
+        success = True
+        message = "Restauration réussie."
+        destination_warning = "Le dossier de destination des sauvegardes n'existe pas."
+
+    monkeypatch.setattr("app.views.pages.backups_page.QMessageBox.question", lambda *a, **k: QMessageBox.StandardButton.No)
+
+    page._show_restore_result(_FakeResult())
+
+    assert stack.backups.get_config().destination == destination
+
+
+def test_restore_without_destination_warning_never_prompts(qtbot, login_as, tmp_path, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    class _FakeResult:
+        success = True
+        message = "Restauration réussie."
+        destination_warning = None
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("confirm_action n'aurait jamais dû être sollicité sans avertissement.")
+
+    monkeypatch.setattr("app.views.pages.backups_page.QMessageBox.question", _fail_if_called)
+
+    page._show_restore_result(_FakeResult())
 
 
 def test_confirmation_dialog_no_cancels_restore(qtbot, login_as, tmp_path, monkeypatch) -> None:
@@ -682,6 +767,21 @@ def test_export_entry_reports_failure_on_os_error(qtbot, login_as, tmp_path) -> 
     assert result is False
 
 
+def test_configure_task_button_tooltip_warns_about_overwriting_manual_changes(qtbot, login_as) -> None:
+    """Mission corrective §3.14 : jamais découvert après coup seulement —
+    le bouton doit annoncer, avant même de cliquer, que la tâche
+    planifiée Windows est entièrement recréée (perte de toute
+    personnalisation manuelle)."""
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    tooltip = page.configure_task_button.toolTip()
+
+    assert tooltip
+    assert "perdue" in tooltip or "remplacée" in tooltip
+
+
 def test_restore_wizard_button_enabled_with_permission(qtbot, login_as) -> None:
     stack, _ = login_as("Administrateur")
     page = _build_page(stack)
@@ -778,3 +878,240 @@ def test_has_active_background_task_delegates_to_open_wizard(qtbot, login_as, mo
     page._on_open_restore_wizard_clicked()
 
     assert page.has_active_background_task() is False
+
+
+# -- mission corrective §3.1 : case de chiffrement + transfert de clé ------------
+
+
+def test_encryption_checkbox_reflects_current_config(qtbot, login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(tmp_path / "backups"),
+        retention=10, encryption_enabled=True,
+    )
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.encryption_enabled_checkbox.isChecked() is True
+
+
+def test_save_config_no_longer_resets_encryption_enabled_to_false(qtbot, login_as, tmp_path) -> None:
+    """Régression corrigée par la mission corrective (§3.1) : avant ce
+    correctif, ``_save_config`` ne transmettait jamais ``encryption_enabled``,
+    qui retombait donc systématiquement à False à chaque enregistrement —
+    même en changeant un tout autre champ (ici la rétention)."""
+    stack, _ = login_as("Administrateur")
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(tmp_path / "backups"),
+        retention=10, encryption_enabled=True,
+    )
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    assert page.encryption_enabled_checkbox.isChecked() is True
+
+    page.retention_spin.setValue(15)  # ne touche pas au chiffrement...
+    page._save_config()
+
+    assert stack.backups.get_config().encryption_enabled is True  # ...donc reste activé.
+
+
+def test_save_config_can_disable_encryption_explicitly(qtbot, login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(tmp_path / "backups"),
+        retention=10, encryption_enabled=True,
+    )
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    page.encryption_enabled_checkbox.setChecked(False)
+    page._save_config()
+
+    assert stack.backups.get_config().encryption_enabled is False
+
+
+def test_encryption_key_buttons_disabled_without_permission(qtbot, login_as) -> None:
+    stack, _ = login_as("Vendeur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.export_key_button.isEnabled() is False
+    assert page.import_key_button.isEnabled() is False
+
+
+def test_export_encryption_key_success(qtbot, login_as, tmp_path) -> None:
+    from app.services.backups import archive_encryption
+
+    stack, _ = login_as("Administrateur")
+    fake_vault = _FakeEncryptionVault()
+    stack.backups._encryption_vault = fake_vault
+    archive_encryption.ensure_encryption_key(fake_vault)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    destination = tmp_path / "cle.json"
+
+    result = page._export_encryption_key(str(destination), "mot-de-passe")
+
+    assert result is True
+    assert destination.exists()
+
+
+def test_export_encryption_key_failure_shows_warning_without_raising(qtbot, login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    stack.backups._encryption_vault = _FakeEncryptionVault()  # aucune clé configurée
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    result = page._export_encryption_key(str(tmp_path / "cle.json"), "mot-de-passe")
+
+    assert result is False
+
+
+def test_import_encryption_key_success(qtbot, login_as, tmp_path) -> None:
+    from app.services.backups import archive_encryption
+
+    stack, _ = login_as("Administrateur")
+    old_vault = _FakeEncryptionVault()
+    archive_encryption.ensure_encryption_key(old_vault)
+    stack.backups._encryption_vault = old_vault
+    transfer_file = tmp_path / "cle.json"
+    stack.backups.export_encryption_key(transfer_file, "mot-de-passe")
+
+    stack.backups._encryption_vault = _FakeEncryptionVault()  # poste "neuf"
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    result = page._import_encryption_key(str(transfer_file), "mot-de-passe")
+
+    assert result is True
+
+
+def test_import_encryption_key_prompts_confirmation_before_overwrite(qtbot, login_as, tmp_path, monkeypatch) -> None:
+    from app.services.backups import archive_encryption
+
+    stack, _ = login_as("Administrateur")
+    old_vault = _FakeEncryptionVault()
+    archive_encryption.ensure_encryption_key(old_vault)
+    stack.backups._encryption_vault = old_vault
+    transfer_file = tmp_path / "cle.json"
+    stack.backups.export_encryption_key(transfer_file, "mot-de-passe")
+
+    destination_vault = _FakeEncryptionVault()
+    archive_encryption.ensure_encryption_key(destination_vault)  # une clé existe déjà
+    stack.backups._encryption_vault = destination_vault
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    confirm_calls = []
+    monkeypatch.setattr(
+        "app.views.pages.backups_page.confirm_action",
+        lambda *a, **k: confirm_calls.append(True) or True,
+    )
+
+    result = page._import_encryption_key(str(transfer_file), "mot-de-passe")
+
+    assert confirm_calls == [True]
+    assert result is True
+
+
+def test_import_encryption_key_overwrite_declined_keeps_existing_key(qtbot, login_as, tmp_path, monkeypatch) -> None:
+    from app.services.backups import archive_encryption
+
+    stack, _ = login_as("Administrateur")
+    old_vault = _FakeEncryptionVault()
+    archive_encryption.ensure_encryption_key(old_vault)
+    stack.backups._encryption_vault = old_vault
+    transfer_file = tmp_path / "cle.json"
+    stack.backups.export_encryption_key(transfer_file, "mot-de-passe")
+
+    destination_vault = _FakeEncryptionVault()
+    existing_key = archive_encryption.ensure_encryption_key(destination_vault)
+    stack.backups._encryption_vault = destination_vault
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    monkeypatch.setattr("app.views.pages.backups_page.confirm_action", lambda *a, **k: False)
+
+    result = page._import_encryption_key(str(transfer_file), "mot-de-passe")
+
+    assert result is False
+    assert archive_encryption.require_existing_encryption_key(destination_vault) == existing_key
+
+
+def test_test_encryption_key_reports_success(qtbot, login_as, tmp_path) -> None:
+    from app.services.backups import archive_encryption
+
+    stack, _ = login_as("Administrateur")
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(tmp_path / "backups"),
+        retention=10, encryption_enabled=True,
+    )
+    vault = _FakeEncryptionVault()
+    stack.backups._encryption_vault = vault
+    backup_result = stack.backups.create_manual_backup()
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    result = page._test_encryption_key(str(backup_result.file_path))
+
+    assert result is True
+
+
+# -- mission corrective §3.5 : avertissement de désynchronisation heure/tâche ----
+
+
+def test_time_sync_warning_hidden_when_service_reports_synchronized(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page.show()
+
+    monkeypatch.setattr(stack.external_backups, "is_scheduled_task_time_synchronized", lambda: True)
+    page._refresh_task_time_sync_warning()
+
+    assert page.task_time_sync_warning_label.isVisible() is False
+
+
+def test_time_sync_warning_shown_when_desynchronized(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page.show()
+
+    monkeypatch.setattr(stack.external_backups, "is_scheduled_task_time_synchronized", lambda: False)
+    page._refresh_task_time_sync_warning()
+
+    assert page.task_time_sync_warning_label.isVisible() is True
+    assert "tâche planifiée" in page.task_time_sync_warning_label.text()
+
+
+def test_time_sync_warning_hidden_when_no_task_exists_yet(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page.show()
+
+    monkeypatch.setattr(stack.external_backups, "is_scheduled_task_time_synchronized", lambda: None)
+    page._refresh_task_time_sync_warning()
+
+    assert page.task_time_sync_warning_label.isVisible() is False
+
+
+def test_save_config_refreshes_time_sync_warning(qtbot, login_as, tmp_path, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="20:00",
+        destination=str(tmp_path / "backups"), retention=10,
+    )
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page.show()
+
+    calls = []
+    monkeypatch.setattr(stack.external_backups, "is_scheduled_task_time_synchronized", lambda: (calls.append(True), False)[1])
+
+    page.time_edit.setText("23:00")
+    page._save_config()
+
+    assert calls  # le contrôle a bien été relancé après l'enregistrement.
+    assert page.task_time_sync_warning_label.isVisible() is True

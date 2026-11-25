@@ -475,3 +475,308 @@ def test_restore_from_externally_copied_archive_succeeds(login_as, tmp_path) -> 
     restore_result = stack.backups.restore_backup(copy_result.file_path)
 
     assert restore_result.success is True
+
+
+# -- mission corrective §3.6 : nouvelle tentative après un échec le même jour ---
+
+
+def test_scheduled_copy_retries_the_same_day_after_media_absent_failure(login_as, tmp_path) -> None:
+    """Scénario du mandat correctif : support absent à la première
+    tentative (échec), puis reconnecté — une seconde tentative le même
+    jour calendaire doit réussir, jamais bloquée par le seul échec
+    précédent."""
+    stack, _ = login_as("Administrateur")
+    drive = tmp_path / "usb"
+    drive.mkdir()
+    stack.external_backups.configure_media(drive, "Support")
+    stack.external_backups.update_config(enabled=True, retention=30)
+    _configure_local_backups(stack, tmp_path)
+    stack.backups.create_manual_backup()
+
+    stack.external_backups._media_roots_provider = lambda: []  # support débranché
+    first = stack.external_backups.run_scheduled_external_copy_if_due()
+
+    stack.external_backups._media_roots_provider = lambda: [drive]  # reconnecté
+    second = stack.external_backups.run_scheduled_external_copy_if_due()
+
+    assert first is not None
+    assert first.success is False
+    assert second is not None
+    assert second.success is True
+
+
+def test_scheduled_copy_does_not_retry_again_after_a_success_the_same_day(login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    drive = tmp_path / "usb"
+    drive.mkdir()
+    stack.external_backups.configure_media(drive, "Support")
+    stack.external_backups.update_config(enabled=True, retention=30)
+    stack.external_backups._media_roots_provider = lambda: [drive]
+    _configure_local_backups(stack, tmp_path)
+    stack.backups.create_manual_backup()
+
+    first = stack.external_backups.run_scheduled_external_copy_if_due()
+    assert first is not None
+    assert first.success is True
+
+    stack.external_backups._media_roots_provider = lambda: []  # sans incidence : déjà réussi aujourd'hui
+    second = stack.external_backups.run_scheduled_external_copy_if_due()
+
+    assert second is None
+
+
+def test_scheduled_copy_repeated_failures_never_delete_existing_external_backups(login_as, tmp_path) -> None:
+    """§3.6 : plusieurs tentatives échouées le même jour ne doivent jamais
+    supprimer les anciennes archives externes déjà présentes (rotation
+    jamais appliquée sur un échec, garantie déjà existante — vérifiée ici
+    en combinaison avec la nouvelle tentative)."""
+    stack, _ = login_as("Administrateur")
+    drive = tmp_path / "usb"
+    drive.mkdir()
+    stack.external_backups.configure_media(drive, "Support")
+    stack.external_backups.update_config(enabled=True, retention=30)
+    stack.external_backups._media_roots_provider = lambda: [drive]
+    _configure_local_backups(stack, tmp_path)
+    stack.backups.create_manual_backup()
+    # Copie manuelle (jamais soumise à la contrainte « une seule par jour »,
+    # voir copy_now) pour simuler une archive externe déjà présente d'une
+    # précédente échéance — sans quoi la toute première tentative
+    # planifiée réussie du test interdirait elle-même toute nouvelle
+    # tentative le même jour (comportement correct, mais pas ce que ce
+    # test veut vérifier ici).
+    first = stack.external_backups.copy_now()
+    assert first.success is True
+    existing_external_backups = stack.external_backups.list_external_backups()
+    assert len(existing_external_backups) == 1
+
+    stack.external_backups._media_roots_provider = lambda: []
+    for _ in range(3):
+        retry_result = stack.external_backups.run_scheduled_external_copy_if_due()
+        assert retry_result is not None
+        assert retry_result.success is False
+
+    stack.external_backups._media_roots_provider = lambda: [drive]
+    assert len(stack.external_backups.list_external_backups()) == 1
+
+
+# -- mission corrective §3.5 : tâche onlogon + synchronisation de l'heure -------
+
+
+def test_configure_scheduled_task_creates_both_daily_and_onlogon_tasks(login_as, monkeypatch) -> None:
+    from app.services.backups import scheduled_task_manager
+
+    stack, _ = login_as("Administrateur")
+    calls = []
+    monkeypatch.setattr(scheduled_task_manager, "sys", type("_Sys", (), {"platform": "win32"})())
+    monkeypatch.setattr(
+        scheduled_task_manager, "create_or_repair_task",
+        lambda name, exe, args, time_of_day, **kw: calls.append((name, kw.get("schedule"))),
+    )
+
+    stack.external_backups.configure_scheduled_task("20:00")
+
+    names_and_schedules = {name: schedule for name, schedule in calls}
+    assert "StockManager - Sauvegarde automatique" in names_and_schedules
+    assert "StockManager - Sauvegarde automatique (ouverture de session)" in names_and_schedules
+    assert names_and_schedules["StockManager - Sauvegarde automatique (ouverture de session)"] == (
+        scheduled_task_manager.SCHEDULE_ONLOGON
+    )
+
+
+def test_configure_scheduled_task_fails_entirely_if_onlogon_task_fails(login_as, monkeypatch) -> None:
+    from app.services.backups import scheduled_task_manager
+
+    stack, _ = login_as("Administrateur")
+    monkeypatch.setattr(scheduled_task_manager, "sys", type("_Sys", (), {"platform": "win32"})())
+
+    def _fake_create(name, exe, args, time_of_day, **kw):
+        if kw.get("schedule") == scheduled_task_manager.SCHEDULE_ONLOGON:
+            raise scheduled_task_manager.ScheduledTaskError("échec simulé")
+
+    monkeypatch.setattr(scheduled_task_manager, "create_or_repair_task", _fake_create)
+
+    with pytest.raises(ValidationError):
+        stack.external_backups.configure_scheduled_task("20:00")
+
+
+def test_remove_scheduled_task_removes_both_tasks(login_as, monkeypatch) -> None:
+    from app.services.backups import scheduled_task_manager
+
+    stack, _ = login_as("Administrateur")
+    removed = []
+    monkeypatch.setattr(scheduled_task_manager, "sys", type("_Sys", (), {"platform": "win32"})())
+    monkeypatch.setattr(scheduled_task_manager, "delete_task", lambda name: removed.append(name))
+
+    stack.external_backups.remove_scheduled_task()
+
+    assert "StockManager - Sauvegarde automatique" in removed
+    assert "StockManager - Sauvegarde automatique (ouverture de session)" in removed
+
+
+def test_is_scheduled_task_time_synchronized_none_when_task_absent(login_as, monkeypatch) -> None:
+    from app.services.backups import scheduled_task_manager
+
+    stack, _ = login_as("Administrateur")
+    monkeypatch.setattr(scheduled_task_manager, "sys", type("_Sys", (), {"platform": "win32"})())
+    monkeypatch.setattr(
+        scheduled_task_manager, "query_task_status",
+        lambda name: scheduled_task_manager.ScheduledTaskStatus(exists=False),
+    )
+
+    assert stack.external_backups.is_scheduled_task_time_synchronized() is None
+
+
+def test_is_scheduled_task_time_synchronized_true_right_after_configuration(login_as, tmp_path, monkeypatch) -> None:
+    from app.services.backups import scheduled_task_manager
+
+    stack, _ = login_as("Administrateur")
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="20:00",
+        destination=str(tmp_path / "backups"), retention=10,
+    )
+    monkeypatch.setattr(scheduled_task_manager, "sys", type("_Sys", (), {"platform": "win32"})())
+    monkeypatch.setattr(scheduled_task_manager, "create_or_repair_task", lambda *a, **k: None)
+    monkeypatch.setattr(
+        scheduled_task_manager, "query_task_status",
+        lambda name: scheduled_task_manager.ScheduledTaskStatus(exists=True),
+    )
+    stack.external_backups.configure_scheduled_task("20:00")
+
+    assert stack.external_backups.is_scheduled_task_time_synchronized() is True
+
+
+def test_is_scheduled_task_time_synchronized_false_after_time_changed_without_reconfiguring(
+    login_as, tmp_path, monkeypatch
+) -> None:
+    """Scénario exact du mandat correctif : l'heure est changée dans la
+    configuration locale (« Enregistrer »), sans jamais recliquer sur
+    « Configurer/réparer la tâche planifiée Windows… » — la détection doit
+    signaler la désynchronisation plutôt que de laisser croire, à tort,
+    que la tâche suit toujours la nouvelle heure."""
+    from app.services.backups import scheduled_task_manager
+
+    stack, _ = login_as("Administrateur")
+    destination = tmp_path / "backups"
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="20:00", destination=str(destination), retention=10,
+    )
+    monkeypatch.setattr(scheduled_task_manager, "sys", type("_Sys", (), {"platform": "win32"})())
+    monkeypatch.setattr(scheduled_task_manager, "create_or_repair_task", lambda *a, **k: None)
+    monkeypatch.setattr(
+        scheduled_task_manager, "query_task_status",
+        lambda name: scheduled_task_manager.ScheduledTaskStatus(exists=True),
+    )
+    stack.external_backups.configure_scheduled_task("20:00")
+
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="23:00", destination=str(destination), retention=10,
+    )
+
+    assert stack.external_backups.is_scheduled_task_time_synchronized() is False
+
+
+def test_is_scheduled_task_time_synchronized_requires_view_permission(login_as) -> None:
+    from app.utils.exceptions import PermissionDeniedError
+
+    stack, _ = login_as("Vendeur")
+
+    with pytest.raises(PermissionDeniedError):
+        stack.external_backups.is_scheduled_task_time_synchronized()
+
+
+# -- mission corrective §3.7 : verrou partagé avec BackupService ---------------
+
+
+def test_copy_now_refuses_cleanly_when_another_process_holds_the_shared_lock(login_as, tmp_path) -> None:
+    """Une copie externe manuelle ne doit jamais s'exécuter en même temps
+    qu'une autre opération de sauvegarde/restauration déjà en cours sur ce
+    poste (§4, point « éviter les exécutions simultanées ») — y compris
+    quand cette autre opération est détenue par un AUTRE processus (voir
+    ``tests/test_process_lock.py`` pour la distinction réentrance
+    intra-processus / refus inter-processus)."""
+    import subprocess
+    import sys
+    import time
+
+    stack, _ = login_as("Administrateur")
+    drive = tmp_path / "usb"
+    drive.mkdir()
+    stack.external_backups.configure_media(drive, "Support")
+    stack.external_backups.update_config(enabled=True, retention=30)
+    stack.external_backups._media_roots_provider = lambda: [drive]
+    _configure_local_backups(stack, tmp_path)
+    stack.backups.create_manual_backup()
+
+    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    time.sleep(0.2)
+    lock_path = stack.external_backups._backup_lock()._lock_path
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text(str(other.pid), encoding="utf-8")
+    try:
+        result = stack.external_backups.copy_now()
+    finally:
+        other.terminate()
+        other.wait(timeout=5)
+        lock_path.unlink(missing_ok=True)
+
+    assert result.success is False
+    assert "en cours" in result.message
+
+
+def test_backup_service_and_external_backup_service_share_the_same_lock_file(login_as, tmp_path) -> None:
+    """Preuve directe que les deux services protègent bien la MÊME
+    ressource (exigence du mandat correctif : « une opération planifiée et
+    une opération manuelle incompatible ne doivent jamais manipuler
+    simultanément les mêmes fichiers ») : ``BackupService`` et
+    ``ExternalBackupService`` construisent leur verrou à partir du même
+    chemin résolu — un verrou acquis par l'un est donc vu par l'autre,
+    sans qu'aucun appel réel de sauvegarde/copie ne soit nécessaire pour
+    le démontrer."""
+    stack, _ = login_as("Administrateur")
+
+    backups_lock_path = stack.backups._backup_lock()._lock_path.resolve()
+    external_lock_path = stack.external_backups._backup_lock()._lock_path.resolve()
+
+    assert backups_lock_path == external_lock_path
+
+
+# -- mission corrective §3.13 : nettoyage des fichiers temporaires orphelins ---
+
+
+def test_cleanup_orphaned_temp_files_removes_old_orphans_on_the_external_media(login_as, tmp_path) -> None:
+    import os
+    import time
+
+    stack, _ = login_as("Administrateur")
+    drive = tmp_path / "usb"
+    drive.mkdir()
+    stack.external_backups.configure_media(drive, "Support")
+    stack.external_backups._media_roots_provider = lambda: [drive]
+
+    external_destination = stack.external_backups._external_destination(drive)
+    external_destination.mkdir(parents=True, exist_ok=True)
+    orphan = external_destination / ".stockmanager_backup_20200101_020000.db_abcdef.tmp"
+    orphan.write_bytes(b"orphelin")
+    old_time = time.time() - 7200
+    os.utime(orphan, (old_time, old_time))
+
+    removed = stack.external_backups.cleanup_orphaned_temp_files()
+
+    assert removed == [orphan]
+    assert not orphan.exists()
+
+
+def test_cleanup_orphaned_temp_files_does_nothing_when_no_media_is_configured(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+
+    assert stack.external_backups.cleanup_orphaned_temp_files() == []
+
+
+def test_cleanup_orphaned_temp_files_does_nothing_when_media_is_absent(login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    drive = tmp_path / "usb"
+    drive.mkdir()
+    stack.external_backups.configure_media(drive, "Support")
+    stack.external_backups._media_roots_provider = lambda: []
+
+    assert stack.external_backups.cleanup_orphaned_temp_files() == []

@@ -1,15 +1,21 @@
+import dataclasses
+import shutil
 import sqlite3
 import time
+from datetime import datetime
 from decimal import Decimal
 
 import pytest
+from alembic import command
+from alembic.script import ScriptDirectory
 
 from app.config.settings import get_settings
+from app.db.init_db import _alembic_config
 from app.db.session import session_scope
 from app.models.audit import AuditLog
 from app.models.enums import ResultatAudit
 from app.services.backups import backup_engine
-from app.utils.exceptions import PermissionDeniedError, ValidationError
+from app.utils.exceptions import NotFoundError, PermissionDeniedError, ValidationError
 
 
 class _FakeEncryptionVault:
@@ -278,6 +284,141 @@ def test_restore_backup_succeeds_and_restores_data(login_as, tmp_path) -> None:
     assert references == {article.reference}
 
 
+def test_restore_reports_no_destination_warning_when_folder_is_still_valid(login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    destination = tmp_path / "backups"
+    stack.backups.update_config(auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(destination), retention=10)
+    backup_result = stack.backups.create_manual_backup()
+
+    restore_result = stack.backups.restore_backup(backup_result.file_path)
+
+    assert restore_result.success is True
+    assert restore_result.destination_warning is None
+
+
+def test_restore_warns_when_restored_destination_folder_does_not_exist_on_this_computer(login_as, tmp_path) -> None:
+    """Scénario exact du mandat correctif (§3.11) : la sauvegarde restaurée
+    porte en elle la configuration de l'ANCIEN poste (ex. changement
+    d'ordinateur) — si le dossier de destination qu'elle désigne n'existe
+    plus sur CE poste, la restauration doit tout de même réussir (jamais
+    bloquant), mais signaler clairement le problème pour que
+    l'administrateur en reconfigure un nouveau avant la prochaine
+    sauvegarde — jamais une panne silencieuse découverte seulement au
+    prochain échec de sauvegarde planifiée."""
+    stack, _ = login_as("Administrateur")
+    old_destination = tmp_path / "ancien_poste" / "backups"
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(old_destination), retention=10,
+    )
+    backup_result = stack.backups.create_manual_backup()
+    assert backup_result.success is True
+
+    # Le fichier de sauvegarde lui-même est apporté sur CE poste (ex. via
+    # une clé USB) — seul l'ANCIEN dossier de destination, lui, n'existe
+    # plus ici : on le copie donc ailleurs avant de simuler sa disparition.
+    brought_backup_path = tmp_path / backup_result.file_path.name
+    shutil.copy2(backup_result.file_path, brought_backup_path)
+    shutil.rmtree(old_destination)
+    new_destination = tmp_path / "ce_poste" / "backups"
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(new_destination), retention=10,
+    )
+
+    restore_result = stack.backups.restore_backup(brought_backup_path)
+
+    assert restore_result.success is True
+    assert restore_result.destination_warning is not None
+    assert str(old_destination) in restore_result.destination_warning
+
+
+def test_check_destination_accessible_returns_none_for_a_writable_folder(tmp_path) -> None:
+    from app.services.backups.backup_service import _check_destination_accessible
+
+    folder = tmp_path / "ok"
+    folder.mkdir()
+
+    assert _check_destination_accessible(folder) is None
+
+
+def test_check_destination_accessible_reports_a_missing_folder(tmp_path) -> None:
+    from app.services.backups.backup_service import _check_destination_accessible
+
+    message = _check_destination_accessible(tmp_path / "absent")
+
+    assert message is not None
+    assert "n'existe pas" in message
+
+
+# -- mission corrective §3.13 : nettoyage des fichiers temporaires orphelins ---
+
+
+def test_cleanup_orphaned_temp_files_removes_old_orphans_in_db_and_destination_folders(login_as, tmp_path) -> None:
+    import os
+
+    stack, _ = login_as("Administrateur")
+    destination = tmp_path / "backups"
+    stack.backups.update_config(auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(destination), retention=10)
+
+    db_orphan = stack.backups._db_path().parent / ".stockmanager.db_restore_abcdef.tmp"
+    db_orphan.write_bytes(b"orphelin")
+    destination_orphan = destination / ".stockmanager_backup_20200101_020000.db_abcdef.creating.tmp"
+    destination_orphan.write_bytes(b"orphelin")
+    old_time = time.time() - 7200
+    os.utime(db_orphan, (old_time, old_time))
+    os.utime(destination_orphan, (old_time, old_time))
+
+    removed = stack.backups.cleanup_orphaned_temp_files()
+
+    assert set(removed) == {db_orphan, destination_orphan}
+    assert not db_orphan.exists()
+    assert not destination_orphan.exists()
+
+
+def test_cleanup_orphaned_temp_files_never_removes_a_recent_temp_file(login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    destination = tmp_path / "backups"
+    stack.backups.update_config(auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(destination), retention=10)
+    recent_orphan = destination / ".stockmanager_backup_20260101_020000.db_abcdef.creating.tmp"
+    recent_orphan.write_bytes(b"operation en cours")
+
+    removed = stack.backups.cleanup_orphaned_temp_files()
+
+    assert removed == []
+    assert recent_orphan.exists()
+
+
+def test_cleanup_orphaned_temp_files_does_nothing_while_the_shared_lock_is_held(login_as, tmp_path) -> None:
+    """§3.13/§3.7 : jamais de suppression tant qu'une autre opération
+    pourrait être en cours — simulée ici en détenant le verrou partagé
+    depuis un autre processus."""
+    import os
+    import subprocess
+    import sys
+
+    stack, _ = login_as("Administrateur")
+    destination = tmp_path / "backups"
+    stack.backups.update_config(auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(destination), retention=10)
+    orphan = destination / ".stockmanager_backup_20200101_020000.db_abcdef.creating.tmp"
+    orphan.write_bytes(b"orphelin")
+    old_time = time.time() - 7200
+    os.utime(orphan, (old_time, old_time))
+
+    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    time.sleep(0.2)
+    lock_path = stack.backups._backup_lock()._lock_path
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text(str(other.pid), encoding="utf-8")
+    try:
+        removed = stack.backups.cleanup_orphaned_temp_files()
+    finally:
+        other.terminate()
+        other.wait(timeout=5)
+        lock_path.unlink(missing_ok=True)
+
+    assert removed == []
+    assert orphan.exists()
+
+
 def test_restore_backup_creates_security_backup_first(login_as, tmp_path) -> None:
     stack, _ = login_as("Administrateur")
     destination = tmp_path / "backups"
@@ -356,6 +497,105 @@ def test_restore_failure_recovers_previous_database_from_security_backup(login_a
     assert restore_result.success is False
     # La base actuelle n'est pas corrompue : les données d'origine sont intactes.
     assert stack.articles.get_article(article.id).stock_actuel == Decimal("77")
+
+
+# -- mission corrective §3.10 : compatibilité de version assouplie -------------
+
+
+def _build_old_schema_db(stack, tmp_path, revision: str):
+    """Construit une sauvegarde réaliste d'une version ANTÉRIEURE (mais
+    compatible) de StockManager : un instantané de la base active ACTUELLE
+    (utilisateurs, données déjà créées comprises), puis migré en ARRIÈRE
+    jusqu'à ``revision`` — jamais une base vide reconstruite depuis zéro,
+    qui ne contiendrait ni l'utilisateur courant ni ses données, et ne
+    simulerait donc pas fidèlement une vraie sauvegarde prise à cette
+    époque."""
+    old_db_path = tmp_path / f"old_schema_{revision}.db"
+    shutil.copy2(stack.backups._db_path(), old_db_path)
+    old_settings = dataclasses.replace(get_settings(), db_path=old_db_path)
+    command.downgrade(_alembic_config(old_settings), revision)
+    return old_db_path
+
+
+def test_restore_from_an_older_ancestor_schema_version_auto_upgrades_to_head(login_as, tmp_path) -> None:
+    """Scénario exact du mandat correctif (§3.10) : une sauvegarde plus
+    ancienne mais compatible (révision 0017, juste avant l'ajout des
+    tarifs vente/location en 0018 — migration purement additive, voir
+    ``migrations/versions/0018_tarifs_vente_location.py``) doit être
+    acceptée, puis le schéma mis à niveau automatiquement vers ``head`` —
+    jamais refusée pour la seule raison qu'elle ne correspond pas
+    exactement à la version actuelle. La restauration remplace bien le
+    contenu (pas seulement le schéma) : un article créé après
+    l'instantané disparaît, un article créé avant est conservé."""
+    stack, _ = login_as("Administrateur")
+    destination = tmp_path / "backups"
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(destination), retention=10,
+    )
+    article = _make_article(stack, stock_initial=Decimal("42"))
+    old_db_path = _build_old_schema_db(stack, tmp_path, "0017")
+    second_article = _make_article(stack, reference="ART-APRES-INSTANTANE", stock_initial=Decimal("5"))
+
+    restore_result = stack.backups.restore_backup(old_db_path)
+
+    assert restore_result.success is True
+    script = ScriptDirectory.from_config(_alembic_config(get_settings()))
+    assert backup_engine.get_alembic_version(stack.backups._db_path()) in script.get_heads()
+    assert stack.articles.get_article(article.id).stock_actuel == Decimal("42")
+    with pytest.raises(NotFoundError):
+        stack.articles.get_article(second_article.id)
+
+
+def test_restore_rejects_a_schema_version_that_is_not_an_ancestor_of_head(login_as, tmp_path) -> None:
+    """Toujours refusé : une version inconnue (ou plus récente que
+    l'application actuelle) ne doit jamais être mise à niveau
+    automatiquement — contrairement au cas ci-dessus."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("10"))
+
+    from app.models import Base
+
+    incompatible = tmp_path / "incompatible_future.db"
+    conn = sqlite3.connect(str(incompatible))
+    for table in Base.metadata.sorted_tables:
+        columns_sql = ", ".join(f'"{c.name}" TEXT' for c in table.columns) or "id INTEGER"
+        conn.execute(f'CREATE TABLE "{table.name}" ({columns_sql})')
+    conn.execute("CREATE TABLE alembic_version (version_num VARCHAR(32))")
+    conn.execute("INSERT INTO alembic_version (version_num) VALUES ('0099_version_future_inconnue')")
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(ValidationError):
+        stack.backups.restore_backup(incompatible)
+
+    assert stack.articles.get_article(article.id).stock_actuel == Decimal("10")
+
+
+def test_restore_rolls_back_to_security_backup_when_schema_upgrade_fails(login_as, tmp_path, monkeypatch) -> None:
+    """Si le fichier restauré est intact mais que la mise à niveau
+    automatique du schéma vers ``head`` échoue (ex. migration qui lève une
+    erreur), la base active ne doit jamais rester entre deux versions —
+    elle doit être rétablie dans son état d'avant restauration grâce à la
+    sauvegarde de sécurité, déjà à la version actuelle et connue bonne."""
+    stack, _ = login_as("Administrateur")
+    destination = tmp_path / "backups"
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(destination), retention=10,
+    )
+    article = _make_article(stack, stock_initial=Decimal("88"))
+    old_db_path = _build_old_schema_db(stack, tmp_path, "0017")
+
+    monkeypatch.setattr(
+        "app.services.backups.backup_service.init_db.init_database",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("panne simulée pendant la mise à niveau du schéma")),
+    )
+
+    restore_result = stack.backups.restore_backup(old_db_path)
+
+    assert restore_result.success is False
+    assert "rétablie" in restore_result.message
+    # Les données d'origine (avant la tentative de restauration) sont intactes.
+    assert stack.articles.get_article(article.id).stock_actuel == Decimal("88")
 
 
 # -- audit --------------------------------------------------------------------------
@@ -573,3 +813,354 @@ def test_verify_backup_file_succeeds_on_encrypted_archive(login_as, tmp_path) ->
     assert verification.valid is True
 
 
+
+
+# -- mission corrective §3.2/§3.9 : restauration atomique --------------------------
+
+
+def test_restore_reports_recovered_path_and_keeps_current_data_when_replace_fails(login_as, tmp_path) -> None:
+    """Simule l'échec du seul remplacement final (ex. verrou Windows
+    transitoire) — en substituant directement l'appel de plus haut niveau
+    (``backup_engine.restore_database_from_backup``), jamais
+    ``os.replace`` globalement, qui affecterait aussi la création de la
+    sauvegarde de sécurité préalable (celle-ci utilise désormais, elle
+    aussi, un remplacement atomique — voir backup_engine.create_backup_file)
+    et fausserait ce scénario. Le comportement précis de la nouvelle
+    tentative/du remplacement atomique lui-même est déjà testé
+    indépendamment dans tests/test_backup_engine.py."""
+    stack, _ = login_as("Administrateur")
+    destination = tmp_path / "backups"
+    stack.backups.update_config(auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(destination), retention=10)
+    article = _make_article(stack, stock_initial=Decimal("77"))
+    backup_result = stack.backups.create_manual_backup()
+
+    recovered_path = tmp_path / ".stockmanager.db_restore_abcdef.tmp"
+    recovered_path.write_text("copie déjà vérifiée")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            "app.services.backups.backup_engine.restore_database_from_backup",
+            lambda *a, **k: (_ for _ in ()).throw(
+                backup_engine.AtomicReplaceError("verrou Windows simulé", recovered_path=recovered_path)
+            ),
+        )
+        restore_result = stack.backups.restore_backup(backup_result.file_path)
+
+    assert restore_result.success is False
+    assert "n'a pas été modifiée" in restore_result.message
+    # Le chemin de la copie déjà vérifiée est communiqué à l'utilisateur.
+    assert str(recovered_path) in restore_result.message
+    assert stack.articles.get_article(article.id).stock_actuel == Decimal("77")
+    rows = _audit_rows("BACKUP_RESTORE_FAILURE")
+    assert len(rows) == 1
+
+
+def test_restore_never_touches_active_database_when_internal_copy_verification_fails(login_as, tmp_path) -> None:
+    """Simule l'échec interne de vérification d'intégrité pendant la copie
+    de restauration elle-même (voir
+    ``backup_engine.restore_database_from_backup``, qui lève
+    ``RestoreValidationError`` dans ce cas, jamais un remplacement de la
+    base active) — distinct de la validation initiale de l'archive source,
+    déjà couverte par ``test_restore_backup_rejects_invalid_file``."""
+    stack, _ = login_as("Administrateur")
+    destination = tmp_path / "backups"
+    stack.backups.update_config(auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(destination), retention=10)
+    article = _make_article(stack, stock_initial=Decimal("88"))
+    backup_result = stack.backups.create_manual_backup()
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            "app.services.backups.backup_engine.restore_database_from_backup",
+            lambda *a, **k: (_ for _ in ()).throw(
+                backup_engine.RestoreValidationError("corruption simulée pendant la copie de restauration")
+            ),
+        )
+        restore_result = stack.backups.restore_backup(backup_result.file_path)
+
+    assert restore_result.success is False
+    assert "n'a pas été modifiée" in restore_result.message
+    assert stack.articles.get_article(article.id).stock_actuel == Decimal("88")
+
+
+# -- mission corrective §3.1 : transfert de la clé de chiffrement -----------------
+
+
+def test_has_encryption_key_configured_false_by_default(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    stack.backups._encryption_vault = _FakeEncryptionVault()
+
+    assert stack.backups.has_encryption_key_configured() is False
+
+
+def test_has_encryption_key_configured_true_after_a_key_exists(login_as) -> None:
+    from app.services.backups import archive_encryption
+
+    stack, _ = login_as("Administrateur")
+    vault = _FakeEncryptionVault()
+    stack.backups._encryption_vault = vault
+    archive_encryption.ensure_encryption_key(vault)
+
+    assert stack.backups.has_encryption_key_configured() is True
+
+
+def test_export_encryption_key_requires_permission(login_as, tmp_path) -> None:
+    stack, _ = login_as("Vendeur")
+    stack.backups._encryption_vault = _FakeEncryptionVault()
+
+    with pytest.raises(PermissionDeniedError):
+        stack.backups.export_encryption_key(tmp_path / "cle.json", "mot-de-passe")
+
+
+def test_export_encryption_key_without_any_key_raises(login_as, tmp_path) -> None:
+    from app.services.backups.archive_encryption import NoEncryptionKeyConfiguredError
+
+    stack, _ = login_as("Administrateur")
+    stack.backups._encryption_vault = _FakeEncryptionVault()
+
+    with pytest.raises(NoEncryptionKeyConfiguredError):
+        stack.backups.export_encryption_key(tmp_path / "cle.json", "mot-de-passe")
+
+    rows = _audit_rows("BACKUP_ENCRYPTION_KEY_EXPORT_FAILURE")
+    assert len(rows) == 1
+
+
+def test_export_encryption_key_refuses_the_configured_backup_destination(login_as, tmp_path) -> None:
+    from app.services.backups import archive_encryption
+
+    stack, _ = login_as("Administrateur")
+    destination = tmp_path / "backups"
+    stack.backups.update_config(auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(destination), retention=10)
+    vault = _FakeEncryptionVault()
+    stack.backups._encryption_vault = vault
+    archive_encryption.ensure_encryption_key(vault)
+
+    with pytest.raises(archive_encryption.KeyTransferError):
+        stack.backups.export_encryption_key(destination / "cle.json", "mot-de-passe")
+
+
+def test_export_encryption_key_success_is_audited(login_as, tmp_path) -> None:
+    from app.services.backups import archive_encryption
+
+    stack, _ = login_as("Administrateur")
+    vault = _FakeEncryptionVault()
+    stack.backups._encryption_vault = vault
+    archive_encryption.ensure_encryption_key(vault)
+    transfer_file = tmp_path / "cle.json"
+
+    stack.backups.export_encryption_key(transfer_file, "mot-de-passe")
+
+    assert transfer_file.exists()
+    rows = _audit_rows("BACKUP_ENCRYPTION_KEY_EXPORT_SUCCESS")
+    assert len(rows) == 1
+
+
+def test_import_encryption_key_requires_permission(login_as, tmp_path) -> None:
+    stack, _ = login_as("Vendeur")
+
+    with pytest.raises(PermissionDeniedError):
+        stack.backups.import_encryption_key(tmp_path / "cle.json", "mot-de-passe")
+
+
+def test_export_then_import_round_trip_allows_decrypting_on_a_second_vault(login_as, tmp_path) -> None:
+    """Scénario central du mandat correctif, au niveau du service : une
+    archive chiffrée avec la clé du premier coffre reste déchiffrable
+    après export/import vers un second coffre totalement vide (simule un
+    second ordinateur)."""
+    stack, _ = login_as("Administrateur")
+    destination = tmp_path / "backups"
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(destination),
+        retention=10, encryption_enabled=True,
+    )
+    stack.backups._encryption_vault = _FakeEncryptionVault()
+    backup_result = stack.backups.create_manual_backup()
+    assert backup_result.success is True
+
+    transfer_file = tmp_path / "cle_de_transfert.json"
+    stack.backups.export_encryption_key(transfer_file, "mot-de-passe-du-transfert")
+
+    new_computer_vault = _FakeEncryptionVault()
+    stack.backups._encryption_vault = new_computer_vault
+    stack.backups.import_encryption_key(transfer_file, "mot-de-passe-du-transfert")
+
+    assert stack.backups.test_encryption_key_against_archive(backup_result.file_path) is True
+
+
+def test_import_encryption_key_without_confirmation_refuses_to_overwrite(login_as, tmp_path) -> None:
+    from app.services.backups import archive_encryption
+
+    stack, _ = login_as("Administrateur")
+    old_vault = _FakeEncryptionVault()
+    archive_encryption.ensure_encryption_key(old_vault)
+    stack.backups._encryption_vault = old_vault
+    transfer_file = tmp_path / "cle.json"
+    stack.backups.export_encryption_key(transfer_file, "mot-de-passe")
+
+    destination_vault = _FakeEncryptionVault()
+    archive_encryption.ensure_encryption_key(destination_vault)  # une clé existe déjà ici
+    stack.backups._encryption_vault = destination_vault
+
+    with pytest.raises(archive_encryption.EncryptionKeyAlreadyConfiguredError):
+        stack.backups.import_encryption_key(transfer_file, "mot-de-passe")
+
+    rows = _audit_rows("BACKUP_ENCRYPTION_KEY_IMPORT_FAILURE")
+    assert len(rows) == 1
+
+
+def test_import_encryption_key_overwrite_confirmed_is_audited(login_as, tmp_path) -> None:
+    from app.services.backups import archive_encryption
+
+    stack, _ = login_as("Administrateur")
+    old_vault = _FakeEncryptionVault()
+    archive_encryption.ensure_encryption_key(old_vault)
+    stack.backups._encryption_vault = old_vault
+    transfer_file = tmp_path / "cle.json"
+    stack.backups.export_encryption_key(transfer_file, "mot-de-passe")
+
+    destination_vault = _FakeEncryptionVault()
+    archive_encryption.ensure_encryption_key(destination_vault)
+    stack.backups._encryption_vault = destination_vault
+
+    stack.backups.import_encryption_key(transfer_file, "mot-de-passe", overwrite=True)
+
+    rows = _audit_rows("BACKUP_ENCRYPTION_KEY_IMPORT_SUCCESS")
+    assert len(rows) == 1
+
+
+def test_test_encryption_key_against_archive_only_requires_view_permission(login_as, tmp_path) -> None:
+    from app.services.backups import archive_encryption
+
+    admin_stack, _ = login_as("Administrateur")
+    destination = tmp_path / "backups"
+    admin_stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(destination),
+        retention=10, encryption_enabled=True,
+    )
+    vault = _FakeEncryptionVault()
+    admin_stack.backups._encryption_vault = vault
+    backup_result = admin_stack.backups.create_manual_backup()
+
+    consultation_stack, _ = login_as("Consultation")
+    consultation_stack.backups._encryption_vault = vault
+
+    assert consultation_stack.backups.test_encryption_key_against_archive(backup_result.file_path) is True
+
+
+# -- mission corrective §3.4/§3.8 : rattrapage + heure par défaut 20:00 ----------
+
+
+def test_default_time_of_day_is_twenty_hundred(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+
+    config = stack.backups.get_config()
+
+    assert config.time_of_day == "20:00"
+
+
+def test_update_config_preserves_an_already_configured_time(login_as, tmp_path) -> None:
+    """Le changement de valeur par défaut ne doit jamais écraser une
+    valeur déjà explicitement enregistrée (même garde que pour la
+    rétention — voir ``_read_config``)."""
+    stack, _ = login_as("Administrateur")
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="03:15",
+        destination=str(tmp_path / "backups"), retention=10,
+    )
+
+    assert stack.backups.get_config().time_of_day == "03:15"
+
+
+def _set_last_auto_run(stack, when) -> None:
+    from app.db.session import session_scope
+    from app.repositories.parameter_repository import ParameterRepository
+
+    with session_scope(stack.settings) as session:
+        ParameterRepository(session).set_value("backup.last_auto_run", when.isoformat())
+
+
+def test_catchup_triggers_immediately_when_a_full_day_was_missed(login_as, tmp_path) -> None:
+    """Scénario du mandat correctif : heure configurée 20h, une sauvegarde
+    a réussi il y a deux jours (donc la veille a été entièrement manquée —
+    ordinateur éteint à 20h), et on interroge maintenant à 08h (bien avant
+    l'heure cible du jour) : la sauvegarde doit être considérée due
+    immédiatement, sans attendre 20h aujourd'hui."""
+    stack, _ = login_as("Administrateur")
+    destination = tmp_path / "backups"
+    stack.backups.update_config(
+        auto_enabled=True, frequency="daily", time_of_day="20:00", destination=str(destination), retention=10,
+    )
+    two_days_ago = datetime(2026, 1, 1, 20, 5, 0)
+    _set_last_auto_run(stack, two_days_ago)
+    config = stack.backups.get_config()
+
+    now = datetime(2026, 1, 3, 8, 0, 0)  # le lendemain du jour manqué, 8h du matin
+    assert stack.backups._is_due(config, now) is True
+
+
+def test_catchup_does_not_trigger_the_normal_day_before_target_time(login_as, tmp_path) -> None:
+    """Cas normal, non manqué : la dernière sauvegarde réussie date d'hier
+    — pas de rattrapage, on attend bien l'heure cible d'aujourd'hui comme
+    avant ce correctif."""
+    stack, _ = login_as("Administrateur")
+    destination = tmp_path / "backups"
+    stack.backups.update_config(
+        auto_enabled=True, frequency="daily", time_of_day="20:00", destination=str(destination), retention=10,
+    )
+    yesterday = datetime(2026, 1, 1, 20, 5, 0)
+    _set_last_auto_run(stack, yesterday)
+    config = stack.backups.get_config()
+
+    now = datetime(2026, 1, 2, 8, 0, 0)  # le jour suivant, mais avant 20h — rien manqué encore.
+    assert stack.backups._is_due(config, now) is False
+
+
+def test_catchup_never_triggers_for_a_never_run_backup(login_as, tmp_path) -> None:
+    """Jamais de rattrapage pour une toute première sauvegarde : une
+    installation qui vient d'activer la sauvegarde automatique doit
+    attendre la première heure cible, pas un déclenchement immédiat et
+    inattendu."""
+    stack, _ = login_as("Administrateur")
+    destination = tmp_path / "backups"
+    stack.backups.update_config(
+        auto_enabled=True, frequency="daily", time_of_day="20:00", destination=str(destination), retention=10,
+    )
+    config = stack.backups.get_config()
+
+    now = datetime(2026, 1, 1, 8, 0, 0)
+    assert stack.backups._is_due(config, now) is False
+
+
+def test_catchup_runs_only_once_even_when_queried_repeatedly_before_target_time(login_as, tmp_path) -> None:
+    """Évite les sauvegardes automatiques inutiles (§3.4) : une fois le
+    rattrapage effectué, une nouvelle interrogation le même jour (toujours
+    avant l'heure cible) ne doit plus déclencher de seconde sauvegarde."""
+    stack, _ = login_as("Administrateur")
+    destination = tmp_path / "backups"
+    stack.backups.update_config(
+        auto_enabled=True, frequency="daily", time_of_day="20:00", destination=str(destination), retention=10,
+    )
+    _set_last_auto_run(stack, datetime(2026, 1, 1, 20, 5, 0))
+
+    first_result = stack.backups.run_scheduled_backup_if_due()
+    assert first_result is not None
+    assert first_result.success is True
+
+    config = stack.backups.get_config()
+    second_check = stack.backups._is_due(config, datetime(2026, 1, 3, 9, 0, 0))
+    assert second_check is False
+
+
+def test_catchup_also_works_for_weekly_frequency(login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    destination = tmp_path / "backups"
+    stack.backups.update_config(
+        auto_enabled=True, frequency="weekly", time_of_day="20:00", destination=str(destination), retention=10,
+    )
+    # Hebdomadaire : échéance normale à J+7. Si la dernière réussite date
+    # de plus de 8 jours avant « hier », l'échéance était déjà dépassée
+    # hier aussi -> rattrapage immédiat aujourd'hui, avant l'heure cible.
+    _set_last_auto_run(stack, datetime(2026, 1, 1, 20, 5, 0))
+    config = stack.backups.get_config()
+
+    now = datetime(2026, 1, 10, 8, 0, 0)  # 9 jours plus tard, bien avant 20h
+    assert stack.backups._is_due(config, now) is True

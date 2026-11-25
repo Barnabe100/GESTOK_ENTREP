@@ -43,7 +43,7 @@ from app.models.audit import AuditLog
 from app.models.enums import ResultatAudit
 from app.repositories.parameter_repository import ParameterRepository
 from app.services.auth.permission_service import PermissionService
-from app.services.backups import archive_manifest, backup_engine
+from app.services.backups import archive_manifest, backup_engine, temp_cleanup
 from app.services.backups import postgresql_backup_engine as pg_backup_engine
 from app.services.backups import scheduled_task_manager
 from app.services.backups.backup_service import BackupEntry, BackupService
@@ -54,6 +54,17 @@ from app.utils.logging_config import get_logger
 logger = get_logger("services.backups.external")
 
 SCHEDULED_TASK_NAME = "StockManager - Sauvegarde automatique"
+# Mission corrective « Fiabilisation du module de sauvegarde », §3.4/§3.5/
+# §3.6 : tâche complémentaire, déclenchée à chaque ouverture de session
+# plutôt qu'à heure fixe — sert uniquement de rattrapage (sauvegarde locale
+# manquée la veille, ou nouvelle tentative de copie externe après un échec
+# le même jour), jamais à la place de la tâche quotidienne ci-dessus :
+# même agent (``run_cycle``), qui décide lui-même s'il y a réellement
+# quelque chose à faire (voir ``BackupService._is_due``/
+# ``ExternalBackupService.run_scheduled_external_copy_if_due``) — jamais
+# une sauvegarde/copie supplémentaire inutile du seul fait de cette
+# seconde tâche.
+SCHEDULED_TASK_NAME_LOGON = "StockManager - Sauvegarde automatique (ouverture de session)"
 
 _KEY_ENABLED = "backup.external.enabled"
 _KEY_MARKER_ID = "backup.external.marker_id"
@@ -61,7 +72,25 @@ _KEY_LABEL = "backup.external.label"
 _KEY_RETENTION = "backup.external.retention"
 _KEY_LAST_RUN_AT = "backup.external.last_run_at"
 _KEY_LAST_RESULT = "backup.external.last_result"
-_KEY_LAST_AUTO_RUN_DATE = "backup.external.last_auto_run_date"
+# Mission corrective « Fiabilisation du module de sauvegarde », §3.6 :
+# ``_KEY_LAST_AUTO_RUN_DATE`` (seule clé existant avant ce correctif) ne
+# distinguait pas une TENTATIVE d'un SUCCÈS — elle était posée à la date du
+# jour que la copie réussisse ou échoue, empêchant toute nouvelle tentative
+# le même jour même après un échec dû à la seule absence transitoire du
+# support (ex. débranché à l'heure planifiée, reconnecté peu après).
+# ``_KEY_LAST_AUTO_SUCCESS_DATE`` ne retient désormais que les succès —
+# jamais plus d'une copie externe RÉUSSIE par jour calendaire (inchangé),
+# mais un échec n'empêche plus plusieurs tentatives le même jour.
+_KEY_LAST_AUTO_SUCCESS_DATE = "backup.external.last_auto_success_date"
+# Mission corrective, §3.5 : heure utilisée lors de la dernière création/
+# réparation réussie de la tâche planifiée Windows — comparée à l'heure
+# actuellement configurée (``BackupService.get_config().time_of_day``)
+# pour détecter une désynchronisation (voir
+# :meth:`ExternalBackupService.is_scheduled_task_time_synchronized`),
+# jamais lue depuis Windows lui-même (``schtasks /query`` n'expose pas
+# l'heure du déclencheur de façon simple et fiable, seulement sa prochaine
+# exécution calculée, qui dépend de la date du jour).
+_KEY_TASK_CONFIGURED_TIME = "backup.external.task_configured_time"
 
 MIN_RETENTION = 30
 MAX_RETENTION = 50
@@ -244,25 +273,84 @@ class ExternalBackupService:
         """Appelée par l'agent auxiliaire (§4 du mandat) — aucune
         vérification de permission (opération système, même convention que
         ``BackupService.run_scheduled_backup_if_due``). Retourne ``None``
-        si la protection externe est désactivée ou si une copie a déjà eu
-        lieu aujourd'hui (sûr d'appeler cette méthode plus souvent que
-        nécessaire — jamais plus d'une copie réelle par jour calendaire)."""
+        si la protection externe est désactivée ou si une copie a déjà
+        RÉUSSI aujourd'hui (sûr d'appeler cette méthode plus souvent que
+        nécessaire — jamais plus d'une copie réellement réussie par jour
+        calendaire).
+
+        Mission corrective, §3.6 : un échec (ex. support absent à l'heure
+        planifiée) ne pose jamais cette date — une nouvelle tentative reste
+        possible plus tard le même jour calendaire si cette méthode est
+        appelée à nouveau (ex. le support est reconnecté, ou une seconde
+        tâche planifiée de rattrapage se déclenche — voir
+        ``ExternalBackupService.configure_scheduled_task``, §3.5 du même
+        mandat), jamais bloquée par le seul échec précédent de la même
+        journée."""
         config = self._read_config()
         if not config.enabled or not config.is_configured:
             return None
 
         today = datetime.now().date().isoformat()
         with session_scope(self._settings) as session:
-            last_auto_run_date = ParameterRepository(session).get_value(_KEY_LAST_AUTO_RUN_DATE)
-        if last_auto_run_date == today:
+            last_success_date = ParameterRepository(session).get_value(_KEY_LAST_AUTO_SUCCESS_DATE)
+        if last_success_date == today:
             return None
 
         result = self._run_copy(action="BACKUP_EXTERNAL_AUTO")
-        with session_scope(self._settings) as session:
-            ParameterRepository(session).set_value(_KEY_LAST_AUTO_RUN_DATE, today)
+        if result.success:
+            with session_scope(self._settings) as session:
+                ParameterRepository(session).set_value(_KEY_LAST_AUTO_SUCCESS_DATE, today)
         return result
 
+    def _backup_lock(self):
+        """Même verrou partagé que ``BackupService`` (mission corrective,
+        §3.7 — voir sa docstring équivalente) : jamais une copie externe en
+        même temps qu'une création de sauvegarde locale ou une
+        restauration, qu'elles proviennent de l'agent auxiliaire ou d'une
+        action manuelle de l'interface. Réentrant au sein d'un même
+        processus (voir ``ProcessLock``) : l'agent, qui détient déjà ce
+        verrou pour tout son cycle, ne se bloque jamais lui-même en
+        appelant cette méthode."""
+        from app.utils.process_lock import BACKUP_LOCK_FILENAME, ProcessLock
+
+        return ProcessLock(self._effective_settings().data_dir / BACKUP_LOCK_FILENAME)
+
+    def cleanup_orphaned_temp_files(self) -> list[Path]:
+        """Mission corrective, §3.13 : même principe que
+        ``BackupService.cleanup_orphaned_temp_files`` (voir sa docstring),
+        appliqué au dossier de destination sur le support externe — rien
+        à faire (liste vide, jamais une erreur) si le support n'est
+        actuellement ni configuré ni branché : un support externe peut
+        rester débranché longtemps entre deux cycles sans que cela ne
+        soit jamais considéré comme un problème."""
+        lock = self._backup_lock()
+        if not lock.acquire():
+            return []
+        try:
+            media_root = self.find_current_media_root()
+            if media_root is None:
+                return []
+            return temp_cleanup.cleanup_orphaned_temp_files(self._external_destination(media_root))
+        finally:
+            lock.release()
+
     def _run_copy(self, *, action: str) -> ExternalCopyResult:
+        lock = self._backup_lock()
+        if not lock.acquire():
+            return ExternalCopyResult(
+                False,
+                "Une autre opération de sauvegarde ou de restauration est déjà en cours sur ce "
+                "poste. Réessayez dans quelques instants.",
+            )
+        try:
+            return self._run_copy_locked(action=action)
+        finally:
+            lock.release()
+
+    def _run_copy_locked(self, *, action: str) -> ExternalCopyResult:
+        """Corps de :meth:`_run_copy`, isolé pour que le verrou (ci-dessus)
+        entoure strictement tout le travail — jamais de code mutatif hors
+        de sa portée."""
         config = self._read_config()
         if not config.is_configured:
             return self._finish_copy(ExternalCopyResult(False, "Aucun support externe configuré."), action)
@@ -385,11 +473,21 @@ class ExternalBackupService:
         return scheduled_task_manager.query_task_status(SCHEDULED_TASK_NAME)
 
     def configure_scheduled_task(self, time_of_day: str) -> None:
-        """Crée ou répare la tâche planifiée Windows (§4 du mandat) —
-        couvre à la fois la sauvegarde locale ET la copie externe (décision
-        d'architecture validée : une seule tâche quotidienne, voir
-        ``app.backup_external_agent_cli``), jamais deux tâches distinctes à
-        administrer séparément."""
+        """Crée ou répare DEUX tâches planifiées Windows (§4 du mandat
+        initial, §3.5 du mandat correctif) :
+        - ``SCHEDULED_TASK_NAME`` : quotidienne à ``time_of_day``, couvre à
+          la fois la sauvegarde locale ET la copie externe (décision
+          d'architecture validée : une seule tâche quotidienne plutôt que
+          deux tâches distinctes à administrer séparément) ;
+        - ``SCHEDULED_TASK_NAME_LOGON`` : à l'ouverture de session,
+          rattrapage uniquement (voir sa constante ci-dessus) — même agent,
+          jamais une seconde logique.
+
+        Les deux doivent réussir pour que l'opération soit considérée
+        réussie — jamais une réussite partielle silencieuse : en cas
+        d'échec de l'une ou l'autre, aucune n'est considérée configurée du
+        point de vue de l'utilisateur (relancer « Configurer/réparer… »
+        est sans risque, ``create_or_repair_task`` étant idempotent)."""
         self._permissions.require_permission("BACKUP_EXTERNAL_CONFIGURE")
         from app.backup_external_agent_cli import resolve_agent_invocation
 
@@ -398,21 +496,49 @@ class ExternalBackupService:
             scheduled_task_manager.create_or_repair_task(
                 SCHEDULED_TASK_NAME, executable, arguments, time_of_day
             )
+            scheduled_task_manager.create_or_repair_task(
+                SCHEDULED_TASK_NAME_LOGON, executable, arguments, time_of_day,
+                schedule=scheduled_task_manager.SCHEDULE_ONLOGON,
+            )
         except (scheduled_task_manager.ScheduledTaskError, UnsupportedPlatformError) as exc:
             self._audit("BACKUP_SCHEDULED_TASK_CONFIGURE_FAILURE", ResultatAudit.ECHEC, details=str(exc))
             raise ValidationError(str(exc)) from exc
+
+        with session_scope(self._settings) as session:
+            ParameterRepository(session).set_value(_KEY_TASK_CONFIGURED_TIME, time_of_day)
         self._audit("BACKUP_SCHEDULED_TASK_CONFIGURE_SUCCESS", ResultatAudit.SUCCES)
-        logger.info("Tâche planifiée Windows configurée/réparée (%s).", time_of_day)
+        logger.info("Tâches planifiées Windows configurées/réparées (quotidienne %s + ouverture de session).", time_of_day)
 
     def remove_scheduled_task(self) -> None:
         self._permissions.require_permission("BACKUP_EXTERNAL_CONFIGURE")
         try:
             scheduled_task_manager.delete_task(SCHEDULED_TASK_NAME)
+            scheduled_task_manager.delete_task(SCHEDULED_TASK_NAME_LOGON)
         except (scheduled_task_manager.ScheduledTaskError, UnsupportedPlatformError) as exc:
             self._audit("BACKUP_SCHEDULED_TASK_REMOVE_FAILURE", ResultatAudit.ECHEC, details=str(exc))
             raise ValidationError(str(exc)) from exc
         self._audit("BACKUP_SCHEDULED_TASK_REMOVE_SUCCESS", ResultatAudit.SUCCES)
-        logger.info("Tâche planifiée Windows supprimée.")
+        logger.info("Tâches planifiées Windows supprimées.")
+
+    def is_scheduled_task_time_synchronized(self) -> Optional[bool]:
+        """Mission corrective, §3.5 : modifier l'heure dans l'écran de
+        configuration locale puis cliquer seulement sur « Enregistrer »
+        (voir ``BackupsPage._save_config``) ne met jamais à jour la tâche
+        planifiée Windows déjà créée — ce contrôle permet à l'interface de
+        le signaler explicitement plutôt que de laisser croire, à tort,
+        qu'elles restent synchronisées. ``None`` si la tâche quotidienne
+        n'existe pas encore (rien à comparer, pas une désynchronisation en
+        soi) ; sinon ``True``/``False`` selon que l'heure actuellement
+        configurée correspond toujours à celle utilisée lors de la
+        dernière création/réparation réussie de la tâche."""
+        self._permissions.require_permission("BACKUP_VIEW")
+        status = scheduled_task_manager.query_task_status(SCHEDULED_TASK_NAME)
+        if not status.exists:
+            return None
+        with session_scope(self._settings) as session:
+            configured_time = ParameterRepository(session).get_value(_KEY_TASK_CONFIGURED_TIME)
+        current_time = self._backup_service.get_config().time_of_day
+        return configured_time == current_time
 
 
 def _apply_retention_for_engine(engine: str, destination: Path, retention: int) -> list[Path]:

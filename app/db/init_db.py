@@ -7,10 +7,11 @@ schéma sans perte de données chez les clients déjà installés.
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Iterator, Optional
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 
 from app.config import Settings, get_settings
 from app.utils.logging_config import get_logger
@@ -60,3 +61,59 @@ def init_database(settings: Optional[Settings] = None) -> None:
     config = _alembic_config(settings)
     command.upgrade(config, "head")
     logger.info("Schéma de base de données à jour.")
+
+
+def _walk_ancestors(script: ScriptDirectory, revision_id: Optional[str], visited: set[str]) -> Iterator[str]:
+    """Génère ``revision_id`` lui-même puis chacun de ses ancêtres, en
+    remontant son (ou ses, pour une révision de fusion) ``down_revision`` —
+    ``visited`` évite toute boucle infinie en cas d'incohérence du graphe.
+    L'historique de ce projet est en pratique strictement linéaire (une
+    seule tête, une seule base, vérifié par inspection directe), mais le
+    cas d'une révision de fusion (``down_revision`` sous forme de tuple,
+    plusieurs branches parentes) est géré par précaution plutôt que supposé
+    absent pour toujours."""
+    if revision_id is None or revision_id in visited:
+        return
+    visited.add(revision_id)
+    yield revision_id
+    revision = script.get_revision(revision_id)
+    if revision is None or revision.down_revision is None:
+        return
+    parents = revision.down_revision
+    if not isinstance(parents, tuple):
+        parents = (parents,)
+    for parent in parents:
+        yield from _walk_ancestors(script, parent, visited)
+
+
+def is_ancestor_revision(candidate_revision: Optional[str], settings: Optional[Settings] = None) -> bool:
+    """Vrai si ``candidate_revision`` est la révision actuelle (``head``) ou
+    une révision Alembic strictement antérieure sur son historique — c'est
+    à dire si l'amener à ``head`` ne demande jamais qu'une suite de
+    migrations ASCENDANTES (``command.upgrade``), jamais de retour en
+    arrière. Utilisé pour assouplir la vérification de compatibilité de
+    version avant restauration (mission corrective « Fiabilisation du
+    module de sauvegarde », §3.10) : une sauvegarde plus ancienne mais
+    compatible peut alors être restaurée puis mise à niveau automatiquement
+    vers ``head``, plutôt que refusée pour la seule raison qu'elle ne
+    correspond pas exactement à la version actuelle.
+
+    Retourne ``False`` sans jamais lever si ``candidate_revision`` est
+    ``None``, inconnue du script Alembic, ou n'est pas un ancêtre de
+    ``head`` (cas d'une sauvegarde plus RÉCENTE que l'application actuelle
+    — prise avec une version ultérieure de StockManager puis restaurée sur
+    un poste resté en retard — ou sur une branche distincte) : dans ces
+    deux cas, une mise à niveau automatique ne serait jamais sûre."""
+    if not candidate_revision:
+        return False
+    settings = settings or get_settings()
+    try:
+        script = ScriptDirectory.from_config(_alembic_config(settings))
+        heads = script.get_heads()
+    except Exception:
+        return False
+    visited: set[str] = set()
+    for head in heads:
+        if candidate_revision in _walk_ancestors(script, head, visited):
+            return True
+    return False

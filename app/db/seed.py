@@ -94,6 +94,11 @@ PERMISSIONS: list[tuple[str, str, str]] = [
         "Configurer la protection externe (support, rétention, tâche planifiée Windows)",
         "sauvegardes",
     ),
+    (
+        "BACKUP_ENCRYPTION_MANAGE",
+        "Exporter/importer la clé de chiffrement des sauvegardes",
+        "sauvegardes",
+    ),
     ("AUDIT_VIEW", "Consulter le journal d'audit", "audit"),
     ("LICENSE_VIEW", "Consulter la licence", "licences"),
     ("LICENSE_ACTIVATE", "Activer une licence", "licences"),

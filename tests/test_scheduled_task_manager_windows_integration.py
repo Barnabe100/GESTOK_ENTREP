@@ -70,3 +70,15 @@ def test_delete_removes_task() -> None:
 
 def test_delete_is_idempotent_when_already_absent() -> None:
     stm.delete_task(_TEST_TASK_NAME)  # ne doit jamais lever, même si absente
+
+
+def test_create_onlogon_task_is_accepted_by_real_schtasks() -> None:
+    """Mission corrective, §3.5 : vérifie réellement que ``schtasks.exe``
+    accepte ``/sc onlogon`` sans ``/st`` — jamais vérifié ailleurs que sur
+    Windows réel (la construction de la ligne de commande elle-même est
+    déjà testée sans Windows, voir tests/test_scheduled_task_manager.py)."""
+    stm.create_or_repair_task(
+        _TEST_TASK_NAME, sys.executable, ["--version"], "20:00", schedule=stm.SCHEDULE_ONLOGON,
+    )
+
+    assert stm.task_exists(_TEST_TASK_NAME) is True

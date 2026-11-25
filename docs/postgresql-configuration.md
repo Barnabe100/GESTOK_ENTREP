@@ -162,18 +162,36 @@ interface, puis, côté service :
 1. vérification structurelle de l'archive (`pg_restore --list`, sans jamais
    se connecter à aucun serveur) et des tables attendues ;
 2. comparaison de la version de schéma embarquée dans l'archive avec celle
-   de la base active — version différente, restauration refusée ;
+   de la base active — version strictement identique ou ANTÉRIEURE et
+   compatible (aucune migration retirée entre les deux, voir
+   `app.db.init_db.is_ancestor_revision`), restauration acceptée ; version
+   plus récente que l'application actuelle, ou incompatible (branche
+   distincte), restauration refusée (mission corrective « Fiabilisation du
+   module de sauvegarde », §3.10) ;
 3. sauvegarde de sécurité de la base active (même convention que pour
    SQLite, préfixe `stockmanager_prerestore_pg_...`) ;
 4. restauration proprement dite, avec `pg_restore --single-transaction
    --clean --if-exists --no-owner --no-privileges` : l'ensemble de
    l'opération s'exécute dans **une seule transaction SQL côté serveur** —
    tout échec en cours de restauration annule l'intégralité de la
-   transaction, la base active n'est alors jamais modifiée (contrairement à
-   SQLite, où un remplacement de fichier partiel est en théorie possible,
-   d'où la sauvegarde de secours systématique de ce moteur). `--no-owner
+   transaction, la base active n'est alors jamais modifiée. `--no-owner
    --no-privileges` garantit qu'aucun rôle ni permission serveur n'est
-   jamais créé ou modifié par une restauration.
+   jamais créé ou modifié par une restauration ;
+5. si l'archive restaurée était à une version de schéma antérieure (étape
+   2), le schéma est automatiquement mis à niveau vers la version actuelle
+   juste après (migrations Alembic normales) ; en cas d'échec de cette
+   mise à niveau, la base est automatiquement rétablie à partir de la
+   sauvegarde de sécurité de l'étape 3.
+
+Côté SQLite, la même logique de version s'applique (étapes 2 et 5), avec en
+outre une garantie supplémentaire propre à ce moteur : le remplacement du
+fichier de base de données lui-même (étape 4 de son point de vue) ne touche
+jamais le fichier actif tant que la copie restaurée n'a pas été
+intégralement recopiée et vérifiée (écriture atomique, voir
+`app/services/backups/backup_engine.py`) — là où PostgreSQL obtient cette
+même garantie nativement via la transaction serveur unique ci-dessus, aucune
+restauration de secours automatique n'est donc jamais nécessaire pour ce
+cas précis, pour l'un ou l'autre moteur.
 
 La restauration cible toujours la base déjà désignée par la configuration
 active : StockManager ne crée **jamais** automatiquement de base ni de rôle
