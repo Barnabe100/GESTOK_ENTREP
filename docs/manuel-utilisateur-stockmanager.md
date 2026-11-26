@@ -1072,10 +1072,16 @@ Un formulaire de configuration permet de définir :
 | Paramètre | Détail |
 |---|---|
 | Activation | Case à cocher (**activée par défaut** sur une installation neuve) |
-| Fréquence | Quotidienne ou Hebdomadaire (quotidienne par défaut) |
+| Fréquence | Quotidienne, Hebdomadaire ou Mensuelle (quotidienne par défaut) |
+| Jours de la semaine | Un ou plusieurs jours, uniquement en fréquence hebdomadaire (ex. lundi et jeudi) |
+| Jour du mois | Un jour fixe (1 à 31) ou « Dernier jour du mois », uniquement en fréquence mensuelle |
 | Heure d'exécution | Format HH:MM (20:00 par défaut) |
 | Dossier de destination | Modifiable (bouton « Parcourir… ») |
 | Sauvegardes à conserver | Nombre de sauvegardes conservées avant suppression automatique des plus anciennes (**30 par défaut**) |
+
+Seuls les champs pertinents pour la fréquence choisie sont affichés (les jours de la semaine n'apparaissent qu'en hebdomadaire, le jour du mois qu'en mensuel).
+
+> **Jour du mois absent d'un mois donné** (ex. le 31 pour un mois de 30 jours, ou le 29/30/31 février) : StockManager ne décale jamais silencieusement vers un autre jour — ce mois-là est simplement sauté, la prochaine sauvegarde ayant lieu au mois suivant où ce jour existe. Choisir « Dernier jour du mois » si vous voulez systématiquement une exécution chaque mois, quelle que soit sa longueur.
 
 > Sur une installation déjà configurée, désactiver volontairement la sauvegarde automatique est toujours respecté : StockManager ne la réactive jamais silencieusement dans votre dos, même après une mise à jour.
 
@@ -1115,9 +1121,20 @@ Actions disponibles :
 La sauvegarde locale et, si elle est activée, la copie externe sont exécutées une fois par jour par une tâche du Planificateur de tâches Windows, configurée directement depuis StockManager — sans jamais devoir ouvrir cet outil Windows soi-même. C'est cette tâche, et non l'application elle-même, qui garantit que la sauvegarde locale a bien lieu même lorsque StockManager reste fermé toute la journée.
 
 Depuis la section « Protection externe » :
-- **Configurer/réparer la tâche planifiée Windows…** : crée la tâche si elle n'existe pas encore, ou la répare si elle a été supprimée ou modifiée accidentellement dans Windows. Une heure d'exécution quotidienne est demandée (20h00 suggéré par défaut). **Attention** : cette action recrée entièrement la tâche à partir de la configuration actuelle de StockManager — toute personnalisation apportée manuellement à cette tâche depuis le Planificateur de tâches Windows lui-même (horaire modifié à la main, déclencheur supplémentaire ajouté, etc.) est alors perdue et remplacée. Un second repère, indépendant de la tâche Windows elle-même, est également créé pour que StockManager déclenche la sauvegarde dès l'ouverture de session, même si l'heure programmée est passée pendant que l'ordinateur était éteint.
+- Case **« Déclencher également au démarrage de session Windows (rattrapage) »** : activée par défaut sur une installation neuve, indépendamment de la fréquence choisie ci-dessus — désactivez-la si vous ne voulez jamais ce second déclencheur (voir le tableau ci-dessous pour son rôle exact). La désactiver/réactiver ne touche jamais la tâche quotidienne/hebdomadaire/mensuelle principale, qui continue de fonctionner normalement.
+- **Configurer/réparer la tâche planifiée Windows…** : applique la fréquence, les jours, l'heure et le réglage d'ouverture de session **actuellement enregistrés** dans StockManager (section « Configuration de la sauvegarde automatique » ci-dessus — enregistrez-la d'abord si vous venez de la modifier) à la tâche Windows réelle : la crée si elle n'existe pas encore, ou la répare si elle a été supprimée ou modifiée accidentellement dans Windows. **Attention** : cette action recrée entièrement la tâche — toute personnalisation apportée manuellement depuis le Planificateur de tâches Windows lui-même (horaire modifié à la main, déclencheur supplémentaire ajouté, etc.) est alors perdue et remplacée. StockManager ne déclare jamais cette opération réussie sans avoir relu la tâche réellement enregistrée et vérifié que ses propriétés correspondent bien à ce qui était demandé — en cas d'écart (droits insuffisants, tâche appartenant à un autre compte Windows, etc.), l'erreur réelle de Windows est affichée, jamais un simple « échec ».
 - **Supprimer la tâche planifiée…** : désactive proprement l'automatisation Windows (la configuration dans StockManager, elle, reste inchangée et peut être réactivée à tout moment).
 - L'état actuel de la tâche (existe ou non, dernière exécution, résultat) est affiché dans l'écran, ainsi que dans le panneau « État de la protection » en haut de l'écran.
+
+### Détails de la tâche planifiée Windows
+
+Section repliable, en bas de l'écran Sauvegardes, qui relit systématiquement l'état réel de la tâche au moment où vous la consultez — jamais une simple copie des paramètres saisis dans StockManager. Elle affiche : l'état (configurée/absente), le nom, la fréquence et les jours réellement enregistrés, l'heure, si le déclencheur d'ouverture de session est présent, le compte Windows sous lequel la tâche s'exécute, la dernière et la prochaine exécution, le résultat (et code) de la dernière exécution, ainsi que l'exécutable et les arguments réellement enregistrés. Toute information indisponible est annoncée comme telle (« Non disponible »), jamais devinée.
+
+Si la définition réellement enregistrée dans Windows ne correspond plus à la configuration de StockManager (fréquence, jours, heure, déclencheur d'ouverture de session, compte Windows, ou action exécutée différents), un avertissement explicite apparaît dans cette même section — cliquer sur « Configurer/réparer la tâche planifiée Windows… » pour resynchroniser.
+
+Deux boutons :
+- **Actualiser les informations** : relit immédiatement l'état réel sans attendre le prochain rafraîchissement automatique.
+- **Ouvrir le Planificateur de tâches Windows** : ouvre l'outil natif Windows (`taskschd.msc`) pour une consultation ou une modification manuelle — n'effectue lui-même aucune modification de la tâche.
 
 **Ce que cette tâche garantit précisément, selon la situation du poste à l'heure programmée :**
 

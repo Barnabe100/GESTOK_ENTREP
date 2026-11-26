@@ -276,6 +276,57 @@ sans problème). Aucune dépendance supplémentaire introduite.
 précisément le scénario qui échouait avant cette correction (voir
 « Tests obligatoires sous Windows » ci-dessous, points 12 à 15).
 
+## Mission « Gestion complète de la planification des sauvegardes Windows »
+
+Ajoute la gestion complète de la planification depuis l'écran Sauvegardes
+(fréquences hebdomadaire multi-jours et mensuelle, déclenchement
+d'ouverture de session indépendant, consultation détaillée de la tâche
+réelle). Aucune dépendance supplémentaire introduite, aucune migration de
+base de données (nouveaux paramètres stockés comme les existants, dans la
+table `parametres` déjà utilisée).
+
+- **`scheduled_task_manager.py`** : `_build_task_xml` construit désormais
+  `<ScheduleByWeek>` (un élément `<DaysOfWeek>` par jour sélectionné) et
+  `<ScheduleByMonth>` (`<DaysOfMonth><Day>N</Day></DaysOfMonth>` pour un
+  jour fixe, ou `<RunOnLastDayOfMonth>true</RunOnLastDayOfMonth>` — élément
+  dédié du schéma Task Scheduler, utilisé par l'option native « dernier
+  jour » de l'interface graphique Windows — pour éviter tout décalage
+  silencieux sur les mois courts). `parse_task_definition`/
+  `query_task_definition` (nouveaux, publics) relisent cette même
+  définition pour l'affichage et la vérification post-création
+  (`_verify_task_registered` compare désormais aussi les jours/le jour du
+  mois effectivement enregistrés, pas seulement le type de déclencheur).
+- **`backup_service.py`** : `BackupConfig` porte désormais `weekly_days`
+  (ensemble de `date.weekday()`), `monthly_day`, `monthly_last_day`. Le
+  calcul d'échéance (`_is_due_as_of`) est réécrit autour d'une fonction
+  pure (`_most_recent_scheduled_date`) consciente des jours réels — un
+  jour de mois absent d'un mois donné (ex. 31 dans un mois de 30 jours,
+  ou 29 février hors année bissextile) fait sauter ce mois entièrement,
+  jamais un report vers un autre jour.
+- **`external_backup_service.py`** : le déclenchement à l'ouverture de
+  session devient un réglage persisté indépendant
+  (`is_onlogon_enabled`/`_KEY_ONLOGON_ENABLED`, activé par défaut sur une
+  installation neuve) — `configure_scheduled_task` ne supprime/recrée que
+  la tâche complémentaire correspondante selon ce réglage, jamais la
+  tâche principale. Nouvelles méthodes `scheduled_task_details()`
+  (relevé structuré pour l'affichage) et
+  `scheduled_task_sync_warnings()` (comparaison définition Windows
+  réelle ↔ configuration StockManager).
+- **`backups_page.py`** : sélection des jours de la semaine/du jour du
+  mois (visibles uniquement pour la fréquence concernée), case
+  d'activation du déclencheur d'ouverture de session, section repliable
+  « Détails de la tâche planifiée Windows » (relevé complet + boutons
+  Actualiser/Ouvrir le Planificateur de tâches Windows via
+  `os.startfile("taskschd.msc")`).
+
+**Non revérifié sous Windows réel** (s'ajoute à la liste « Tests
+obligatoires sous Windows » ci-dessous, points 17-19) : la création
+réelle d'une tâche hebdomadaire multi-jours et d'une tâche mensuelle
+(jour fixe et dernier jour) depuis l'exécutable packagé, la bascule du
+déclencheur d'ouverture de session sans recréation de la tâche
+principale, et l'ouverture effective du Planificateur de tâches Windows
+depuis le bouton dédié.
+
 ## Procédure de build (à exécuter sur Windows)
 
 ```text
@@ -480,6 +531,25 @@ Windows ») :
 16. « Supprimer la tâche planifiée… » réussit aussi bien depuis un compte
     standard que depuis un compte administrateur, pour une tâche créée
     par le même compte.
+17. Configurer une fréquence **hebdomadaire avec plusieurs jours** (ex.
+    lundi et jeudi) : la tâche créée déclenche bien aux deux jours
+    indiqués (vérifier dans `taskschd.msc`, onglet Déclencheurs), jamais
+    un seul des deux.
+18. Configurer une fréquence **mensuelle**, d'abord avec un jour fixe
+    (ex. 31), puis avec « Dernier jour du mois » : vérifier dans
+    `taskschd.msc` que le déclencheur mensuel correspondant est bien
+    enregistré (`DaysOfMonth` ou `RunOnLastDayOfMonth` selon le cas), et
+    que décocher « Enregistrer » avec un mois sans jour 31 (avril, par
+    exemple, visible dans le calcul de prochaine exécution) ne provoque
+    jamais d'erreur ni de décalage vers un autre jour.
+19. Décocher puis recocher **« Déclencher également au démarrage de
+    session Windows »** sans toucher à la fréquence : seule la tâche
+    « (ouverture de session) » disparaît/réapparaît dans `taskschd.msc`,
+    la tâche principale reste inchangée (vérifier sa dernière
+    modification). La section « Détails de la tâche planifiée Windows »
+    (bouton « Actualiser les informations ») reflète ce changement
+    immédiatement, et le bouton « Ouvrir le Planificateur de tâches
+    Windows » ouvre bien `taskschd.msc` sans modifier la tâche.
 
 ## Limitations connues de la configuration actuelle (à revalider sous Windows)
 

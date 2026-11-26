@@ -563,14 +563,14 @@ def test_configure_scheduled_task_translates_unsupported_platform_to_validation_
     stack, _ = login_as("Administrateur")
 
     with pytest.raises(ValidationError):
-        stack.external_backups.configure_scheduled_task("20:00")
+        stack.external_backups.configure_scheduled_task(time_of_day="20:00")
 
 
 def test_configure_scheduled_task_requires_permission(login_as) -> None:
     stack, _ = login_as("Vendeur")
 
     with pytest.raises(PermissionDeniedError):
-        stack.external_backups.configure_scheduled_task("20:00")
+        stack.external_backups.configure_scheduled_task(time_of_day="20:00")
 
 
 def test_remove_scheduled_task_translates_unsupported_platform_to_validation_error(login_as) -> None:
@@ -625,7 +625,7 @@ def test_configure_scheduled_task_translates_permission_error_and_audits_failure
     monkeypatch.setattr(scheduled_task_manager, "create_or_repair_task", _raise_permission_denied)
 
     with pytest.raises(ValidationError):
-        stack.external_backups.configure_scheduled_task("20:00")
+        stack.external_backups.configure_scheduled_task(time_of_day="20:00")
 
     rows = _audit_rows("BACKUP_SCHEDULED_TASK_CONFIGURE_FAILURE")
     assert len(rows) == 1
@@ -774,7 +774,7 @@ def test_configure_scheduled_task_creates_both_daily_and_onlogon_tasks(login_as,
         lambda name, exe, args, time_of_day, **kw: calls.append((name, kw.get("schedule"))),
     )
 
-    stack.external_backups.configure_scheduled_task("20:00")
+    stack.external_backups.configure_scheduled_task(time_of_day="20:00")
 
     names_and_schedules = {name: schedule for name, schedule in calls}
     assert "StockManager - Sauvegarde automatique" in names_and_schedules
@@ -797,7 +797,7 @@ def test_configure_scheduled_task_fails_entirely_if_onlogon_task_fails(login_as,
     monkeypatch.setattr(scheduled_task_manager, "create_or_repair_task", _fake_create)
 
     with pytest.raises(ValidationError):
-        stack.external_backups.configure_scheduled_task("20:00")
+        stack.external_backups.configure_scheduled_task(time_of_day="20:00")
 
 
 def test_remove_scheduled_task_removes_both_tasks(login_as, monkeypatch) -> None:
@@ -841,7 +841,7 @@ def test_is_scheduled_task_time_synchronized_true_right_after_configuration(logi
         scheduled_task_manager, "query_task_status",
         lambda name: scheduled_task_manager.ScheduledTaskStatus(exists=True),
     )
-    stack.external_backups.configure_scheduled_task("20:00")
+    stack.external_backups.configure_scheduled_task(time_of_day="20:00")
 
     assert stack.external_backups.is_scheduled_task_time_synchronized() is True
 
@@ -867,13 +867,273 @@ def test_is_scheduled_task_time_synchronized_false_after_time_changed_without_re
         scheduled_task_manager, "query_task_status",
         lambda name: scheduled_task_manager.ScheduledTaskStatus(exists=True),
     )
-    stack.external_backups.configure_scheduled_task("20:00")
+    stack.external_backups.configure_scheduled_task(time_of_day="20:00")
 
     stack.backups.update_config(
         auto_enabled=False, frequency="daily", time_of_day="23:00", destination=str(destination), retention=10,
     )
 
     assert stack.external_backups.is_scheduled_task_time_synchronized() is False
+
+
+# -- mission « Gestion complète de la planification des sauvegardes Windows » --
+
+
+def test_is_onlogon_enabled_defaults_to_true_for_a_fresh_install(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+
+    assert stack.external_backups.is_onlogon_enabled() is True
+
+
+def test_is_onlogon_enabled_respects_an_explicit_false(login_as, monkeypatch) -> None:
+    from app.services.backups import scheduled_task_manager
+
+    stack, _ = login_as("Administrateur")
+    monkeypatch.setattr(scheduled_task_manager, "sys", type("_Sys", (), {"platform": "win32"})())
+    monkeypatch.setattr(scheduled_task_manager, "create_or_repair_task", lambda *a, **k: None)
+    monkeypatch.setattr(scheduled_task_manager, "delete_task", lambda name: None)
+
+    stack.external_backups.configure_scheduled_task(time_of_day="20:00", onlogon_enabled=False)
+
+    assert stack.external_backups.is_onlogon_enabled() is False
+
+
+def test_configure_scheduled_task_reads_frequency_from_backup_service_when_omitted(
+    login_as, tmp_path, monkeypatch
+) -> None:
+    from app.services.backups import scheduled_task_manager
+
+    stack, _ = login_as("Administrateur")
+    stack.backups.update_config(
+        auto_enabled=False, frequency="weekly", time_of_day="21:00", destination=str(tmp_path / "backups"),
+        retention=10, weekly_days=frozenset({2, 4}),
+    )
+    captured = {}
+    monkeypatch.setattr(scheduled_task_manager, "sys", type("_Sys", (), {"platform": "win32"})())
+
+    def _fake_create(name, exe, args, time_of_day, **kw):
+        if name == "StockManager - Sauvegarde automatique":
+            captured.update(kw)
+            captured["time_of_day"] = time_of_day
+
+    monkeypatch.setattr(scheduled_task_manager, "create_or_repair_task", _fake_create)
+
+    stack.external_backups.configure_scheduled_task()
+
+    assert captured["schedule"] == "weekly"
+    assert captured["time_of_day"] == "21:00"
+    assert captured["weekly_days"] == frozenset({2, 4})
+
+
+def test_configure_scheduled_task_uses_explicit_candidate_values_over_persisted_config(
+    login_as, tmp_path, monkeypatch
+) -> None:
+    """Mission §5 : permet de valider une NOUVELLE configuration candidate
+    auprès de Windows — ici une fréquence mensuelle jamais enregistrée
+    dans StockManager (qui reste en « daily »)."""
+    from app.services.backups import scheduled_task_manager
+
+    stack, _ = login_as("Administrateur")
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="20:00", destination=str(tmp_path / "backups"),
+        retention=10,
+    )
+    captured = {}
+    monkeypatch.setattr(scheduled_task_manager, "sys", type("_Sys", (), {"platform": "win32"})())
+
+    def _fake_create(name, exe, args, time_of_day, **kw):
+        if name == "StockManager - Sauvegarde automatique":
+            captured.update(kw)
+            captured["time_of_day"] = time_of_day
+
+    monkeypatch.setattr(scheduled_task_manager, "create_or_repair_task", _fake_create)
+
+    stack.external_backups.configure_scheduled_task(
+        frequency="monthly", time_of_day="22:00", monthly_day=15, monthly_last_day=False,
+    )
+
+    assert captured["schedule"] == "monthly"
+    assert captured["time_of_day"] == "22:00"
+    assert captured["monthly_day"] == 15
+    assert captured["monthly_last_day"] is False
+    # La configuration locale n'a jamais été modifiée par cet appel seul.
+    assert stack.backups.get_config().frequency == "daily"
+
+
+def test_configure_scheduled_task_deletes_onlogon_task_when_disabled(login_as, monkeypatch) -> None:
+    from app.services.backups import scheduled_task_manager
+
+    stack, _ = login_as("Administrateur")
+    deleted = []
+    monkeypatch.setattr(scheduled_task_manager, "sys", type("_Sys", (), {"platform": "win32"})())
+    monkeypatch.setattr(scheduled_task_manager, "create_or_repair_task", lambda *a, **k: None)
+    monkeypatch.setattr(scheduled_task_manager, "delete_task", lambda name: deleted.append(name))
+
+    stack.external_backups.configure_scheduled_task(time_of_day="20:00", onlogon_enabled=False)
+
+    assert "StockManager - Sauvegarde automatique (ouverture de session)" in deleted
+    assert "StockManager - Sauvegarde automatique" not in deleted
+
+
+def test_scheduled_task_details_reports_absent_when_task_does_not_exist(login_as, monkeypatch) -> None:
+    from app.services.backups import scheduled_task_manager
+
+    stack, _ = login_as("Administrateur")
+    monkeypatch.setattr(scheduled_task_manager, "sys", type("_Sys", (), {"platform": "win32"})())
+    monkeypatch.setattr(
+        scheduled_task_manager, "query_task_status",
+        lambda name: scheduled_task_manager.ScheduledTaskStatus(exists=False),
+    )
+
+    details = stack.external_backups.scheduled_task_details()
+
+    assert details.exists is False
+    assert details.name == "StockManager - Sauvegarde automatique"
+
+
+def test_scheduled_task_details_reports_full_definition_when_present(login_as, monkeypatch) -> None:
+    from app.services.backups import scheduled_task_manager
+
+    stack, _ = login_as("Administrateur")
+    monkeypatch.setattr(scheduled_task_manager, "sys", type("_Sys", (), {"platform": "win32"})())
+
+    def _fake_query_status(name):
+        if name == "StockManager - Sauvegarde automatique":
+            return scheduled_task_manager.ScheduledTaskStatus(
+                exists=True, status="Ready", last_run_time="24/11/2026 20:00:00",
+                next_run_time="25/11/2026 20:00:00", last_result="0",
+            )
+        return scheduled_task_manager.ScheduledTaskStatus(exists=True)
+
+    monkeypatch.setattr(scheduled_task_manager, "query_task_status", _fake_query_status)
+    monkeypatch.setattr(
+        scheduled_task_manager, "query_task_definition",
+        lambda name: scheduled_task_manager.ScheduledTaskDefinition(
+            command="C:/StockManager/StockManager.exe", arguments="--run-backup-agent",
+            user_id="DESKTOP-TEST\\jdupont", schedule_kind="weekly", time_of_day="20:00",
+            weekly_days=frozenset({0, 3}),
+        ),
+    )
+
+    details = stack.external_backups.scheduled_task_details()
+
+    assert details.exists is True
+    assert details.status == "Ready"
+    assert details.schedule_kind == "weekly"
+    assert details.weekly_days == frozenset({0, 3})
+    assert details.user_id == "DESKTOP-TEST\\jdupont"
+    assert details.executable == "C:/StockManager/StockManager.exe"
+    assert details.onlogon_task_exists is True
+
+
+def test_scheduled_task_sync_warnings_empty_when_task_absent(login_as, monkeypatch) -> None:
+    from app.services.backups import scheduled_task_manager
+
+    stack, _ = login_as("Administrateur")
+    monkeypatch.setattr(scheduled_task_manager, "sys", type("_Sys", (), {"platform": "win32"})())
+    monkeypatch.setattr(
+        scheduled_task_manager, "query_task_status",
+        lambda name: scheduled_task_manager.ScheduledTaskStatus(exists=False),
+    )
+
+    assert stack.external_backups.scheduled_task_sync_warnings() == []
+
+
+def test_scheduled_task_sync_warnings_reports_frequency_mismatch(login_as, tmp_path, monkeypatch) -> None:
+    from app.services.backups import scheduled_task_manager
+
+    stack, _ = login_as("Administrateur")
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="20:00", destination=str(tmp_path / "backups"),
+        retention=10,
+    )
+    monkeypatch.setattr(scheduled_task_manager, "sys", type("_Sys", (), {"platform": "win32"})())
+    monkeypatch.setattr(
+        scheduled_task_manager, "query_task_status",
+        lambda name: scheduled_task_manager.ScheduledTaskStatus(exists=True),
+    )
+    monkeypatch.setattr(
+        scheduled_task_manager, "query_task_definition",
+        lambda name: scheduled_task_manager.ScheduledTaskDefinition(schedule_kind="weekly", time_of_day="20:00"),
+    )
+    monkeypatch.setattr(scheduled_task_manager, "resolve_current_user_id", lambda: "DESKTOP-TEST\\jdupont")
+
+    warnings = stack.external_backups.scheduled_task_sync_warnings()
+
+    assert any("fréquence" in warning for warning in warnings)
+
+
+def test_scheduled_task_sync_warnings_reports_onlogon_mismatch(login_as, monkeypatch) -> None:
+    from app.services.backups import scheduled_task_manager
+
+    stack, _ = login_as("Administrateur")
+    monkeypatch.setattr(scheduled_task_manager, "sys", type("_Sys", (), {"platform": "win32"})())
+
+    def _fake_query_status(name):
+        return scheduled_task_manager.ScheduledTaskStatus(exists=name == "StockManager - Sauvegarde automatique")
+
+    monkeypatch.setattr(scheduled_task_manager, "query_task_status", _fake_query_status)
+    monkeypatch.setattr(
+        scheduled_task_manager, "query_task_definition",
+        lambda name: scheduled_task_manager.ScheduledTaskDefinition(schedule_kind="daily", time_of_day="20:00"),
+    )
+    monkeypatch.setattr(scheduled_task_manager, "resolve_current_user_id", lambda: "DESKTOP-TEST\\jdupont")
+
+    warnings = stack.external_backups.scheduled_task_sync_warnings()
+
+    assert any("ouverture de session" in warning for warning in warnings)
+
+
+def test_scheduled_task_sync_warnings_reports_account_mismatch(login_as, tmp_path, monkeypatch) -> None:
+    from app.services.backups import scheduled_task_manager
+
+    stack, _ = login_as("Administrateur")
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="20:00", destination=str(tmp_path / "backups"),
+        retention=10,
+    )
+    monkeypatch.setattr(scheduled_task_manager, "sys", type("_Sys", (), {"platform": "win32"})())
+    monkeypatch.setattr(
+        scheduled_task_manager, "query_task_status",
+        lambda name: scheduled_task_manager.ScheduledTaskStatus(exists=True, run_as_user="DESKTOP-TEST\\autreCompte"),
+    )
+    monkeypatch.setattr(
+        scheduled_task_manager, "query_task_definition",
+        lambda name: scheduled_task_manager.ScheduledTaskDefinition(schedule_kind="daily", time_of_day="20:00"),
+    )
+    monkeypatch.setattr(scheduled_task_manager, "resolve_current_user_id", lambda: "DESKTOP-TEST\\jdupont")
+
+    warnings = stack.external_backups.scheduled_task_sync_warnings()
+
+    assert any("autre compte" in warning for warning in warnings)
+
+
+def test_scheduled_task_sync_warnings_empty_when_everything_matches(login_as, tmp_path, monkeypatch) -> None:
+    from app.services.backups import scheduled_task_manager
+
+    stack, _ = login_as("Administrateur")
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="20:00", destination=str(tmp_path / "backups"),
+        retention=10,
+    )
+    monkeypatch.setattr(scheduled_task_manager, "sys", type("_Sys", (), {"platform": "win32"})())
+    monkeypatch.setattr(scheduled_task_manager, "create_or_repair_task", lambda *a, **k: None)
+    monkeypatch.setattr(
+        scheduled_task_manager, "query_task_status",
+        lambda name: scheduled_task_manager.ScheduledTaskStatus(exists=True, run_as_user="DESKTOP-TEST\\jdupont"),
+    )
+    monkeypatch.setattr(
+        scheduled_task_manager, "query_task_definition",
+        lambda name: scheduled_task_manager.ScheduledTaskDefinition(
+            command=None, schedule_kind="daily", time_of_day="20:00",
+        ),
+    )
+    monkeypatch.setattr(scheduled_task_manager, "resolve_current_user_id", lambda: "DESKTOP-TEST\\jdupont")
+    stack.external_backups.configure_scheduled_task(time_of_day="20:00")
+
+    warnings = stack.external_backups.scheduled_task_sync_warnings()
+
+    assert warnings == []
 
 
 def test_is_scheduled_task_time_synchronized_requires_view_permission(login_as) -> None:

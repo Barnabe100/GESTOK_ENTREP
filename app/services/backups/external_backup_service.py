@@ -46,7 +46,12 @@ from app.services.auth.permission_service import PermissionService
 from app.services.backups import archive_manifest, backup_engine, temp_cleanup
 from app.services.backups import postgresql_backup_engine as pg_backup_engine
 from app.services.backups import scheduled_task_manager
-from app.services.backups.backup_service import BackupEntry, BackupService
+from app.services.backups.backup_service import (
+    FREQUENCY_MONTHLY,
+    FREQUENCY_WEEKLY,
+    BackupEntry,
+    BackupService,
+)
 from app.services.backups import external_media
 from app.services.backups.external_media import (
     DriveInfo,
@@ -100,6 +105,13 @@ _KEY_LAST_AUTO_SUCCESS_DATE = "backup.external.last_auto_success_date"
 # l'heure du déclencheur de façon simple et fiable, seulement sa prochaine
 # exécution calculée, qui dépend de la date du jour).
 _KEY_TASK_CONFIGURED_TIME = "backup.external.task_configured_time"
+# Mission « Gestion complète de la planification des sauvegardes Windows »,
+# §4/§3.3 : déclenchement « à l'ouverture de session » désormais un
+# paramètre indépendant de la fréquence principale — activé par défaut sur
+# une installation neuve (``None`` jamais enregistré => ``True``, même
+# convention que ``BackupService._KEY_AUTO_ENABLED``), jamais réactivé
+# silencieusement sur un poste l'ayant explicitement désactivé.
+_KEY_ONLOGON_ENABLED = "backup.external.onlogon_enabled"
 
 MIN_RETENTION = 30
 MAX_RETENTION = 50
@@ -132,6 +144,35 @@ class ExternalCopyResult:
     success: bool
     message: str
     file_path: Optional[Path] = None
+
+
+@dataclass(frozen=True)
+class ScheduledTaskDetails:
+    """Relevé complet de la tâche planifiée Windows principale (mission
+    « Gestion complète de la planification des sauvegardes Windows », §6 —
+    section « Détails de la tâche planifiée Windows ») : combine l'état
+    brut (:class:`scheduled_task_manager.ScheduledTaskStatus`) et la
+    définition structurée relue
+    (:class:`scheduled_task_manager.ScheduledTaskDefinition`), plus
+    l'existence de la tâche « à l'ouverture de session ». Tout champ non
+    déterminable reste ``None`` (affiché « Non disponible » par
+    l'interface) — jamais une valeur devinée."""
+
+    exists: bool
+    name: str
+    status: Optional[str] = None
+    schedule_kind: Optional[str] = None
+    time_of_day: Optional[str] = None
+    weekly_days: Optional[frozenset[int]] = None
+    monthly_day: Optional[int] = None
+    monthly_last_day: bool = False
+    user_id: Optional[str] = None
+    last_run_time: Optional[str] = None
+    next_run_time: Optional[str] = None
+    last_result: Optional[str] = None
+    executable: Optional[str] = None
+    arguments: Optional[str] = None
+    onlogon_task_exists: bool = False
 
 
 class ExternalBackupService:
@@ -533,42 +574,103 @@ class ExternalBackupService:
         self._permissions.require_permission("BACKUP_VIEW")
         return scheduled_task_manager.query_task_status(SCHEDULED_TASK_NAME)
 
-    def configure_scheduled_task(self, time_of_day: str) -> None:
-        """Crée ou répare DEUX tâches planifiées Windows (§4 du mandat
-        initial, §3.5 du mandat correctif) :
-        - ``SCHEDULED_TASK_NAME`` : quotidienne à ``time_of_day``, couvre à
-          la fois la sauvegarde locale ET la copie externe (décision
-          d'architecture validée : une seule tâche quotidienne plutôt que
-          deux tâches distinctes à administrer séparément) ;
-        - ``SCHEDULED_TASK_NAME_LOGON`` : à l'ouverture de session,
-          rattrapage uniquement (voir sa constante ci-dessus) — même agent,
-          jamais une seconde logique.
+    def is_onlogon_enabled(self) -> bool:
+        """Mission « Gestion complète de la planification des sauvegardes
+        Windows », §4 : préférence persistée indépendamment de la
+        fréquence principale — ``True`` par défaut sur une installation
+        neuve (``None`` jamais enregistré), jamais réactivée silencieusement
+        sur un poste l'ayant explicitement désactivée (même convention que
+        ``BackupService._read_config``/``_KEY_AUTO_ENABLED``)."""
+        self._permissions.require_permission("BACKUP_VIEW")
+        with session_scope(self._settings) as session:
+            raw = ParameterRepository(session).get_value(_KEY_ONLOGON_ENABLED)
+        return True if raw is None else raw == "true"
 
-        Les deux doivent réussir pour que l'opération soit considérée
-        réussie — jamais une réussite partielle silencieuse : en cas
-        d'échec de l'une ou l'autre, aucune n'est considérée configurée du
-        point de vue de l'utilisateur (relancer « Configurer/réparer… »
-        est sans risque, ``create_or_repair_task`` étant idempotent)."""
+    def configure_scheduled_task(
+        self, *, frequency: Optional[str] = None, time_of_day: Optional[str] = None,
+        weekly_days: Optional[frozenset[int]] = None,
+        monthly_day: Optional[int] = None,
+        monthly_last_day: Optional[bool] = None,
+        onlogon_enabled: Optional[bool] = None,
+    ) -> None:
+        """Crée ou répare la tâche planifiée Windows principale
+        (``SCHEDULED_TASK_NAME``, quotidienne/hebdomadaire/mensuelle selon
+        la fréquence — couvre à la fois la sauvegarde locale ET la copie
+        externe, décision d'architecture validée : une seule tâche plutôt
+        que plusieurs à administrer séparément) et, si ``onlogon_enabled``
+        (effectif) l'exige, la tâche complémentaire ``SCHEDULED_TASK_NAME_LOGON``
+        (rattrapage à l'ouverture de session — même agent, jamais une
+        seconde logique). Retire cette seconde tâche (jamais la première)
+        si elle est désactivée — idempotent, ``delete_task`` ne levant
+        jamais pour une tâche déjà absente.
+
+        Mission « Gestion complète de la planification des sauvegardes
+        Windows », §5 : chaque paramètre omis (``None``) est lu depuis la
+        configuration ACTUELLEMENT PERSISTÉE (``BackupService.get_config()``/
+        :meth:`is_onlogon_enabled`) — permet à la fois :
+        - un simple « Configurer/réparer » (aucun paramètre) qui réapplique
+          la configuration déjà enregistrée dans StockManager ;
+        - un « Enregistrer la planification » qui valide et applique une
+          NOUVELLE configuration candidate à Windows AVANT de l'enregistrer
+          dans StockManager (voir ``BackupsPage._save_schedule`` : cette
+          méthode est appelée avec les nouvelles valeurs du formulaire,
+          et ``BackupService.update_config``/propre persistance de
+          ``onlogon_enabled`` n'est appelée qu'après son succès — jamais
+          l'inverse, qui laisserait croire à une synchronisation qui
+          n'aurait pas réellement été vérifiée).
+
+        Les deux tâches concernées (principale + onlogon si demandée)
+        doivent réussir pour que l'opération soit considérée réussie —
+        jamais une réussite partielle silencieuse : en cas d'échec de
+        l'une ou l'autre, rien n'est persisté ici non plus (``_KEY_TASK_CONFIGURED_TIME``/
+        ``_KEY_ONLOGON_ENABLED``), et l'appelant ne doit alors jamais
+        persister la configuration StockManager correspondante."""
         self._permissions.require_permission("BACKUP_EXTERNAL_CONFIGURE")
         from app.backup_external_agent_cli import resolve_agent_invocation
+
+        backup_config = self._backup_service.get_config()
+        effective_frequency = frequency if frequency is not None else backup_config.frequency
+        effective_time = time_of_day if time_of_day is not None else backup_config.time_of_day
+        effective_weekly_days = weekly_days if weekly_days is not None else backup_config.weekly_days
+        effective_monthly_day = monthly_day if monthly_day is not None else backup_config.monthly_day
+        effective_monthly_last_day = (
+            monthly_last_day if monthly_last_day is not None else backup_config.monthly_last_day
+        )
+        effective_onlogon_enabled = onlogon_enabled if onlogon_enabled is not None else self.is_onlogon_enabled()
 
         executable, arguments = resolve_agent_invocation()
         try:
             scheduled_task_manager.create_or_repair_task(
-                SCHEDULED_TASK_NAME, executable, arguments, time_of_day
+                SCHEDULED_TASK_NAME, executable, arguments, effective_time,
+                # ``BackupService.FREQUENCY_*`` et
+                # ``scheduled_task_manager.SCHEDULE_*`` partagent
+                # volontairement les mêmes valeurs littérales
+                # ("daily"/"weekly"/"monthly") — jamais une coïncidence,
+                # toujours vérifié par les tests des deux modules.
+                schedule=effective_frequency,
+                weekly_days=effective_weekly_days, monthly_day=effective_monthly_day,
+                monthly_last_day=effective_monthly_last_day,
             )
-            scheduled_task_manager.create_or_repair_task(
-                SCHEDULED_TASK_NAME_LOGON, executable, arguments, time_of_day,
-                schedule=scheduled_task_manager.SCHEDULE_ONLOGON,
-            )
+            if effective_onlogon_enabled:
+                scheduled_task_manager.create_or_repair_task(
+                    SCHEDULED_TASK_NAME_LOGON, executable, arguments, effective_time,
+                    schedule=scheduled_task_manager.SCHEDULE_ONLOGON,
+                )
+            else:
+                scheduled_task_manager.delete_task(SCHEDULED_TASK_NAME_LOGON)
         except (scheduled_task_manager.ScheduledTaskError, UnsupportedPlatformError) as exc:
             self._audit("BACKUP_SCHEDULED_TASK_CONFIGURE_FAILURE", ResultatAudit.ECHEC, details=str(exc))
             raise ValidationError(str(exc)) from exc
 
         with session_scope(self._settings) as session:
-            ParameterRepository(session).set_value(_KEY_TASK_CONFIGURED_TIME, time_of_day)
+            repo = ParameterRepository(session)
+            repo.set_value(_KEY_TASK_CONFIGURED_TIME, effective_time)
+            repo.set_value(_KEY_ONLOGON_ENABLED, "true" if effective_onlogon_enabled else "false")
         self._audit("BACKUP_SCHEDULED_TASK_CONFIGURE_SUCCESS", ResultatAudit.SUCCES)
-        logger.info("Tâches planifiées Windows configurées/réparées (quotidienne %s + ouverture de session).", time_of_day)
+        logger.info(
+            "Tâche planifiée Windows configurée/réparée (%s, %s) ; ouverture de session : %s.",
+            effective_frequency, effective_time, effective_onlogon_enabled,
+        )
 
     def remove_scheduled_task(self) -> None:
         self._permissions.require_permission("BACKUP_EXTERNAL_CONFIGURE")
@@ -580,6 +682,114 @@ class ExternalBackupService:
             raise ValidationError(str(exc)) from exc
         self._audit("BACKUP_SCHEDULED_TASK_REMOVE_SUCCESS", ResultatAudit.SUCCES)
         logger.info("Tâches planifiées Windows supprimées.")
+
+    def scheduled_task_details(self) -> ScheduledTaskDetails:
+        """Relevé complet pour la section « Détails de la tâche planifiée
+        Windows » (mission « Gestion complète de la planification des
+        sauvegardes Windows », §6) — relit systématiquement l'état réel,
+        jamais une simple réutilisation des paramètres StockManager (voir
+        :class:`ScheduledTaskDetails`)."""
+        self._permissions.require_permission("BACKUP_VIEW")
+        status = scheduled_task_manager.query_task_status(SCHEDULED_TASK_NAME)
+        onlogon_status = scheduled_task_manager.query_task_status(SCHEDULED_TASK_NAME_LOGON)
+        if not status.exists:
+            return ScheduledTaskDetails(
+                exists=False, name=SCHEDULED_TASK_NAME, onlogon_task_exists=onlogon_status.exists,
+            )
+        definition = scheduled_task_manager.query_task_definition(SCHEDULED_TASK_NAME)
+        return ScheduledTaskDetails(
+            exists=True, name=SCHEDULED_TASK_NAME, status=status.status,
+            schedule_kind=definition.schedule_kind if definition else None,
+            time_of_day=definition.time_of_day if definition else None,
+            weekly_days=definition.weekly_days if definition else None,
+            monthly_day=definition.monthly_day if definition else None,
+            monthly_last_day=definition.monthly_last_day if definition else False,
+            user_id=definition.user_id if definition else None,
+            last_run_time=status.last_run_time, next_run_time=status.next_run_time,
+            last_result=status.last_result,
+            executable=definition.command if definition else None,
+            arguments=definition.arguments if definition else None,
+            onlogon_task_exists=onlogon_status.exists,
+        )
+
+    def scheduled_task_sync_warnings(self) -> list[str]:
+        """Mission « Gestion complète de la planification des sauvegardes
+        Windows », §7 : compare la définition RÉELLEMENT enregistrée dans
+        Windows (jamais les paramètres StockManager seuls) à la
+        configuration actuelle, et retourne une phrase par
+        désynchronisation détectée — liste vide si tout correspond ou si
+        la tâche principale n'existe pas encore (rien à comparer, pas une
+        désynchronisation en soi)."""
+        self._permissions.require_permission("BACKUP_VIEW")
+        warnings: list[str] = []
+        status = scheduled_task_manager.query_task_status(SCHEDULED_TASK_NAME)
+        if not status.exists:
+            return warnings
+
+        backup_config = self._backup_service.get_config()
+        definition = scheduled_task_manager.query_task_definition(SCHEDULED_TASK_NAME)
+        if definition is None:
+            warnings.append(
+                "La définition complète de la tâche planifiée Windows n'a pas pu être relue pour "
+                "vérifier sa synchronisation avec la configuration de StockManager."
+            )
+        else:
+            if definition.schedule_kind is not None and definition.schedule_kind != backup_config.frequency:
+                warnings.append(
+                    f"La fréquence enregistrée dans Windows (« {definition.schedule_kind} ») ne "
+                    f"correspond pas à celle configurée dans StockManager (« {backup_config.frequency} »)."
+                )
+            elif backup_config.frequency == FREQUENCY_WEEKLY and definition.weekly_days is not None:
+                if definition.weekly_days != backup_config.weekly_days:
+                    warnings.append(
+                        "Les jours de la semaine enregistrés dans Windows ne correspondent pas à "
+                        "ceux configurés dans StockManager."
+                    )
+            elif backup_config.frequency == FREQUENCY_MONTHLY and definition.schedule_kind == FREQUENCY_MONTHLY:
+                if definition.monthly_last_day != backup_config.monthly_last_day:
+                    warnings.append(
+                        "Le réglage « dernier jour du mois » enregistré dans Windows ne correspond "
+                        "pas à celui configuré dans StockManager."
+                    )
+                elif (
+                    not backup_config.monthly_last_day and definition.monthly_day is not None
+                    and definition.monthly_day != backup_config.monthly_day
+                ):
+                    warnings.append(
+                        "Le jour du mois enregistré dans Windows ne correspond pas à celui "
+                        "configuré dans StockManager."
+                    )
+            if definition.time_of_day is not None and definition.time_of_day != backup_config.time_of_day:
+                warnings.append("L'heure enregistrée dans Windows ne correspond pas à celle configurée dans StockManager.")
+            if definition.command is not None:
+                from app.backup_external_agent_cli import resolve_agent_invocation
+
+                executable, _ = resolve_agent_invocation()
+                if definition.command != executable:
+                    warnings.append(
+                        "L'action enregistrée dans Windows ne correspond pas à l'agent StockManager actuel."
+                    )
+
+        if status.run_as_user:
+            current_user_id = scheduled_task_manager.resolve_current_user_id()
+            if status.run_as_user.strip().lower() != current_user_id.strip().lower():
+                warnings.append(
+                    f"La tâche planifiée Windows appartient à un autre compte (« {status.run_as_user} »)."
+                )
+
+        onlogon_status = scheduled_task_manager.query_task_status(SCHEDULED_TASK_NAME_LOGON)
+        if self.is_onlogon_enabled() and not onlogon_status.exists:
+            warnings.append(
+                "Le déclenchement à l'ouverture de session est activé dans StockManager mais absent "
+                "de la tâche planifiée Windows."
+            )
+        elif not self.is_onlogon_enabled() and onlogon_status.exists:
+            warnings.append(
+                "Le déclenchement à l'ouverture de session est désactivé dans StockManager mais "
+                "toujours présent dans Windows."
+            )
+
+        return warnings
 
     def is_scheduled_task_time_synchronized(self) -> Optional[bool]:
         """Mission corrective, §3.5 : modifier l'heure dans l'écran de

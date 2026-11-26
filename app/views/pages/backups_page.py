@@ -51,7 +51,13 @@ from PySide6.QtWidgets import (
 from app.services.auth.permission_service import PermissionService
 from app.services.backups import archive_manifest
 from app.services.backups.archive_encryption import EncryptionKeyAlreadyConfiguredError
-from app.services.backups.backup_service import BackupConfig, BackupService, FREQUENCY_DAILY, FREQUENCY_WEEKLY
+from app.services.backups.backup_service import (
+    BackupConfig,
+    BackupService,
+    FREQUENCY_DAILY,
+    FREQUENCY_MONTHLY,
+    FREQUENCY_WEEKLY,
+)
 from app.services.backups.external_backup_service import (
     MAX_RETENTION,
     MIN_RETENTION,
@@ -70,8 +76,21 @@ from app.views.drive_selection_dialog import DriveSelectionDialog
 from app.views.key_password_dialog import MODE_EXPORT, MODE_IMPORT, KeyPasswordDialog
 from app.views.loading_overlay import LoadingOverlay
 
-_FREQUENCY_LABELS = {FREQUENCY_DAILY: "Quotidienne", FREQUENCY_WEEKLY: "Hebdomadaire"}
+_FREQUENCY_LABELS = {
+    FREQUENCY_DAILY: "Quotidienne", FREQUENCY_WEEKLY: "Hebdomadaire", FREQUENCY_MONTHLY: "Mensuelle",
+}
 _FREQUENCY_BY_LABEL = {label: value for value, label in _FREQUENCY_LABELS.items()}
+
+# Mission « Gestion complète de la planification des sauvegardes Windows » :
+# index Python (``datetime.date.weekday()``, 0=lundi) -> libellé français,
+# dans l'ordre d'affichage des cases à cocher hebdomadaires.
+_WEEKDAY_LABELS = ("Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche")
+
+_SCHEDULE_KIND_LABELS = {
+    FREQUENCY_DAILY: "Quotidienne", FREQUENCY_WEEKLY: "Hebdomadaire", FREQUENCY_MONTHLY: "Mensuelle",
+    "onlogon": "Ouverture de session",
+}
+_NON_AVAILABLE = "Non disponible."
 
 # Mission « Sauvegarde automatique et restauration », §3.3 : « Type » (locale
 # ou externe) et « Emplacement » s'ajoutent à l'historique déjà existant —
@@ -170,6 +189,7 @@ class BackupsPage(QWidget):
         content_layout.addWidget(self._build_config_group())
         content_layout.addLayout(self._build_actions_row())
         content_layout.addWidget(self._build_external_group())
+        content_layout.addWidget(self._build_task_details_group())
         history_title = QLabel("Historique des sauvegardes", self)
         history_title.setProperty("role", "sectionTitle")
         content_layout.addWidget(history_title)
@@ -395,9 +415,47 @@ class BackupsPage(QWidget):
         form.addRow(self.auto_enabled_checkbox)
 
         self.frequency_combo = QComboBox(self)
-        self.frequency_combo.addItems([_FREQUENCY_LABELS[FREQUENCY_DAILY], _FREQUENCY_LABELS[FREQUENCY_WEEKLY]])
+        self.frequency_combo.addItems([
+            _FREQUENCY_LABELS[FREQUENCY_DAILY], _FREQUENCY_LABELS[FREQUENCY_WEEKLY],
+            _FREQUENCY_LABELS[FREQUENCY_MONTHLY],
+        ])
         self.frequency_combo.setMinimumWidth(180)
         form.addRow("Fréquence", self.frequency_combo)
+
+        # Mission « Gestion complète de la planification des sauvegardes
+        # Windows », §3.1 : un ou plusieurs jours pour la fréquence
+        # hebdomadaire — jamais un simple compteur de 7 jours (voir
+        # ``BackupService._most_recent_scheduled_date``). Visible
+        # uniquement pour cette fréquence (voir ``_on_frequency_changed``).
+        self.weekday_checkboxes: list[QCheckBox] = []
+        weekday_row = QWidget(self)
+        weekday_layout = QHBoxLayout(weekday_row)
+        weekday_layout.setContentsMargins(0, 0, 0, 0)
+        weekday_layout.setSpacing(8)
+        for label in _WEEKDAY_LABELS:
+            checkbox = QCheckBox(label, weekday_row)
+            weekday_layout.addWidget(checkbox)
+            self.weekday_checkboxes.append(checkbox)
+        self._config_form = form
+        form.addRow("Jours de la semaine", weekday_row)
+        self._weekday_row_widget = weekday_row
+
+        # Mensuel : jour fixe (1-31) ou dernier jour du mois — jamais un
+        # décalage silencieux (voir la même docstring ci-dessus) : un jour
+        # fixe absent d'un mois donné est simplement sauté, jamais reporté.
+        monthly_row = QWidget(self)
+        monthly_layout = QHBoxLayout(monthly_row)
+        monthly_layout.setContentsMargins(0, 0, 0, 0)
+        monthly_layout.setSpacing(8)
+        self.monthly_day_spin = QSpinBox(monthly_row)
+        self.monthly_day_spin.setRange(1, 31)
+        self.monthly_day_spin.setMinimumWidth(70)
+        monthly_layout.addWidget(self.monthly_day_spin)
+        self.monthly_last_day_checkbox = QCheckBox("Dernier jour du mois", monthly_row)
+        monthly_layout.addWidget(self.monthly_last_day_checkbox)
+        monthly_layout.addStretch(1)
+        form.addRow("Jour du mois", monthly_row)
+        self._monthly_row_widget = monthly_row
 
         self.time_edit = QLineEdit(self)
         self.time_edit.setPlaceholderText("HH:MM")
@@ -434,7 +492,8 @@ class BackupsPage(QWidget):
         for widget in (
             self.auto_enabled_checkbox, self.frequency_combo, self.time_edit,
             self.destination_edit, self.browse_button, self.retention_spin,
-            self.encryption_enabled_checkbox,
+            self.encryption_enabled_checkbox, self.monthly_day_spin, self.monthly_last_day_checkbox,
+            *self.weekday_checkboxes,
         ):
             widget.setEnabled(can_configure)
 
@@ -468,8 +527,21 @@ class BackupsPage(QWidget):
         self.export_key_button.clicked.connect(self._on_export_encryption_key_clicked)
         self.import_key_button.clicked.connect(self._on_import_encryption_key_clicked)
         self.test_key_button.clicked.connect(self._on_test_encryption_key_clicked)
+        self.frequency_combo.currentTextChanged.connect(self._on_frequency_changed)
+        self.monthly_last_day_checkbox.toggled.connect(
+            lambda checked: self.monthly_day_spin.setEnabled(can_configure and not checked)
+        )
+        self._on_frequency_changed(self.frequency_combo.currentText())
 
         return group
+
+    def _on_frequency_changed(self, _label: str) -> None:
+        """Affiche uniquement les contrôles pertinents pour la fréquence
+        choisie (§9 du mandat : « éviter de surcharger l'écran ») — jamais
+        les jours hebdomadaires pour une fréquence mensuelle ou l'inverse."""
+        frequency = _FREQUENCY_BY_LABEL.get(self.frequency_combo.currentText(), FREQUENCY_DAILY)
+        self._config_form.setRowVisible(self._weekday_row_widget, frequency == FREQUENCY_WEEKLY)
+        self._config_form.setRowVisible(self._monthly_row_widget, frequency == FREQUENCY_MONTHLY)
 
     def _load_config_into_form(self) -> None:
         try:
@@ -485,6 +557,11 @@ class BackupsPage(QWidget):
         self.destination_edit.setText(str(config.destination))
         self.retention_spin.setValue(config.retention)
         self.encryption_enabled_checkbox.setChecked(config.encryption_enabled)
+        for index, checkbox in enumerate(self.weekday_checkboxes):
+            checkbox.setChecked(index in config.weekly_days)
+        self.monthly_last_day_checkbox.setChecked(config.monthly_last_day)
+        self.monthly_day_spin.setValue(config.monthly_day)
+        self._on_frequency_changed(self.frequency_combo.currentText())
 
     def _on_browse_clicked(self) -> None:
         directory = QFileDialog.getExistingDirectory(self, "Dossier de destination des sauvegardes", self.destination_edit.text())
@@ -508,15 +585,22 @@ class BackupsPage(QWidget):
                 destination=self.destination_edit.text(),
                 retention=self.retention_spin.value(),
                 encryption_enabled=self.encryption_enabled_checkbox.isChecked(),
+                weekly_days=frozenset(
+                    index for index, checkbox in enumerate(self.weekday_checkboxes) if checkbox.isChecked()
+                ),
+                monthly_day=self.monthly_day_spin.value(),
+                monthly_last_day=self.monthly_last_day_checkbox.isChecked(),
             )
             QMessageBox.information(self, "Configuration enregistrée", "La configuration des sauvegardes a été enregistrée.")
         except AppError as exc:
             QMessageBox.warning(self, "Configuration refusée", str(exc))
             return False
-        # §3.5 : l'heure vient peut-être de changer — signale immédiatement
-        # si la tâche planifiée Windows déjà créée ne la reflète plus,
-        # jamais après coup seulement au prochain rafraîchissement.
+        # §3.5/§7 : la fréquence/l'heure/les jours viennent peut-être de
+        # changer — signale immédiatement si la tâche planifiée Windows
+        # déjà créée ne les reflète plus, jamais après coup seulement au
+        # prochain rafraîchissement.
         self._refresh_task_time_sync_warning()
+        self._refresh_schedule_sync_warnings()
         self._refresh_status_panel()
         return True
 
@@ -704,6 +788,16 @@ class BackupsPage(QWidget):
         self.external_task_status_label.setWordWrap(True)
         form.addRow("Tâche planifiée Windows", self.external_task_status_label)
 
+        # Mission « Gestion complète de la planification des sauvegardes
+        # Windows », §4 : paramètre indépendant de la fréquence principale
+        # — n'affecte QUE la tâche complémentaire ``SCHEDULED_TASK_NAME_LOGON``
+        # (rattrapage), jamais la tâche principale (voir
+        # ``ExternalBackupService.configure_scheduled_task``).
+        self.onlogon_enabled_checkbox = QCheckBox(
+            "Déclencher également au démarrage de session Windows (rattrapage)", group,
+        )
+        form.addRow(self.onlogon_enabled_checkbox)
+
         layout.addLayout(form)
 
         # Mission corrective « Fiabilisation du module de sauvegarde »,
@@ -720,7 +814,10 @@ class BackupsPage(QWidget):
         self.task_time_sync_warning_label.setVisible(False)
         layout.addWidget(self.task_time_sync_warning_label)
 
-        for widget in (self.external_enabled_checkbox, self.choose_media_button, self.external_retention_spin):
+        for widget in (
+            self.external_enabled_checkbox, self.choose_media_button, self.external_retention_spin,
+            self.onlogon_enabled_checkbox,
+        ):
             widget.setEnabled(can_configure)
 
         buttons_row = QHBoxLayout()
@@ -775,6 +872,168 @@ class BackupsPage(QWidget):
 
         return group
 
+    # -- détails de la tâche planifiée Windows (mission « Gestion complète
+    # de la planification des sauvegardes Windows », §6) -------------------
+
+    def _build_task_details_group(self) -> QGroupBox:
+        """Section repliable (§9 : « éviter de surcharger l'écran ») —
+        relit systématiquement l'état réel au moment de l'affichage/de
+        l'actualisation, jamais une simple réutilisation des paramètres
+        StockManager (voir :meth:`_refresh_task_details`)."""
+        group = QGroupBox("Détails de la tâche planifiée Windows", self)
+        group.setCheckable(True)
+        group.setChecked(False)
+        outer_layout = QVBoxLayout(group)
+
+        content = QWidget(group)
+        form = QFormLayout(content)
+        form.setVerticalSpacing(6)
+        form.setHorizontalSpacing(16)
+
+        self.detail_exists_label = QLabel("—", content)
+        form.addRow("État", self.detail_exists_label)
+        self.detail_name_label = QLabel("—", content)
+        self.detail_name_label.setWordWrap(True)
+        form.addRow("Nom", self.detail_name_label)
+        self.detail_frequency_label = QLabel("—", content)
+        form.addRow("Fréquence", self.detail_frequency_label)
+        self.detail_time_label = QLabel("—", content)
+        form.addRow("Heure", self.detail_time_label)
+        self.detail_days_label = QLabel("—", content)
+        self.detail_days_label.setWordWrap(True)
+        form.addRow("Jours", self.detail_days_label)
+        self.detail_onlogon_label = QLabel("—", content)
+        form.addRow("Déclencheur supplémentaire (ouverture de session)", self.detail_onlogon_label)
+        self.detail_account_label = QLabel("—", content)
+        self.detail_account_label.setWordWrap(True)
+        form.addRow("Compte Windows", self.detail_account_label)
+        self.detail_last_run_label = QLabel("—", content)
+        form.addRow("Dernière exécution", self.detail_last_run_label)
+        self.detail_next_run_label = QLabel("—", content)
+        form.addRow("Prochaine exécution", self.detail_next_run_label)
+        self.detail_last_result_label = QLabel("—", content)
+        self.detail_last_result_label.setWordWrap(True)
+        form.addRow("Dernier résultat (code Windows)", self.detail_last_result_label)
+        self.detail_executable_label = QLabel("—", content)
+        self.detail_executable_label.setWordWrap(True)
+        form.addRow("Exécutable", self.detail_executable_label)
+        self.detail_arguments_label = QLabel("—", content)
+        self.detail_arguments_label.setWordWrap(True)
+        form.addRow("Arguments", self.detail_arguments_label)
+
+        outer_layout.addWidget(content)
+
+        self.schedule_sync_warnings_label = QLabel("", group)
+        self.schedule_sync_warnings_label.setWordWrap(True)
+        self.schedule_sync_warnings_label.setStyleSheet(f"font-weight: 600; color: {COLOR_DANGER};")
+        self.schedule_sync_warnings_label.setVisible(False)
+        outer_layout.addWidget(self.schedule_sync_warnings_label)
+
+        buttons_row = QHBoxLayout()
+        self.refresh_task_details_button = QPushButton("Actualiser les informations", group)
+        buttons_row.addWidget(self.refresh_task_details_button)
+        self.open_task_scheduler_button = QPushButton("Ouvrir le Planificateur de tâches Windows", group)
+        buttons_row.addWidget(self.open_task_scheduler_button)
+        buttons_row.addStretch(1)
+        outer_layout.addLayout(buttons_row)
+
+        content.setVisible(group.isChecked())
+        group.toggled.connect(content.setVisible)
+        group.toggled.connect(lambda checked: self._refresh_task_details() if checked else None)
+        self.refresh_task_details_button.clicked.connect(self._on_refresh_task_details_clicked)
+        self.open_task_scheduler_button.clicked.connect(self._on_open_task_scheduler_clicked)
+
+        return group
+
+    def _refresh_task_details(self) -> None:
+        if self._external_backup_service is None:
+            return
+        try:
+            details = self._external_backup_service.scheduled_task_details()
+        except AppError as exc:
+            self.detail_exists_label.setText(f"Indisponible sur ce poste : {exc}")
+            for label in (
+                self.detail_name_label, self.detail_frequency_label, self.detail_time_label,
+                self.detail_days_label, self.detail_onlogon_label, self.detail_account_label,
+                self.detail_last_run_label, self.detail_next_run_label, self.detail_last_result_label,
+                self.detail_executable_label, self.detail_arguments_label,
+            ):
+                label.setText(_NON_AVAILABLE)
+            self._refresh_schedule_sync_warnings()
+            return
+
+        self.detail_exists_label.setText("Configurée" if details.exists else "Absente")
+        self.detail_name_label.setText(details.name)
+        self.detail_frequency_label.setText(
+            _SCHEDULE_KIND_LABELS.get(details.schedule_kind, _NON_AVAILABLE) if details.schedule_kind
+            else _NON_AVAILABLE
+        )
+        self.detail_time_label.setText(details.time_of_day or _NON_AVAILABLE)
+        if details.schedule_kind == FREQUENCY_WEEKLY and details.weekly_days is not None:
+            self.detail_days_label.setText(
+                ", ".join(_WEEKDAY_LABELS[i] for i in sorted(details.weekly_days)) or _NON_AVAILABLE
+            )
+        elif details.schedule_kind == FREQUENCY_MONTHLY:
+            if details.monthly_last_day:
+                self.detail_days_label.setText("Dernier jour du mois")
+            elif details.monthly_day is not None:
+                self.detail_days_label.setText(f"Jour {details.monthly_day} du mois")
+            else:
+                self.detail_days_label.setText(_NON_AVAILABLE)
+        elif details.schedule_kind == FREQUENCY_DAILY:
+            self.detail_days_label.setText("Tous les jours")
+        else:
+            self.detail_days_label.setText(_NON_AVAILABLE)
+        self.detail_onlogon_label.setText("Activé" if details.onlogon_task_exists else "Désactivé/absent")
+        self.detail_account_label.setText(details.user_id or _NON_AVAILABLE)
+        self.detail_last_run_label.setText(details.last_run_time or _NON_AVAILABLE)
+        self.detail_next_run_label.setText(details.next_run_time or _NON_AVAILABLE)
+        self.detail_last_result_label.setText(details.last_result or _NON_AVAILABLE)
+        self.detail_executable_label.setText(details.executable or _NON_AVAILABLE)
+        self.detail_arguments_label.setText(details.arguments or _NON_AVAILABLE)
+        self._refresh_schedule_sync_warnings()
+
+    def _refresh_schedule_sync_warnings(self) -> None:
+        if self._external_backup_service is None:
+            self.schedule_sync_warnings_label.setVisible(False)
+            return
+        try:
+            warnings = self._external_backup_service.scheduled_task_sync_warnings()
+        except AppError:
+            self.schedule_sync_warnings_label.setVisible(False)
+            return
+        if not warnings:
+            self.schedule_sync_warnings_label.setVisible(False)
+            return
+        self.schedule_sync_warnings_label.setText("⚠ " + "\n⚠ ".join(warnings))
+        self.schedule_sync_warnings_label.setVisible(True)
+
+    def _on_refresh_task_details_clicked(self) -> None:
+        self._refresh_task_details()
+
+    def _on_open_task_scheduler_clicked(self) -> None:
+        """Ouvre l'outil natif Windows — ne modifie jamais la tâche
+        automatiquement, une simple consultation/édition manuelle au choix
+        de l'utilisateur (mission « Gestion complète de la planification
+        des sauvegardes Windows », §6.2)."""
+        import sys as _sys
+
+        if _sys.platform != "win32":
+            QMessageBox.information(
+                self, "Indisponible",
+                "Le Planificateur de tâches Windows n'est disponible que sous Windows.",
+            )
+            return
+        import os as _os
+
+        try:
+            _os.startfile("taskschd.msc")  # type: ignore[attr-defined]
+        except OSError as exc:
+            QMessageBox.warning(
+                self, "Ouverture impossible",
+                f"Impossible d'ouvrir le Planificateur de tâches Windows : {exc}",
+            )
+
     def _load_external_config_into_form(self) -> None:
         if self._external_backup_service is None:
             self.external_status_label.setText("Protection externe non disponible.")
@@ -782,9 +1041,11 @@ class BackupsPage(QWidget):
             return
         try:
             config = self._external_backup_service.get_config()
+            onlogon_enabled = self._external_backup_service.is_onlogon_enabled()
         except AppError:
             return
         self._apply_external_config_to_form(config)
+        self.onlogon_enabled_checkbox.setChecked(onlogon_enabled)
         self._refresh_scheduled_task_status()
 
     def _apply_external_config_to_form(self, config: ExternalBackupConfig) -> None:
@@ -810,11 +1071,13 @@ class BackupsPage(QWidget):
             self.external_task_status_label.setText(f"Indisponible sur ce poste : {exc}")
             self.task_time_sync_warning_label.setVisible(False)
             self._refresh_status_panel()
+            self._refresh_task_details()
             return
         if not status.exists:
             self.external_task_status_label.setText("Non configurée.")
             self.task_time_sync_warning_label.setVisible(False)
             self._refresh_status_panel()
+            self._refresh_task_details()
             return
         self.external_task_status_label.setText(
             f"{status.status or '—'} — dernière exécution : {status.last_run_time or '—'} "
@@ -822,6 +1085,7 @@ class BackupsPage(QWidget):
         )
         self._refresh_task_time_sync_warning()
         self._refresh_status_panel()
+        self._refresh_task_details()
 
     def _refresh_task_time_sync_warning(self) -> None:
         """Isolé de ``_refresh_scheduled_task_status`` pour être également
@@ -976,9 +1240,19 @@ class BackupsPage(QWidget):
         self._configure_scheduled_task()
 
     def _configure_scheduled_task(self) -> bool:
+        """Applique la configuration ACTUELLEMENT ENREGISTRÉE dans
+        StockManager (fréquence/jours/heure — enregistrés au préalable via
+        « Enregistrer » dans la section « Configuration de la sauvegarde
+        automatique ») à la tâche planifiée Windows, avec le réglage
+        d'ouverture de session actuellement coché ici. N'affiche jamais
+        « configurée avec succès » sans que
+        ``ExternalBackupService.configure_scheduled_task`` ait lui-même
+        validé/créé/relu/vérifié la tâche réelle (mission « Gestion
+        complète de la planification des sauvegardes Windows », §5/§7)."""
         try:
-            time_of_day = self._backup_service.get_config().time_of_day
-            self._external_backup_service.configure_scheduled_task(time_of_day)
+            self._external_backup_service.configure_scheduled_task(
+                onlogon_enabled=self.onlogon_enabled_checkbox.isChecked(),
+            )
             QMessageBox.information(
                 self, "Tâche planifiée configurée",
                 "La tâche planifiée Windows a été configurée/réparée avec succès.",

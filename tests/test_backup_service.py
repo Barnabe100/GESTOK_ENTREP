@@ -2,8 +2,9 @@ import dataclasses
 import shutil
 import sqlite3
 import time
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 from alembic import command
@@ -77,7 +78,7 @@ def test_get_config_never_silently_re_enables_an_explicitly_disabled_installatio
     stack, _ = login_as("Administrateur")
     stack.backups.update_config(
         auto_enabled=False, frequency="weekly", time_of_day="03:00",
-        destination=str(tmp_path / "backups"), retention=15,
+        destination=str(tmp_path / "backups"), retention=15, weekly_days=frozenset({0}),
     )
 
     config = stack.backups.get_config()
@@ -92,7 +93,7 @@ def test_update_config_persists_values(login_as, tmp_path) -> None:
 
     updated = stack.backups.update_config(
         auto_enabled=True, frequency="weekly", time_of_day="03:30",
-        destination=str(destination), retention=5,
+        destination=str(destination), retention=5, weekly_days=frozenset({0}),
     )
 
     assert updated.auto_enabled is True
@@ -110,7 +111,7 @@ def test_update_config_rejects_invalid_frequency(login_as, tmp_path) -> None:
 
     with pytest.raises(ValidationError):
         stack.backups.update_config(
-            auto_enabled=False, frequency="monthly", time_of_day="02:00",
+            auto_enabled=False, frequency="yearly", time_of_day="02:00",
             destination=str(tmp_path / "backups"), retention=5,
         )
 
@@ -1393,16 +1394,161 @@ def test_catchup_runs_only_once_even_when_queried_repeatedly_before_target_time(
 
 
 def test_catchup_also_works_for_weekly_frequency(login_as, tmp_path) -> None:
+    """Mission « Gestion complète de la planification des sauvegardes
+    Windows » : l'échéance hebdomadaire est désormais consciente du jour
+    réellement configuré (jeudi, ``weekday() == 3``), jamais un simple
+    compteur de 7 jours — 2026-01-01 et 2026-01-08 sont tous deux des
+    jeudis. La dernière réussite datant du jeudi 1er, l'échéance du jeudi
+    8 (dépassée hier) déclenche un rattrapage immédiat le 10, bien avant
+    l'heure cible."""
     stack, _ = login_as("Administrateur")
     destination = tmp_path / "backups"
     stack.backups.update_config(
         auto_enabled=True, frequency="weekly", time_of_day="20:00", destination=str(destination), retention=10,
+        weekly_days=frozenset({3}),
     )
-    # Hebdomadaire : échéance normale à J+7. Si la dernière réussite date
-    # de plus de 8 jours avant « hier », l'échéance était déjà dépassée
-    # hier aussi -> rattrapage immédiat aujourd'hui, avant l'heure cible.
     _set_last_auto_run(stack, datetime(2026, 1, 1, 20, 5, 0))
     config = stack.backups.get_config()
 
-    now = datetime(2026, 1, 10, 8, 0, 0)  # 9 jours plus tard, bien avant 20h
+    now = datetime(2026, 1, 10, 8, 0, 0)  # samedi, après le jeudi 8 manqué
     assert stack.backups._is_due(config, now) is True
+
+
+class TestMostRecentScheduledDate:
+    """Mission « Gestion complète de la planification des sauvegardes
+    Windows », §12 : calcul pur de l'échéance la plus récente — hebdomadaire
+    multi-jours, mensuel jour fixe (y compris mois courts), mensuel dernier
+    jour (y compris années bissextiles). Jamais un décalage silencieux :
+    un jour du mois absent d'un mois donné est simplement sauté vers le
+    mois précédent, jamais reporté à un autre jour du même mois."""
+
+    @staticmethod
+    def _config(**overrides):
+        from app.services.backups.backup_service import BackupConfig
+
+        base = dict(
+            auto_enabled=True, frequency="daily", time_of_day="20:00",
+            destination=Path("/tmp/backups"), retention=10,
+        )
+        base.update(overrides)
+        return BackupConfig(**base)
+
+    def test_daily_returns_the_reference_date_itself(self) -> None:
+        from app.services.backups.backup_service import _most_recent_scheduled_date
+
+        config = self._config(frequency="daily")
+        assert _most_recent_scheduled_date(config, date(2026, 3, 15)) == date(2026, 3, 15)
+
+    def test_weekly_single_day_finds_the_most_recent_occurrence(self) -> None:
+        from app.services.backups.backup_service import _most_recent_scheduled_date
+
+        config = self._config(frequency="weekly", weekly_days=frozenset({3}))  # jeudi
+        # 2026-03-15 est un dimanche ; le jeudi précédent est le 2026-03-12.
+        assert _most_recent_scheduled_date(config, date(2026, 3, 15)) == date(2026, 3, 12)
+
+    def test_weekly_multiple_days_finds_the_closer_of_the_two(self) -> None:
+        from app.services.backups.backup_service import _most_recent_scheduled_date
+
+        config = self._config(frequency="weekly", weekly_days=frozenset({0, 3}))  # lundi, jeudi
+        # 2026-03-15 (dimanche) : le lundi 2026-03-09 et le jeudi 2026-03-12
+        # ont tous deux eu lieu dans la semaine précédente — le jeudi (12)
+        # est le plus récent des deux.
+        assert _most_recent_scheduled_date(config, date(2026, 3, 15)) == date(2026, 3, 12)
+
+    def test_weekly_occurrence_on_the_reference_date_itself(self) -> None:
+        from app.services.backups.backup_service import _most_recent_scheduled_date
+
+        config = self._config(frequency="weekly", weekly_days=frozenset({6}))  # dimanche
+        assert _most_recent_scheduled_date(config, date(2026, 3, 15)) == date(2026, 3, 15)
+
+    def test_monthly_fixed_day_within_the_same_month(self) -> None:
+        from app.services.backups.backup_service import _most_recent_scheduled_date
+
+        config = self._config(frequency="monthly", monthly_day=15)
+        assert _most_recent_scheduled_date(config, date(2026, 3, 20)) == date(2026, 3, 15)
+
+    def test_monthly_fixed_day_not_yet_reached_falls_back_to_previous_month(self) -> None:
+        from app.services.backups.backup_service import _most_recent_scheduled_date
+
+        config = self._config(frequency="monthly", monthly_day=20)
+        assert _most_recent_scheduled_date(config, date(2026, 3, 10)) == date(2026, 2, 20)
+
+    def test_monthly_fixed_day_31_skips_a_thirty_day_month(self) -> None:
+        """Avril compte 30 jours : le jour 31 n'y existe jamais, jamais
+        reporté au 30 — l'occurrence la plus récente avant le 15 avril est
+        donc celle de mars."""
+        from app.services.backups.backup_service import _most_recent_scheduled_date
+
+        config = self._config(frequency="monthly", monthly_day=31)
+        assert _most_recent_scheduled_date(config, date(2026, 4, 15)) == date(2026, 3, 31)
+
+    def test_monthly_fixed_day_29_skips_february_in_a_non_leap_year(self) -> None:
+        """2026 n'est pas bissextile (février compte 28 jours) : le jour 29
+        n'y existe pas, jamais reporté au 28 — l'occurrence la plus récente
+        avant le 10 mars est celle de janvier."""
+        from app.services.backups.backup_service import _most_recent_scheduled_date
+
+        config = self._config(frequency="monthly", monthly_day=29)
+        assert _most_recent_scheduled_date(config, date(2026, 3, 10)) == date(2026, 1, 29)
+
+    def test_monthly_fixed_day_29_exists_in_a_leap_year_february(self) -> None:
+        from app.services.backups.backup_service import _most_recent_scheduled_date
+
+        config = self._config(frequency="monthly", monthly_day=29)
+        assert _most_recent_scheduled_date(config, date(2028, 3, 10)) == date(2028, 2, 29)  # 2028 est bissextile.
+
+    def test_monthly_last_day_of_a_thirty_one_day_month(self) -> None:
+        from app.services.backups.backup_service import _most_recent_scheduled_date
+
+        config = self._config(frequency="monthly", monthly_last_day=True)
+        assert _most_recent_scheduled_date(config, date(2026, 1, 20)) == date(2025, 12, 31)
+
+    def test_monthly_last_day_of_february_in_a_leap_year(self) -> None:
+        from app.services.backups.backup_service import _most_recent_scheduled_date
+
+        config = self._config(frequency="monthly", monthly_last_day=True)
+        assert _most_recent_scheduled_date(config, date(2028, 3, 10)) == date(2028, 2, 29)
+
+    def test_monthly_last_day_of_february_in_a_non_leap_year(self) -> None:
+        from app.services.backups.backup_service import _most_recent_scheduled_date
+
+        config = self._config(frequency="monthly", monthly_last_day=True)
+        assert _most_recent_scheduled_date(config, date(2026, 3, 10)) == date(2026, 2, 28)
+
+    def test_monthly_last_day_matching_the_reference_date_itself(self) -> None:
+        from app.services.backups.backup_service import _most_recent_scheduled_date
+
+        config = self._config(frequency="monthly", monthly_last_day=True)
+        assert _most_recent_scheduled_date(config, date(2026, 4, 30)) == date(2026, 4, 30)
+
+
+def test_is_due_as_of_monthly_fixed_day_due_after_the_occurrence(login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    destination = tmp_path / "backups"
+    stack.backups.update_config(
+        auto_enabled=True, frequency="monthly", time_of_day="20:00", destination=str(destination),
+        retention=10, monthly_day=15,
+    )
+    config = stack.backups.get_config()
+
+    assert stack.backups._is_due_as_of(config, datetime(2026, 2, 15, 20, 5, 0), date(2026, 3, 16)) is True
+    assert stack.backups._is_due_as_of(config, datetime(2026, 3, 15, 20, 5, 0), date(2026, 3, 16)) is False
+
+
+def test_is_due_as_of_monthly_last_day_never_shifts_to_another_day(login_as, tmp_path) -> None:
+    """Mission §3.1/§12 : vérifie bout en bout (via ``update_config`` puis
+    ``_is_due_as_of``, pas seulement la fonction pure ci-dessus) qu'une
+    fréquence mensuelle « dernier jour » ne décale jamais silencieusement
+    vers un autre jour selon le mois."""
+    stack, _ = login_as("Administrateur")
+    destination = tmp_path / "backups"
+    stack.backups.update_config(
+        auto_enabled=True, frequency="monthly", time_of_day="20:00", destination=str(destination),
+        retention=10, monthly_last_day=True,
+    )
+    config = stack.backups.get_config()
+
+    # Dernière réussite le 28 février 2026 (dernier jour de ce mois-là,
+    # 2026 n'étant pas bissextile) : le 31 mars 2026 (dernier jour de mars)
+    # rend une nouvelle sauvegarde due.
+    assert stack.backups._is_due_as_of(config, datetime(2026, 2, 28, 20, 5, 0), date(2026, 4, 1)) is True

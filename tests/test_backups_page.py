@@ -52,7 +52,10 @@ def test_sqlite_mode_shows_no_postgresql_target_line(qtbot, login_as) -> None:
 def test_form_prefilled_with_current_config(qtbot, login_as, tmp_path) -> None:
     stack, _ = login_as("Administrateur")
     destination = tmp_path / "backups"
-    stack.backups.update_config(auto_enabled=True, frequency="weekly", time_of_day="03:15", destination=str(destination), retention=7)
+    stack.backups.update_config(
+        auto_enabled=True, frequency="weekly", time_of_day="03:15", destination=str(destination), retention=7,
+        weekly_days=frozenset({0}),
+    )
 
     page = _build_page(stack)
     qtbot.addWidget(page)
@@ -75,6 +78,281 @@ def test_form_prefilled_with_daily_frequency(qtbot, login_as, tmp_path) -> None:
     qtbot.addWidget(page)
 
     assert page.frequency_combo.currentText() == "Quotidienne"
+
+
+# -- mission « Gestion complète de la planification des sauvegardes Windows » ---
+
+
+def test_frequency_combo_offers_monthly(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    items = [page.frequency_combo.itemText(i) for i in range(page.frequency_combo.count())]
+    assert "Mensuelle" in items
+
+
+def test_weekday_row_visible_only_for_weekly_frequency(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page.show()
+
+    page.frequency_combo.setCurrentText("Quotidienne")
+    assert page._weekday_row_widget.isVisible() is False
+    assert page._monthly_row_widget.isVisible() is False
+
+    page.frequency_combo.setCurrentText("Hebdomadaire")
+    assert page._weekday_row_widget.isVisible() is True
+    assert page._monthly_row_widget.isVisible() is False
+
+    page.frequency_combo.setCurrentText("Mensuelle")
+    assert page._weekday_row_widget.isVisible() is False
+    assert page._monthly_row_widget.isVisible() is True
+
+
+def test_form_prefilled_with_weekly_days(qtbot, login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    stack.backups.update_config(
+        auto_enabled=True, frequency="weekly", time_of_day="20:00",
+        destination=str(tmp_path / "backups"), retention=30, weekly_days=frozenset({1, 4}),
+    )
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.weekday_checkboxes[1].isChecked() is True
+    assert page.weekday_checkboxes[4].isChecked() is True
+    assert page.weekday_checkboxes[0].isChecked() is False
+
+
+def test_form_prefilled_with_monthly_fixed_day(qtbot, login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    stack.backups.update_config(
+        auto_enabled=True, frequency="monthly", time_of_day="20:00",
+        destination=str(tmp_path / "backups"), retention=30, monthly_day=15,
+    )
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.monthly_day_spin.value() == 15
+    assert page.monthly_last_day_checkbox.isChecked() is False
+
+
+def test_form_prefilled_with_monthly_last_day(qtbot, login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    stack.backups.update_config(
+        auto_enabled=True, frequency="monthly", time_of_day="20:00",
+        destination=str(tmp_path / "backups"), retention=30, monthly_last_day=True,
+    )
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.monthly_last_day_checkbox.isChecked() is True
+
+
+def test_save_config_persists_weekly_days(qtbot, login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    page.destination_edit.setText(str(tmp_path / "backups"))
+    page.frequency_combo.setCurrentText("Hebdomadaire")
+    for checkbox in page.weekday_checkboxes:
+        checkbox.setChecked(False)
+    page.weekday_checkboxes[2].setChecked(True)
+    page.weekday_checkboxes[5].setChecked(True)
+
+    result = page._save_config()
+
+    assert result is True
+    config = stack.backups.get_config()
+    assert config.weekly_days == frozenset({2, 5})
+
+
+def test_save_config_rejects_weekly_with_no_day_selected(qtbot, login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    page.destination_edit.setText(str(tmp_path / "backups"))
+    page.frequency_combo.setCurrentText("Hebdomadaire")
+    for checkbox in page.weekday_checkboxes:
+        checkbox.setChecked(False)
+
+    result = page._save_config()
+
+    assert result is False
+
+
+def test_save_config_persists_monthly_last_day(qtbot, login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    page.destination_edit.setText(str(tmp_path / "backups"))
+    page.frequency_combo.setCurrentText("Mensuelle")
+    page.monthly_last_day_checkbox.setChecked(True)
+
+    result = page._save_config()
+
+    assert result is True
+    config = stack.backups.get_config()
+    assert config.monthly_last_day is True
+
+
+def test_save_config_persists_monthly_fixed_day(qtbot, login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    page.destination_edit.setText(str(tmp_path / "backups"))
+    page.frequency_combo.setCurrentText("Mensuelle")
+    page.monthly_last_day_checkbox.setChecked(False)
+    page.monthly_day_spin.setValue(22)
+
+    result = page._save_config()
+
+    assert result is True
+    config = stack.backups.get_config()
+    assert config.monthly_day == 22
+    assert config.monthly_last_day is False
+
+
+def test_monthly_day_spin_disabled_when_last_day_checked(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    page.monthly_last_day_checkbox.setChecked(True)
+    assert page.monthly_day_spin.isEnabled() is False
+
+    page.monthly_last_day_checkbox.setChecked(False)
+    assert page.monthly_day_spin.isEnabled() is True
+
+
+def test_onlogon_checkbox_prefilled_from_service(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    monkeypatch.setattr(stack.external_backups, "is_onlogon_enabled", lambda: False)
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.onlogon_enabled_checkbox.isChecked() is False
+
+
+def test_configure_scheduled_task_passes_onlogon_checkbox_state(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    captured = {}
+    monkeypatch.setattr(
+        stack.external_backups, "configure_scheduled_task",
+        lambda **kwargs: captured.update(kwargs),
+    )
+    page.onlogon_enabled_checkbox.setChecked(False)
+
+    result = page._configure_scheduled_task()
+
+    assert result is True
+    assert captured["onlogon_enabled"] is False
+
+
+def test_refresh_task_details_populates_all_fields(qtbot, login_as, monkeypatch) -> None:
+    from app.services.backups.external_backup_service import ScheduledTaskDetails
+
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    monkeypatch.setattr(
+        stack.external_backups, "scheduled_task_details",
+        lambda: ScheduledTaskDetails(
+            exists=True, name="StockManager - Sauvegarde automatique", status="Ready",
+            schedule_kind="weekly", time_of_day="20:00", weekly_days=frozenset({0, 3}),
+            user_id="DESKTOP-TEST\\jdupont", last_run_time="24/11/2026 20:00:00",
+            next_run_time="25/11/2026 20:00:00", last_result="0",
+            executable="C:/StockManager/StockManager.exe", arguments="--run-backup-agent",
+            onlogon_task_exists=True,
+        ),
+    )
+
+    page._refresh_task_details()
+
+    assert page.detail_exists_label.text() == "Configurée"
+    assert page.detail_frequency_label.text() == "Hebdomadaire"
+    assert "Lundi" in page.detail_days_label.text()
+    assert "Jeudi" in page.detail_days_label.text()
+    assert page.detail_onlogon_label.text() == "Activé"
+    assert page.detail_account_label.text() == "DESKTOP-TEST\\jdupont"
+    assert page.detail_executable_label.text() == "C:/StockManager/StockManager.exe"
+
+
+def test_refresh_task_details_shows_non_available_when_absent(qtbot, login_as, monkeypatch) -> None:
+    from app.services.backups.external_backup_service import ScheduledTaskDetails
+
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    monkeypatch.setattr(
+        stack.external_backups, "scheduled_task_details",
+        lambda: ScheduledTaskDetails(exists=False, name="StockManager - Sauvegarde automatique"),
+    )
+
+    page._refresh_task_details()
+
+    assert page.detail_exists_label.text() == "Absente"
+    assert page.detail_time_label.text() == "Non disponible."
+
+
+def test_refresh_schedule_sync_warnings_shows_warnings(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page.show()
+
+    monkeypatch.setattr(
+        stack.external_backups, "scheduled_task_sync_warnings",
+        lambda: ["La fréquence enregistrée dans Windows ne correspond pas à celle configurée."],
+    )
+    page._refresh_schedule_sync_warnings()
+
+    assert page.schedule_sync_warnings_label.isVisible() is True
+    assert "fréquence" in page.schedule_sync_warnings_label.text()
+
+
+def test_refresh_schedule_sync_warnings_hidden_when_empty(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page.show()
+
+    monkeypatch.setattr(stack.external_backups, "scheduled_task_sync_warnings", lambda: [])
+    page._refresh_schedule_sync_warnings()
+
+    assert page.schedule_sync_warnings_label.isVisible() is False
+
+
+def test_open_task_scheduler_shows_unavailable_message_on_non_windows(qtbot, login_as, monkeypatch) -> None:
+    """Testable sans Windows réel : le seul comportement vérifiable ici est
+    le refus explicite hors Windows, jamais une tentative d'ouverture."""
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    messages = []
+    monkeypatch.setattr(
+        "app.views.pages.backups_page.QMessageBox.information",
+        lambda *a, **k: messages.append(a[2] if len(a) > 2 else ""),
+    )
+
+    page._on_open_task_scheduler_clicked()  # ne doit jamais lever, même hors Windows.
+
+    assert messages
 
 
 # -- panneau d'état global (mission corrective §3.5) -----------------------------

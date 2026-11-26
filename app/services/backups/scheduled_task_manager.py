@@ -207,6 +207,9 @@ def _default_current_user_id() -> str:
 
 def _build_task_xml(
     executable: str, arguments: list[str], *, schedule: str, time_of_day: str, user_id: str,
+    weekly_days: Optional[frozenset[int]] = None,
+    monthly_day: Optional[int] = None,
+    monthly_last_day: bool = False,
 ) -> bytes:
     """Construit une définition de tâche Planificateur Windows au format
     XML (``schtasks /create /xml``), encodée en UTF-16 avec BOM (exigée par
@@ -274,14 +277,52 @@ def _build_task_xml(
         _validate_time_of_day(time_of_day)
         trigger = ET.SubElement(triggers, f"{{{_TASK_XML_NS}}}CalendarTrigger")
         # Date arbitraire dans le passé (jamais significative en elle-même,
-        # seule l'heure l'est) : une ``CalendarTrigger`` quotidienne exige
-        # malgré tout une ``StartBoundary`` complète (date + heure) — la
-        # répétition quotidienne vient de ``ScheduleByDay``/``DaysInterval``
-        # ci-dessous, jamais de cette date de départ.
+        # seule l'heure l'est) : une ``CalendarTrigger`` exige malgré tout
+        # une ``StartBoundary`` complète (date + heure) — la répétition
+        # (quotidienne/hebdomadaire/mensuelle) vient des éléments
+        # ``ScheduleByX`` ci-dessous, jamais de cette date de départ.
         ET.SubElement(trigger, f"{{{_TASK_XML_NS}}}StartBoundary").text = f"2024-01-01T{time_of_day}:00"
         ET.SubElement(trigger, f"{{{_TASK_XML_NS}}}Enabled").text = "true"
-        schedule_by_day = ET.SubElement(trigger, f"{{{_TASK_XML_NS}}}ScheduleByDay")
-        ET.SubElement(schedule_by_day, f"{{{_TASK_XML_NS}}}DaysInterval").text = "1"
+        if schedule == SCHEDULE_WEEKLY:
+            if not weekly_days:
+                raise ScheduledTaskError(
+                    "Au moins un jour de la semaine doit être sélectionné pour une tâche hebdomadaire."
+                )
+            schedule_by_week = ET.SubElement(trigger, f"{{{_TASK_XML_NS}}}ScheduleByWeek")
+            ET.SubElement(schedule_by_week, f"{{{_TASK_XML_NS}}}WeeksInterval").text = "1"
+            days_of_week = ET.SubElement(schedule_by_week, f"{{{_TASK_XML_NS}}}DaysOfWeek")
+            # Un élément par jour sélectionné, présent (coché) ou absent
+            # (jamais une valeur numérique) — voir ``_WEEKDAY_XML_NAMES``.
+            for day_index in sorted(weekly_days):
+                ET.SubElement(days_of_week, f"{{{_TASK_XML_NS}}}{_WEEKDAY_XML_NAMES[day_index]}")
+        elif schedule == SCHEDULE_MONTHLY:
+            schedule_by_month = ET.SubElement(trigger, f"{{{_TASK_XML_NS}}}ScheduleByMonth")
+            if monthly_last_day:
+                # ``RunOnLastDayOfMonth`` (élément dédié du schéma Task
+                # Scheduler, utilisé par l'option « Le dernier jour de
+                # chaque mois » de l'interface graphique native) : seule
+                # façon fiable d'exprimer « dernier jour », un numéro de
+                # jour fixe (28/29/30/31) décalerait silencieusement ou
+                # sauterait des mois plus courts — jamais acceptable ici
+                # (voir le mandat de cette mission, §3.1).
+                ET.SubElement(schedule_by_month, f"{{{_TASK_XML_NS}}}RunOnLastDayOfMonth").text = "true"
+            else:
+                if monthly_day is None or not (1 <= monthly_day <= 31):
+                    raise ScheduledTaskError("Le jour du mois doit être compris entre 1 et 31.")
+                days_of_month = ET.SubElement(schedule_by_month, f"{{{_TASK_XML_NS}}}DaysOfMonth")
+                ET.SubElement(days_of_month, f"{{{_TASK_XML_NS}}}Day").text = str(monthly_day)
+                # Jamais corrigé silencieusement : si ce jour n'existe pas
+                # dans un mois donné (ex. 31 pour un mois de 30 jours),
+                # Windows saute entièrement ce mois pour cette tâche
+                # (comportement documenté de Task Scheduler) — annoncé à
+                # l'utilisateur par l'interface, jamais décalé vers un
+                # autre jour à sa place.
+            months = ET.SubElement(schedule_by_month, f"{{{_TASK_XML_NS}}}Months")
+            for month_name in _MONTH_XML_NAMES:
+                ET.SubElement(months, f"{{{_TASK_XML_NS}}}{month_name}")
+        else:
+            schedule_by_day = ET.SubElement(trigger, f"{{{_TASK_XML_NS}}}ScheduleByDay")
+            ET.SubElement(schedule_by_day, f"{{{_TASK_XML_NS}}}DaysInterval").text = "1"
 
     actions = ET.SubElement(root, f"{{{_TASK_XML_NS}}}Actions", attrib={"Context": "Author"})
     exec_action = ET.SubElement(actions, f"{{{_TASK_XML_NS}}}Exec")
@@ -330,7 +371,24 @@ def task_exists(task_name: str) -> bool:
 
 
 SCHEDULE_DAILY = "daily"
+SCHEDULE_WEEKLY = "weekly"
+SCHEDULE_MONTHLY = "monthly"
 SCHEDULE_ONLOGON = "onlogon"
+
+# Mission « Gestion complète de la planification des sauvegardes Windows » :
+# index Python (``datetime.date.weekday()``, 0=lundi) -> nom d'élément XML
+# attendu par ``<DaysOfWeek>`` (schéma Task Scheduler — chaque jour est un
+# élément présent/absent, jamais une valeur numérique).
+_WEEKDAY_XML_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+
+# ``<Months>`` doit toujours lister explicitement les 12 mois pour une
+# tâche mensuelle « tous les mois » (l'omettre équivaudrait à « aucun
+# mois », donc une tâche qui ne se déclencherait jamais — jamais le
+# comportement voulu ici, voir ``_build_task_xml``).
+_MONTH_XML_NAMES = (
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+)
 
 
 def _classify_schtasks_failure(stderr_excerpt: str) -> str:
@@ -384,7 +442,120 @@ def _describe_existing_task_conflict(existing: ScheduledTaskStatus, user_id: str
     )
 
 
-def _verify_task_registered(task_name: str, *, executable: str, schedule: str) -> None:
+@dataclass(frozen=True)
+class ScheduledTaskDefinition:
+    """Relevé structuré de la définition XML réellement enregistrée dans
+    Windows (``schtasks /query ... /xml``) — jamais une simple confirmation
+    d'existence (voir :class:`ScheduledTaskStatus` pour cela), mais le
+    contenu réel du mécanisme configuré : ce que l'interface doit comparer
+    aux paramètres de StockManager avant d'afficher quoi que ce soit comme
+    « synchronisé » (mission « Gestion complète de la planification des
+    sauvegardes Windows », §5/§6/§7). Tout champ non déterminable reste
+    ``None`` — jamais une valeur devinée."""
+
+    command: Optional[str] = None
+    arguments: Optional[str] = None
+    user_id: Optional[str] = None
+    # L'une de SCHEDULE_DAILY/SCHEDULE_WEEKLY/SCHEDULE_MONTHLY/SCHEDULE_ONLOGON.
+    schedule_kind: Optional[str] = None
+    time_of_day: Optional[str] = None  # HH:MM — jamais renseigné pour SCHEDULE_ONLOGON.
+    weekly_days: Optional[frozenset[int]] = None  # pertinent seulement si schedule_kind == SCHEDULE_WEEKLY.
+    monthly_day: Optional[int] = None  # pertinent seulement si schedule_kind == SCHEDULE_MONTHLY, non dernier jour.
+    monthly_last_day: bool = False  # pertinent seulement si schedule_kind == SCHEDULE_MONTHLY.
+
+
+def parse_task_definition(xml_text: str) -> Optional[ScheduledTaskDefinition]:
+    """Analyse la sortie de ``schtasks /query ... /xml`` — ``None`` si le
+    texte n'est pas un XML de tâche exploitable (jamais une exception
+    propagée : un échec de cette lecture ne doit jamais faire planter
+    l'affichage ni bloquer une opération par ailleurs réussie, voir
+    :func:`_verify_task_registered` et
+    ``ExternalBackupService.scheduled_task_details``). Pure, testable sans
+    Windows à partir d'un exemple de sortie figé."""
+    try:
+        parsed = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return None
+
+    command_el = parsed.find(f".//{{{_TASK_XML_NS}}}Command")
+    command = (command_el.text or "").strip() if command_el is not None and command_el.text else None
+    arguments_el = parsed.find(f".//{{{_TASK_XML_NS}}}Arguments")
+    arguments = (arguments_el.text or "").strip() if arguments_el is not None and arguments_el.text else None
+    user_id_el = parsed.find(f".//{{{_TASK_XML_NS}}}Principal/{{{_TASK_XML_NS}}}UserId")
+    user_id = (user_id_el.text or "").strip() if user_id_el is not None and user_id_el.text else None
+
+    schedule_kind: Optional[str] = None
+    time_of_day: Optional[str] = None
+    weekly_days: Optional[frozenset[int]] = None
+    monthly_day: Optional[int] = None
+    monthly_last_day = False
+
+    triggers_el = parsed.find(f".//{{{_TASK_XML_NS}}}Triggers")
+    if triggers_el is not None:
+        logon_trigger = triggers_el.find(f"{{{_TASK_XML_NS}}}LogonTrigger")
+        calendar_trigger = triggers_el.find(f"{{{_TASK_XML_NS}}}CalendarTrigger")
+        if logon_trigger is not None:
+            schedule_kind = SCHEDULE_ONLOGON
+            # Le ``LogonTrigger`` porte parfois son propre ``UserId`` (voir
+            # ``_build_task_xml``) — prioritaire sur celui du ``Principal``
+            # pour confirmer qu'il est bien scopé à l'utilisateur courant
+            # (cause du refus d'accès corrigé par la mission précédente).
+            trigger_user_id_el = logon_trigger.find(f"{{{_TASK_XML_NS}}}UserId")
+            if trigger_user_id_el is not None and trigger_user_id_el.text:
+                user_id = trigger_user_id_el.text.strip()
+        elif calendar_trigger is not None:
+            start_boundary_el = calendar_trigger.find(f"{{{_TASK_XML_NS}}}StartBoundary")
+            if start_boundary_el is not None and start_boundary_el.text:
+                # Format ISO ``AAAA-MM-JJTHH:MM:SS`` — seule la partie
+                # heure nous intéresse ici (la date est arbitraire, voir
+                # ``_build_task_xml``).
+                parts = start_boundary_el.text.strip().split("T")
+                if len(parts) == 2 and len(parts[1]) >= 5:
+                    time_of_day = parts[1][:5]
+            schedule_by_week = calendar_trigger.find(f"{{{_TASK_XML_NS}}}ScheduleByWeek")
+            schedule_by_month = calendar_trigger.find(f"{{{_TASK_XML_NS}}}ScheduleByMonth")
+            if schedule_by_week is not None:
+                schedule_kind = SCHEDULE_WEEKLY
+                days_el = schedule_by_week.find(f"{{{_TASK_XML_NS}}}DaysOfWeek")
+                if days_el is not None:
+                    weekly_days = frozenset(
+                        index for index, name in enumerate(_WEEKDAY_XML_NAMES)
+                        if days_el.find(f"{{{_TASK_XML_NS}}}{name}") is not None
+                    )
+            elif schedule_by_month is not None:
+                schedule_kind = SCHEDULE_MONTHLY
+                last_day_el = schedule_by_month.find(f"{{{_TASK_XML_NS}}}RunOnLastDayOfMonth")
+                if last_day_el is not None and (last_day_el.text or "").strip().lower() == "true":
+                    monthly_last_day = True
+                else:
+                    day_el = schedule_by_month.find(
+                        f"{{{_TASK_XML_NS}}}DaysOfMonth/{{{_TASK_XML_NS}}}Day"
+                    )
+                    if day_el is not None and day_el.text:
+                        try:
+                            monthly_day = int(day_el.text.strip())
+                        except ValueError:
+                            monthly_day = None
+            else:
+                schedule_kind = SCHEDULE_DAILY
+
+    return ScheduledTaskDefinition(
+        command=command, arguments=arguments, user_id=user_id, schedule_kind=schedule_kind,
+        time_of_day=time_of_day, weekly_days=weekly_days, monthly_day=monthly_day,
+        monthly_last_day=monthly_last_day,
+    )
+
+
+def _format_weekday_set(days: frozenset[int]) -> str:
+    return ", ".join(_WEEKDAY_XML_NAMES[i] for i in sorted(days))
+
+
+def _verify_task_registered(
+    task_name: str, *, executable: str, schedule: str,
+    weekly_days: Optional[frozenset[int]] = None,
+    monthly_day: Optional[int] = None,
+    monthly_last_day: bool = False,
+) -> None:
     """Relit la tâche juste enregistrée — jamais une confiance aveugle dans
     le seul code de retour de ``/create`` (mission corrective « Erreur
     Accès refusé », §5 : « ne jamais afficher tâche configurée avec succès
@@ -395,14 +566,16 @@ def _verify_task_registered(task_name: str, *, executable: str, schedule: str) -
        (:func:`query_task_status`) : son absence malgré un ``/create`` ayant
        renvoyé le code 0 fait échouer l'opération.
     2. Vérification EN MEILLEUR EFFORT — relecture de la définition XML
-       complète (``/query ... /xml``) pour comparer la commande et le type
-       de déclencheur effectivement enregistrés à ce qui était demandé. Un
+       complète (:func:`parse_task_definition`) pour comparer la commande,
+       le type de déclencheur, et (mission « Gestion complète de la
+       planification des sauvegardes Windows ») les jours/le type de
+       récurrence effectivement enregistrés à ce qui était demandé. Un
        échec de cette seconde étape à obtenir ou analyser cette sortie
        (problème d'encodage console, version de Windows différente) est
        seulement journalisé, jamais une cause d'échec de l'opération à lui
        seul — SEULE une incohérence réellement lue (mauvaise commande,
-       mauvais type de déclencheur) fait échouer l'opération, puisque
-       c'est exactement ce que ce niveau doit détecter."""
+       mauvais type de récurrence, mauvais jours) fait échouer l'opération,
+       puisque c'est exactement ce que ce niveau doit détecter."""
     status = query_task_status(task_name)
     if not status.exists:
         raise ScheduledTaskError(
@@ -419,9 +592,8 @@ def _verify_task_registered(task_name: str, *, executable: str, schedule: str) -
         )
         return
 
-    try:
-        parsed = ET.fromstring(result.stdout)
-    except ET.ParseError:
+    definition = parse_task_definition(result.stdout)
+    if definition is None:
         logger.warning(
             "Tâche planifiée %r : définition XML relue mais illisible (problème d'encodage "
             "console probable) — vérification approfondie ignorée, opération non bloquée.",
@@ -429,31 +601,55 @@ def _verify_task_registered(task_name: str, *, executable: str, schedule: str) -
         )
         return
 
-    command_el = parsed.find(f".//{{{_TASK_XML_NS}}}Command")
-    registered_command = (command_el.text or "").strip() if command_el is not None else ""
-    if registered_command and registered_command != executable:
+    if definition.command and definition.command != executable:
         raise ScheduledTaskError(
             f"La tâche planifiée Windows « {task_name} » a été créée, mais la commande "
-            f"effectivement enregistrée (« {registered_command} ») ne correspond pas à celle "
+            f"effectivement enregistrée (« {definition.command} ») ne correspond pas à celle "
             f"demandée (« {executable} ») — configuration refusée plutôt que déclarée réussie à "
             "tort."
         )
 
-    expected_trigger = (
-        f"{{{_TASK_XML_NS}}}LogonTrigger" if schedule == SCHEDULE_ONLOGON
-        else f"{{{_TASK_XML_NS}}}CalendarTrigger"
-    )
-    triggers_el = parsed.find(f".//{{{_TASK_XML_NS}}}Triggers")
-    if triggers_el is not None and triggers_el.find(expected_trigger) is None:
+    if definition.schedule_kind is not None and definition.schedule_kind != schedule:
         raise ScheduledTaskError(
-            f"La tâche planifiée Windows « {task_name} » a été créée, mais son déclencheur "
-            "enregistré ne correspond pas à celui demandé — configuration refusée plutôt que "
-            "déclarée réussie à tort."
+            f"La tâche planifiée Windows « {task_name} » a été créée, mais son type de "
+            f"récurrence effectivement enregistré (« {definition.schedule_kind} ») ne correspond "
+            f"pas à celui demandé (« {schedule} ») — configuration refusée plutôt que déclarée "
+            "réussie à tort."
         )
+
+    if schedule == SCHEDULE_WEEKLY and weekly_days is not None and definition.weekly_days is not None:
+        if definition.weekly_days != weekly_days:
+            raise ScheduledTaskError(
+                f"La tâche planifiée Windows « {task_name} » a été créée, mais les jours de la "
+                f"semaine effectivement enregistrés ({_format_weekday_set(definition.weekly_days)}) "
+                f"ne correspondent pas à ceux demandés ({_format_weekday_set(weekly_days)}) — "
+                "configuration refusée plutôt que déclarée réussie à tort."
+            )
+
+    if schedule == SCHEDULE_MONTHLY and definition.schedule_kind == SCHEDULE_MONTHLY:
+        if monthly_last_day != definition.monthly_last_day:
+            raise ScheduledTaskError(
+                f"La tâche planifiée Windows « {task_name} » a été créée, mais son réglage "
+                "« dernier jour du mois » effectivement enregistré ne correspond pas à celui "
+                "demandé — configuration refusée plutôt que déclarée réussie à tort."
+            )
+        if (
+            not monthly_last_day and monthly_day is not None and definition.monthly_day is not None
+            and definition.monthly_day != monthly_day
+        ):
+            raise ScheduledTaskError(
+                f"La tâche planifiée Windows « {task_name} » a été créée, mais le jour du mois "
+                f"effectivement enregistré ({definition.monthly_day}) ne correspond pas à celui "
+                f"demandé ({monthly_day}) — configuration refusée plutôt que déclarée réussie à "
+                "tort."
+            )
 
 
 def create_or_repair_task(
     task_name: str, executable: str, arguments: list[str], time_of_day: str, *, schedule: str = SCHEDULE_DAILY,
+    weekly_days: Optional[frozenset[int]] = None,
+    monthly_day: Optional[int] = None,
+    monthly_last_day: bool = False,
     user_id_resolver=_default_current_user_id,
 ) -> None:
     """Crée la tâche si absente, ou la recrée à l'identique si déjà
@@ -461,15 +657,15 @@ def create_or_repair_task(
     ET la réparation d'une tâche supprimée ou endommagée manuellement (§4
     du mandat), jamais deux mécanismes distincts à maintenir en parallèle.
 
-    ``schedule="daily"`` (défaut, comportement historique) : déclenchement
-    quotidien à l'heure exacte ``time_of_day``. ``schedule="onlogon"``
-    (mission corrective, §3.5) : déclenchement à chaque ouverture de
-    session de l'utilisateur courant — ``time_of_day`` est alors ignoré
-    (jamais validé ni transmis, ``schtasks`` ne l'accepte pas pour ce type
-    de déclencheur) ; sert exclusivement de rattrapage (voir
-    ``ExternalBackupService.configure_scheduled_task`` et §3.4/§3.6 du
-    mandat correctif) en complément de la tâche quotidienne, jamais à sa
-    place.
+    ``schedule`` : ``SCHEDULE_DAILY`` (défaut, déclenchement quotidien à
+    l'heure exacte ``time_of_day``), ``SCHEDULE_WEEKLY`` (un ou plusieurs
+    jours de la semaine, voir ``weekly_days``), ``SCHEDULE_MONTHLY`` (un
+    jour fixe du mois ou son dernier jour, voir ``monthly_day``/
+    ``monthly_last_day``) ou ``SCHEDULE_ONLOGON`` (déclenchement à chaque
+    ouverture de session de l'utilisateur courant — ``time_of_day`` est
+    alors ignoré, jamais validé ni transmis ; sert exclusivement de
+    rattrapage, voir ``ExternalBackupService.configure_scheduled_task``,
+    en complément de la tâche principale, jamais à sa place).
 
     ``user_id_resolver`` : résolveur de l'identité Windows courante
     (défaut : :func:`_default_current_user_id`), injectable pour les tests
@@ -488,8 +684,17 @@ def create_or_repair_task(
     existing_before = query_task_status(task_name)
     xml_bytes = _build_task_xml(
         executable, arguments, schedule=schedule, time_of_day=time_of_day, user_id=user_id,
+        weekly_days=weekly_days, monthly_day=monthly_day, monthly_last_day=monthly_last_day,
     )
-    schedule_description = "à l'ouverture de session" if schedule == SCHEDULE_ONLOGON else f"quotidienne, {time_of_day}"
+    if schedule == SCHEDULE_ONLOGON:
+        schedule_description = "à l'ouverture de session"
+    elif schedule == SCHEDULE_WEEKLY:
+        schedule_description = f"hebdomadaire ({_format_weekday_set(weekly_days or frozenset())}), {time_of_day}"
+    elif schedule == SCHEDULE_MONTHLY:
+        day_description = "dernier jour du mois" if monthly_last_day else f"jour {monthly_day}"
+        schedule_description = f"mensuelle ({day_description}), {time_of_day}"
+    else:
+        schedule_description = f"quotidienne, {time_of_day}"
 
     fd, tmp_path_str = tempfile.mkstemp(prefix=".stockmanager_task_", suffix=".xml")
     tmp_path = Path(tmp_path_str)
@@ -513,7 +718,10 @@ def create_or_repair_task(
             message += f" {conflict}"
         raise ScheduledTaskError(message)
 
-    _verify_task_registered(task_name, executable=executable, schedule=schedule)
+    _verify_task_registered(
+        task_name, executable=executable, schedule=schedule,
+        weekly_days=weekly_days, monthly_day=monthly_day, monthly_last_day=monthly_last_day,
+    )
     logger.info("Tâche planifiée %r créée/réparée (%s), identité %r.", task_name, schedule_description, user_id)
 
 
@@ -565,3 +773,28 @@ def query_task_status(task_name: str) -> ScheduledTaskStatus:
         return ScheduledTaskStatus(exists=False)
     fields = _parse_schtasks_verbose_list(result.stdout or "")
     return ScheduledTaskStatus(exists=True, **fields)
+
+
+def query_task_definition(task_name: str) -> Optional[ScheduledTaskDefinition]:
+    """Relit la définition XML complète d'une tâche existante — jamais une
+    exception propagée au-delà de ``UnsupportedPlatformError`` (``None`` si
+    la tâche est absente, si la relecture échoue, ou si le XML obtenu est
+    illisible) : destinée à l'affichage (mission « Gestion complète de la
+    planification des sauvegardes Windows », §6 — section « Détails de la
+    tâche planifiée Windows », voir
+    ``ExternalBackupService.scheduled_task_details``), où une information
+    indisponible doit être annoncée comme telle (« Non disponible »),
+    jamais faire échouer tout l'affichage."""
+    _ensure_windows()
+    result = _run_schtasks(["/query", "/tn", task_name, "/xml"])
+    if result.returncode != 0 or not (result.stdout or "").strip():
+        return None
+    return parse_task_definition(result.stdout)
+
+
+def resolve_current_user_id() -> str:
+    """Enveloppe publique de :func:`_default_current_user_id` — permet à
+    ``ExternalBackupService`` de comparer l'identité Windows courante à
+    celle d'une tâche déjà enregistrée (``ScheduledTaskStatus.run_as_user``)
+    sans dépendre d'un détail d'implémentation privé de ce module."""
+    return _default_current_user_id()

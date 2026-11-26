@@ -9,10 +9,11 @@ lire/écrire la configuration, appeler le moteur, auditer le résultat.
 """
 from __future__ import annotations
 
+import calendar
 import sqlite3
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime, time as time_type, timedelta
+from datetime import date, datetime, time as time_type, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -62,10 +63,23 @@ _KEY_ENCRYPTION_ENABLED = "backup.encryption_enabled"
 # autre ordinateur) — jamais limité à une recherche dans le seul dossier
 # de destination actuellement configuré.
 _KEY_ENCRYPTION_KEY_FINGERPRINT = "backup.encryption_key_fingerprint"
+# Mission « Gestion complète de la planification des sauvegardes Windows » :
+# jours de la semaine (hebdomadaire, un ou plusieurs — indices Python de
+# ``date.weekday()``, 0=lundi, séparés par des virgules, ex. ``"0,3"`` pour
+# lundi et jeudi) et jour du mois (mensuel — un entier 1-31, ou le repli
+# ``_KEY_MONTHLY_LAST_DAY`` pour « dernier jour du mois », qui évite tout
+# décalage silencieux sur les mois de 28/29/30 jours, voir
+# ``scheduled_task_manager._build_task_xml``/``RunOnLastDayOfMonth``).
+_KEY_WEEKLY_DAYS = "backup.weekly_days"
+_KEY_MONTHLY_DAY = "backup.monthly_day"
+_KEY_MONTHLY_LAST_DAY = "backup.monthly_last_day"
 
 FREQUENCY_DAILY = "daily"
 FREQUENCY_WEEKLY = "weekly"
-_VALID_FREQUENCIES = {FREQUENCY_DAILY, FREQUENCY_WEEKLY}
+FREQUENCY_MONTHLY = "monthly"
+_VALID_FREQUENCIES = {FREQUENCY_DAILY, FREQUENCY_WEEKLY, FREQUENCY_MONTHLY}
+_DEFAULT_WEEKLY_DAYS = frozenset({0})  # lundi, si jamais enregistré auparavant (voir _read_config).
+_DEFAULT_MONTHLY_DAY = 1
 
 # Valeurs par défaut sûres (§14) : sauvegarde automatique désactivée tant
 # qu'un administrateur ne l'a pas explicitement activée. Rétention par
@@ -142,6 +156,74 @@ def _parse_time_of_day(text: str) -> time_type:
         raise ValidationError(f"Heure invalide : « {text} » (format attendu HH:MM).") from exc
 
 
+def _parse_weekly_days(raw: Optional[str]) -> frozenset[int]:
+    """Analyse ``"0,3"`` (persisté par :func:`_format_weekly_days`) en
+    ``frozenset({0, 3})`` — ``frozenset()`` si ``raw`` est ``None`` ou vide
+    (jamais une exception : un poste n'ayant encore jamais enregistré de
+    fréquence hebdomadaire n'a simplement aucun jour enregistré, pas une
+    valeur corrompue)."""
+    if not raw:
+        return frozenset()
+    return frozenset(int(part) for part in raw.split(",") if part.strip())
+
+
+def _format_weekly_days(days: frozenset[int]) -> str:
+    return ",".join(str(day) for day in sorted(days))
+
+
+def _add_months(year: int, month: int, delta: int) -> tuple[int, int]:
+    """Décale ``(year, month)`` de ``delta`` mois (``delta`` négatif pour
+    reculer) — jamais via ``timedelta`` (qui ne comprend pas les mois, de
+    longueur variable) ni ``dateutil`` (dépendance non nécessaire ici pour
+    ce seul calcul)."""
+    total = year * 12 + (month - 1) + delta
+    return total // 12, total % 12 + 1
+
+
+def _most_recent_scheduled_date(config: BackupConfig, reference_date: date) -> date:
+    """Date calendaire la plus récente, sur ou avant ``reference_date``, à
+    laquelle une sauvegarde est programmée selon ``config.frequency`` —
+    fonction pure, jamais dépendante de l'heure actuelle ni d'un état
+    persisté (voir :meth:`BackupService._is_due_as_of`, qui compare cette
+    date à celle de la dernière exécution réussie pour décider si une
+    échéance a été atteinte). Mission « Gestion complète de la
+    planification des sauvegardes Windows », §3.1/§12 : jamais un décalage
+    silencieux — un jour du mois qui n'existe pas dans un mois donné (ex.
+    31 pour un mois de 30 jours, ou 29/30/31 en février) est simplement
+    absent de ce mois, exactement le comportement de la tâche planifiée
+    Windows équivalente (voir ``scheduled_task_manager._build_task_xml``) :
+    l'occurrence la plus récente est alors cherchée dans un mois antérieur,
+    jamais reportée vers un autre jour du même mois."""
+    if config.frequency == FREQUENCY_DAILY:
+        return reference_date
+
+    if config.frequency == FREQUENCY_WEEKLY:
+        days = config.weekly_days or _DEFAULT_WEEKLY_DAYS
+        for offset in range(7):
+            candidate = reference_date - timedelta(days=offset)
+            if candidate.weekday() in days:
+                return candidate
+        return reference_date  # jamais atteint : ``days`` est toujours non vide (validé par update_config).
+
+    # Mensuel — recule mois par mois (jusqu'à 12, largement suffisant : un
+    # jour fixe 1-31 existe dans au moins un mois sur deux ou trois, et
+    # « dernier jour » existe par construction chaque mois) jusqu'à trouver
+    # une occurrence réelle sur ou avant ``reference_date``.
+    for month_offset in range(0, 13):
+        year, month = _add_months(reference_date.year, reference_date.month, -month_offset)
+        days_in_month = calendar.monthrange(year, month)[1]
+        if config.monthly_last_day:
+            candidate_day = days_in_month
+        elif config.monthly_day <= days_in_month:
+            candidate_day = config.monthly_day
+        else:
+            continue  # ce jour n'existe pas dans ce mois — jamais une occurrence, voir la docstring.
+        candidate = date(year, month, candidate_day)
+        if candidate <= reference_date:
+            return candidate
+    return reference_date  # jamais atteint en pratique (voir ci-dessus) — repli sûr, jamais une exception.
+
+
 @dataclass(frozen=True)
 class BackupConfig:
     """Configuration des sauvegardes, persistée dans ``parametres``."""
@@ -155,6 +237,16 @@ class BackupConfig:
     # par défaut (voir archive_encryption.py) — change un comportement
     # établi (archives jusqu'ici en clair), jamais activé implicitement.
     encryption_enabled: bool = False
+    # Mission « Gestion complète de la planification des sauvegardes
+    # Windows » : pertinent seulement si ``frequency == FREQUENCY_WEEKLY``
+    # (indices de ``date.weekday()``, 0=lundi — jamais vide dans ce cas,
+    # voir ``update_config``) ; ``monthly_day``/``monthly_last_day``
+    # pertinents seulement si ``frequency == FREQUENCY_MONTHLY``
+    # (mutuellement exclusifs — ``monthly_last_day`` prioritaire quand
+    # les deux seraient incohérents, jamais les deux appliqués à la fois).
+    weekly_days: frozenset[int] = frozenset()
+    monthly_day: int = 1
+    monthly_last_day: bool = False
 
 
 @dataclass(frozen=True)
@@ -287,19 +379,34 @@ class BackupService:
             retention_raw = repo.get_value(_KEY_RETENTION)
             retention = int(retention_raw) if retention_raw else _DEFAULT_RETENTION
             encryption_enabled = (repo.get_value(_KEY_ENCRYPTION_ENABLED) or "false") == "true"
+            weekly_days = _parse_weekly_days(repo.get_value(_KEY_WEEKLY_DAYS)) or _DEFAULT_WEEKLY_DAYS
+            monthly_day_raw = repo.get_value(_KEY_MONTHLY_DAY)
+            monthly_day = int(monthly_day_raw) if monthly_day_raw else _DEFAULT_MONTHLY_DAY
+            monthly_last_day = (repo.get_value(_KEY_MONTHLY_LAST_DAY) or "false") == "true"
         return BackupConfig(
             auto_enabled=auto_enabled, frequency=frequency, time_of_day=time_of_day,
             destination=Path(destination), retention=retention, encryption_enabled=encryption_enabled,
+            weekly_days=weekly_days, monthly_day=monthly_day, monthly_last_day=monthly_last_day,
         )
 
     def update_config(
         self, *, auto_enabled: bool, frequency: str, time_of_day: str, destination: str, retention: int,
         encryption_enabled: bool = False,
+        weekly_days: Optional[frozenset[int]] = None,
+        monthly_day: int = _DEFAULT_MONTHLY_DAY,
+        monthly_last_day: bool = False,
     ) -> BackupConfig:
         """Valide et persiste la configuration. Aucune prétention de succès
         si le dossier de destination n'est pas accessible (§5) : la création
         du dossier est tentée immédiatement, toute ``OSError`` devient une
-        ``ValidationError`` explicite, rien n'est enregistré."""
+        ``ValidationError`` explicite, rien n'est enregistré.
+
+        ``weekly_days`` : obligatoire et non vide si ``frequency ==
+        FREQUENCY_WEEKLY`` (ignoré sinon, jamais persisté pour une autre
+        fréquence — voir ``_read_config``, qui ne le lit que dans ce cas).
+        ``monthly_day``/``monthly_last_day`` : pertinents seulement si
+        ``frequency == FREQUENCY_MONTHLY`` ; ``monthly_day`` doit alors être
+        compris entre 1 et 31 si ``monthly_last_day`` n'est pas activé."""
         self._permissions.require_permission("BACKUP_CREATE")
 
         if frequency not in _VALID_FREQUENCIES:
@@ -309,6 +416,15 @@ class BackupService:
         _parse_time_of_day(time_of_day)
         if retention < 1:
             raise ValidationError("Le nombre de sauvegardes à conserver doit être au moins 1.")
+
+        if frequency == FREQUENCY_WEEKLY and not weekly_days:
+            raise ValidationError(
+                "Au moins un jour de la semaine doit être sélectionné pour une fréquence hebdomadaire."
+            )
+        if weekly_days is not None and any(day not in range(7) for day in weekly_days):
+            raise ValidationError("Les jours de la semaine doivent être compris entre 0 (lundi) et 6 (dimanche).")
+        if frequency == FREQUENCY_MONTHLY and not monthly_last_day and not (1 <= monthly_day <= 31):
+            raise ValidationError("Le jour du mois doit être compris entre 1 et 31.")
 
         destination_text = (destination or "").strip()
         if not destination_text:
@@ -338,6 +454,11 @@ class BackupService:
             repo.set_value(_KEY_DESTINATION, str(destination_path))
             repo.set_value(_KEY_RETENTION, str(retention))
             repo.set_value(_KEY_ENCRYPTION_ENABLED, "true" if encryption_enabled else "false")
+            if frequency == FREQUENCY_WEEKLY:
+                repo.set_value(_KEY_WEEKLY_DAYS, _format_weekly_days(weekly_days))
+            if frequency == FREQUENCY_MONTHLY:
+                repo.set_value(_KEY_MONTHLY_DAY, str(monthly_day))
+                repo.set_value(_KEY_MONTHLY_LAST_DAY, "true" if monthly_last_day else "false")
 
         self._audit("BACKUP_CONFIG_UPDATE", ResultatAudit.SUCCES)
         logger.info("Configuration des sauvegardes mise à jour.")
@@ -847,10 +968,13 @@ class BackupService:
         """Logique pure de « échéance atteinte », isolée de l'heure du jour
         — appelée à la fois pour la date du jour (chemin normal) et pour la
         veille (vérification de rattrapage ci-dessus), jamais dupliquée
-        entre les deux."""
-        if config.frequency == FREQUENCY_DAILY:
-            return last_run.date() < reference_date
-        return (reference_date - last_run.date()).days >= 7  # hebdomadaire
+        entre les deux. Mission « Gestion complète de la planification des
+        sauvegardes Windows » : désormais consciente des jours réellement
+        configurés (hebdomadaire multi-jours, mensuel jour fixe ou dernier
+        jour) via :func:`_most_recent_scheduled_date`, plutôt qu'un simple
+        compteur d'intervalle — due dès que l'occurrence programmée la plus
+        récente est postérieure à la dernière exécution réussie."""
+        return _most_recent_scheduled_date(config, reference_date) > last_run.date()
 
     # -- restauration -------------------------------------------------------------
 

@@ -272,6 +272,327 @@ class TestBuildTaskXml:
         assert settings.find("t:MultipleInstancesPolicy", ns).text == "IgnoreNew"
 
 
+class TestBuildTaskXmlWeeklyAndMonthly:
+    """Mission « Gestion complète de la planification des sauvegardes
+    Windows », §3.1 : fréquences hebdomadaire (un ou plusieurs jours) et
+    mensuelle (jour fixe ou dernier jour du mois)."""
+
+    @staticmethod
+    def _parse(xml_bytes: bytes):
+        import xml.etree.ElementTree as ET
+
+        return ET.fromstring(xml_bytes.decode("utf-16"))
+
+    def test_weekly_schedule_builds_a_schedule_by_week_with_the_selected_days(self) -> None:
+        xml_bytes = stm._build_task_xml(
+            "C:/StockManager/StockManager.exe", [], schedule=stm.SCHEDULE_WEEKLY, time_of_day="20:00",
+            user_id="TESTPC\\testuser", weekly_days=frozenset({0, 3}),  # lundi, jeudi
+        )
+
+        root = self._parse(xml_bytes)
+        ns = {"t": stm._TASK_XML_NS}
+        trigger = root.find(".//t:Triggers/t:CalendarTrigger", ns)
+        schedule_by_week = trigger.find("t:ScheduleByWeek", ns)
+        assert schedule_by_week is not None
+        days = schedule_by_week.find("t:DaysOfWeek", ns)
+        assert days.find("t:Monday", ns) is not None
+        assert days.find("t:Thursday", ns) is not None
+        assert days.find("t:Tuesday", ns) is None
+        assert schedule_by_week.find("t:WeeksInterval", ns).text == "1"
+        assert trigger.find("t:ScheduleByDay", ns) is None
+        assert trigger.find("t:ScheduleByMonth", ns) is None
+
+    def test_weekly_schedule_without_any_day_raises(self) -> None:
+        with pytest.raises(stm.ScheduledTaskError):
+            stm._build_task_xml(
+                "C:/StockManager/StockManager.exe", [], schedule=stm.SCHEDULE_WEEKLY, time_of_day="20:00",
+                user_id="TESTPC\\testuser", weekly_days=frozenset(),
+            )
+
+    def test_monthly_schedule_with_a_fixed_day_builds_days_of_month(self) -> None:
+        xml_bytes = stm._build_task_xml(
+            "C:/StockManager/StockManager.exe", [], schedule=stm.SCHEDULE_MONTHLY, time_of_day="20:00",
+            user_id="TESTPC\\testuser", monthly_day=15,
+        )
+
+        root = self._parse(xml_bytes)
+        ns = {"t": stm._TASK_XML_NS}
+        trigger = root.find(".//t:Triggers/t:CalendarTrigger", ns)
+        schedule_by_month = trigger.find("t:ScheduleByMonth", ns)
+        assert schedule_by_month is not None
+        assert schedule_by_month.find("t:DaysOfMonth/t:Day", ns).text == "15"
+        assert schedule_by_month.find("t:RunOnLastDayOfMonth", ns) is None
+        months = schedule_by_month.find("t:Months", ns)
+        assert months.find("t:January", ns) is not None
+        assert months.find("t:December", ns) is not None
+
+    def test_monthly_schedule_with_last_day_builds_run_on_last_day_of_month(self) -> None:
+        xml_bytes = stm._build_task_xml(
+            "C:/StockManager/StockManager.exe", [], schedule=stm.SCHEDULE_MONTHLY, time_of_day="20:00",
+            user_id="TESTPC\\testuser", monthly_last_day=True,
+        )
+
+        root = self._parse(xml_bytes)
+        ns = {"t": stm._TASK_XML_NS}
+        schedule_by_month = root.find(".//t:Triggers/t:CalendarTrigger/t:ScheduleByMonth", ns)
+        assert schedule_by_month.find("t:RunOnLastDayOfMonth", ns).text == "true"
+        assert schedule_by_month.find("t:DaysOfMonth", ns) is None
+
+    def test_monthly_schedule_without_a_valid_day_or_last_day_raises(self) -> None:
+        with pytest.raises(stm.ScheduledTaskError):
+            stm._build_task_xml(
+                "C:/StockManager/StockManager.exe", [], schedule=stm.SCHEDULE_MONTHLY, time_of_day="20:00",
+                user_id="TESTPC\\testuser", monthly_day=None, monthly_last_day=False,
+            )
+
+    def test_monthly_schedule_rejects_a_day_outside_one_to_thirty_one(self) -> None:
+        with pytest.raises(stm.ScheduledTaskError):
+            stm._build_task_xml(
+                "C:/StockManager/StockManager.exe", [], schedule=stm.SCHEDULE_MONTHLY, time_of_day="20:00",
+                user_id="TESTPC\\testuser", monthly_day=32,
+            )
+
+
+class TestParseTaskDefinition:
+    """Mission « Gestion complète de la planification des sauvegardes
+    Windows », §6 : relecture structurée de la définition XML réellement
+    enregistrée — pour l'affichage (section « Détails de la tâche
+    planifiée Windows ») et pour la vérification post-création."""
+
+    def test_returns_none_for_unparseable_text(self) -> None:
+        assert stm.parse_task_definition("pas du xml valide <<<") is None
+
+    def test_extracts_command_and_arguments(self) -> None:
+        xml_text = (
+            f'<Task xmlns="{stm._TASK_XML_NS}"><Actions><Exec>'
+            f"<Command>C:/StockManager/StockManager.exe</Command>"
+            f"<Arguments>--run-backup-agent</Arguments></Exec></Actions></Task>"
+        )
+
+        definition = stm.parse_task_definition(xml_text)
+
+        assert definition.command == "C:/StockManager/StockManager.exe"
+        assert definition.arguments == "--run-backup-agent"
+
+    def test_extracts_user_id_from_principal(self) -> None:
+        xml_text = (
+            f'<Task xmlns="{stm._TASK_XML_NS}"><Principals><Principal id="Author">'
+            f"<UserId>DESKTOP-TEST\\jdupont</UserId></Principal></Principals></Task>"
+        )
+
+        definition = stm.parse_task_definition(xml_text)
+
+        assert definition.user_id == "DESKTOP-TEST\\jdupont"
+
+    def test_recognizes_onlogon_schedule_and_prefers_trigger_user_id(self) -> None:
+        xml_text = (
+            f'<Task xmlns="{stm._TASK_XML_NS}"><Principals><Principal id="Author">'
+            f"<UserId>DESKTOP-TEST\\principal</UserId></Principal></Principals>"
+            f"<Triggers><LogonTrigger><UserId>DESKTOP-TEST\\trigger</UserId></LogonTrigger></Triggers></Task>"
+        )
+
+        definition = stm.parse_task_definition(xml_text)
+
+        assert definition.schedule_kind == stm.SCHEDULE_ONLOGON
+        assert definition.user_id == "DESKTOP-TEST\\trigger"
+
+    def test_recognizes_daily_schedule_and_extracts_time(self) -> None:
+        xml_text = (
+            f'<Task xmlns="{stm._TASK_XML_NS}"><Triggers><CalendarTrigger>'
+            f"<StartBoundary>2024-01-01T20:00:00</StartBoundary>"
+            f"<ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay>"
+            f"</CalendarTrigger></Triggers></Task>"
+        )
+
+        definition = stm.parse_task_definition(xml_text)
+
+        assert definition.schedule_kind == stm.SCHEDULE_DAILY
+        assert definition.time_of_day == "20:00"
+
+    def test_recognizes_weekly_schedule_and_extracts_days(self) -> None:
+        xml_text = (
+            f'<Task xmlns="{stm._TASK_XML_NS}"><Triggers><CalendarTrigger>'
+            f"<StartBoundary>2024-01-01T20:00:00</StartBoundary>"
+            f"<ScheduleByWeek><WeeksInterval>1</WeeksInterval>"
+            f"<DaysOfWeek><Monday/><Thursday/></DaysOfWeek></ScheduleByWeek>"
+            f"</CalendarTrigger></Triggers></Task>"
+        )
+
+        definition = stm.parse_task_definition(xml_text)
+
+        assert definition.schedule_kind == stm.SCHEDULE_WEEKLY
+        assert definition.weekly_days == frozenset({0, 3})
+
+    def test_recognizes_monthly_schedule_with_fixed_day(self) -> None:
+        xml_text = (
+            f'<Task xmlns="{stm._TASK_XML_NS}"><Triggers><CalendarTrigger>'
+            f"<StartBoundary>2024-01-01T20:00:00</StartBoundary>"
+            f"<ScheduleByMonth><DaysOfMonth><Day>15</Day></DaysOfMonth></ScheduleByMonth>"
+            f"</CalendarTrigger></Triggers></Task>"
+        )
+
+        definition = stm.parse_task_definition(xml_text)
+
+        assert definition.schedule_kind == stm.SCHEDULE_MONTHLY
+        assert definition.monthly_day == 15
+        assert definition.monthly_last_day is False
+
+    def test_recognizes_monthly_schedule_with_last_day(self) -> None:
+        xml_text = (
+            f'<Task xmlns="{stm._TASK_XML_NS}"><Triggers><CalendarTrigger>'
+            f"<StartBoundary>2024-01-01T20:00:00</StartBoundary>"
+            f"<ScheduleByMonth><RunOnLastDayOfMonth>true</RunOnLastDayOfMonth></ScheduleByMonth>"
+            f"</CalendarTrigger></Triggers></Task>"
+        )
+
+        definition = stm.parse_task_definition(xml_text)
+
+        assert definition.monthly_last_day is True
+        assert definition.monthly_day is None
+
+
+class TestQueryTaskDefinition:
+    """Mission « Gestion complète de la planification des sauvegardes
+    Windows », §6 : enveloppe publique autour de la relecture XML, pour
+    l'affichage (``ExternalBackupService.scheduled_task_details``)."""
+
+    @pytest.fixture(autouse=True)
+    def _force_windows_guard(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(stm.sys, "platform", "win32")
+
+    def test_returns_none_when_schtasks_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import subprocess
+
+        monkeypatch.setattr(
+            stm, "_run_schtasks",
+            lambda args: subprocess.CompletedProcess(args, returncode=1, stdout="", stderr=""),
+        )
+
+        assert stm.query_task_definition("StockManager - Sauvegarde") is None
+
+    def test_returns_the_parsed_definition_on_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import subprocess
+
+        xml_text = (
+            f'<Task xmlns="{stm._TASK_XML_NS}"><Actions><Exec>'
+            f"<Command>C:/StockManager/StockManager.exe</Command></Exec></Actions></Task>"
+        )
+        monkeypatch.setattr(
+            stm, "_run_schtasks",
+            lambda args: subprocess.CompletedProcess(args, returncode=0, stdout=xml_text, stderr=""),
+        )
+
+        definition = stm.query_task_definition("StockManager - Sauvegarde")
+
+        assert definition is not None
+        assert definition.command == "C:/StockManager/StockManager.exe"
+
+
+class TestResolveCurrentUserId:
+    def test_delegates_to_the_default_resolver(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("USERDOMAIN", "DESKTOP-TEST")
+        monkeypatch.setenv("USERNAME", "jdupont")
+
+        assert stm.resolve_current_user_id() == "DESKTOP-TEST\\jdupont"
+
+
+class TestVerifyTaskRegisteredWeeklyAndMonthly:
+    @pytest.fixture(autouse=True)
+    def _force_windows_guard(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(stm.sys, "platform", "win32")
+
+    def test_raises_when_registered_weekly_days_differ(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import subprocess
+
+        xml_wrong_days = (
+            f'<Task xmlns="{stm._TASK_XML_NS}"><Triggers><CalendarTrigger>'
+            f"<ScheduleByWeek><DaysOfWeek><Tuesday/></DaysOfWeek></ScheduleByWeek>"
+            f"</CalendarTrigger></Triggers><Actions><Exec>"
+            f"<Command>C:/StockManager/StockManager.exe</Command></Exec></Actions></Task>"
+        )
+
+        def _fake_run_schtasks(args):
+            if "/xml" in args:
+                return subprocess.CompletedProcess(args, returncode=0, stdout=xml_wrong_days, stderr="")
+            return subprocess.CompletedProcess(args, returncode=0, stdout="Status: Ready", stderr="")
+
+        monkeypatch.setattr(stm, "_run_schtasks", _fake_run_schtasks)
+
+        with pytest.raises(stm.ScheduledTaskError, match="jours de la semaine"):
+            stm._verify_task_registered(
+                "StockManager - Sauvegarde", executable="C:/StockManager/StockManager.exe",
+                schedule=stm.SCHEDULE_WEEKLY, weekly_days=frozenset({0, 3}),
+            )
+
+    def test_raises_when_registered_monthly_day_differs(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import subprocess
+
+        xml_wrong_day = (
+            f'<Task xmlns="{stm._TASK_XML_NS}"><Triggers><CalendarTrigger>'
+            f"<ScheduleByMonth><DaysOfMonth><Day>1</Day></DaysOfMonth></ScheduleByMonth>"
+            f"</CalendarTrigger></Triggers><Actions><Exec>"
+            f"<Command>C:/StockManager/StockManager.exe</Command></Exec></Actions></Task>"
+        )
+
+        def _fake_run_schtasks(args):
+            if "/xml" in args:
+                return subprocess.CompletedProcess(args, returncode=0, stdout=xml_wrong_day, stderr="")
+            return subprocess.CompletedProcess(args, returncode=0, stdout="Status: Ready", stderr="")
+
+        monkeypatch.setattr(stm, "_run_schtasks", _fake_run_schtasks)
+
+        with pytest.raises(stm.ScheduledTaskError, match="jour du mois"):
+            stm._verify_task_registered(
+                "StockManager - Sauvegarde", executable="C:/StockManager/StockManager.exe",
+                schedule=stm.SCHEDULE_MONTHLY, monthly_day=15,
+            )
+
+    def test_raises_when_last_day_setting_differs(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import subprocess
+
+        xml_not_last_day = (
+            f'<Task xmlns="{stm._TASK_XML_NS}"><Triggers><CalendarTrigger>'
+            f"<ScheduleByMonth><DaysOfMonth><Day>15</Day></DaysOfMonth></ScheduleByMonth>"
+            f"</CalendarTrigger></Triggers><Actions><Exec>"
+            f"<Command>C:/StockManager/StockManager.exe</Command></Exec></Actions></Task>"
+        )
+
+        def _fake_run_schtasks(args):
+            if "/xml" in args:
+                return subprocess.CompletedProcess(args, returncode=0, stdout=xml_not_last_day, stderr="")
+            return subprocess.CompletedProcess(args, returncode=0, stdout="Status: Ready", stderr="")
+
+        monkeypatch.setattr(stm, "_run_schtasks", _fake_run_schtasks)
+
+        with pytest.raises(stm.ScheduledTaskError, match="dernier jour"):
+            stm._verify_task_registered(
+                "StockManager - Sauvegarde", executable="C:/StockManager/StockManager.exe",
+                schedule=stm.SCHEDULE_MONTHLY, monthly_last_day=True,
+            )
+
+    def test_passes_when_weekly_days_match(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import subprocess
+
+        xml_matching = (
+            f'<Task xmlns="{stm._TASK_XML_NS}"><Triggers><CalendarTrigger>'
+            f"<ScheduleByWeek><DaysOfWeek><Monday/><Thursday/></DaysOfWeek></ScheduleByWeek>"
+            f"</CalendarTrigger></Triggers><Actions><Exec>"
+            f"<Command>C:/StockManager/StockManager.exe</Command></Exec></Actions></Task>"
+        )
+
+        def _fake_run_schtasks(args):
+            if "/xml" in args:
+                return subprocess.CompletedProcess(args, returncode=0, stdout=xml_matching, stderr="")
+            return subprocess.CompletedProcess(args, returncode=0, stdout="Status: Ready", stderr="")
+
+        monkeypatch.setattr(stm, "_run_schtasks", _fake_run_schtasks)
+
+        stm._verify_task_registered(
+            "StockManager - Sauvegarde", executable="C:/StockManager/StockManager.exe",
+            schedule=stm.SCHEDULE_WEEKLY, weekly_days=frozenset({0, 3}),
+        )  # ne doit jamais lever.
+
+
 class TestUserIdInTaskXml:
     """Mission corrective « Erreur Accès refusé de la tâche planifiée
     Windows » : cause racine identifiée — un ``<LogonTrigger>`` sans
@@ -572,7 +893,7 @@ class TestVerifyTaskRegistered:
 
         monkeypatch.setattr(stm, "_run_schtasks", _fake_run_schtasks)
 
-        with pytest.raises(stm.ScheduledTaskError, match="déclencheur"):
+        with pytest.raises(stm.ScheduledTaskError, match="type de récurrence"):
             stm._verify_task_registered(
                 "StockManager - Sauvegarde", executable="C:/StockManager/StockManager.exe",
                 schedule=stm.SCHEDULE_DAILY,  # demande un CalendarTrigger, mais la relecture rapporte LogonTrigger.
