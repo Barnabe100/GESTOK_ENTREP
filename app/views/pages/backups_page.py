@@ -57,6 +57,9 @@ from app.services.backups.backup_service import (
     FREQUENCY_DAILY,
     FREQUENCY_MONTHLY,
     FREQUENCY_WEEKLY,
+    STATUS_INVALID,
+    STATUS_UNVERIFIABLE,
+    STATUS_VALID,
 )
 from app.services.backups.external_backup_service import (
     MAX_RETENTION,
@@ -71,7 +74,7 @@ from app.views.backup_details_dialog import BackupDetailsDialog
 from app.views.backup_restore_wizard_dialog import BackupRestoreWizardDialog
 from app.views.common import confirm_action
 from app.views.data_reset_confirm_dialog import DataResetConfirmDialog
-from app.views.design_system import COLOR_DANGER, COLOR_SUCCESS, COLOR_TEXT_SECONDARY, qcolor
+from app.views.design_system import COLOR_DANGER, COLOR_SUCCESS, COLOR_TEXT_SECONDARY, COLOR_WARNING, qcolor
 from app.views.drive_selection_dialog import DriveSelectionDialog
 from app.views.key_password_dialog import MODE_EXPORT, MODE_IMPORT, KeyPasswordDialog
 from app.views.loading_overlay import LoadingOverlay
@@ -1464,11 +1467,19 @@ class BackupsPage(QWidget):
         self.history_table.setRowCount(len(combined))
         for row, (source, entry) in enumerate(combined):
             info = entry.info
+            errors: list[str] = []
             try:
-                verification = self._backup_service.verify_backup_file(info.path)
-                statut = "Valide" if verification.valid else "Invalide"
-            except AppError:
+                # Mission « Audit, correction et fiabilisation du système de
+                # sauvegarde », §10 : ``describe_backup_status`` remplace
+                # l'ancien appel direct à ``verify_backup_file`` — son
+                # détail (``errors``) n'est plus jamais ignoré, voir la
+                # bulle d'aide posée sur la cellule « Statut » ci-dessous.
+                report = self._backup_service.describe_backup_status(info.path)
+                statut = report.label
+                errors = report.errors
+            except AppError as exc:
                 statut = "?"
+                errors = [str(exc)]
 
             self.history_table.setItem(row, 0, QTableWidgetItem(source))
             self.history_table.setItem(row, 1, QTableWidgetItem(_ENGINE_LABELS.get(entry.engine, entry.engine)))
@@ -1481,15 +1492,29 @@ class BackupsPage(QWidget):
             self.history_table.setItem(row, 3, name_item)
             self.history_table.setItem(row, 4, QTableWidgetItem(_format_size(info.size_bytes)))
             statut_item = QTableWidgetItem(statut)
-            # Couleurs de statut cohérentes (§2.2) : vert = valide, rouge =
-            # invalide, gris neutre pour le cas « indéterminé » (``?``, une
-            # erreur de vérification n'est ni un succès ni un échec confirmé).
-            if statut == "Valide":
+            # Couleurs de statut cohérentes (§2.2, étendues par la mission
+            # « Audit, correction et fiabilisation du système de
+            # sauvegarde », §9) : vert = valide, rouge = invalide, orange =
+            # intégrité non vérifiable (fichier prouvé inchangé mais
+            # revérification en échec — jamais présenté comme une
+            # corruption certaine), gris neutre pour le cas « indéterminé »
+            # (``?``, une erreur de vérification elle-même, ni un succès ni
+            # un échec confirmé de l'archive).
+            if statut == STATUS_VALID:
                 statut_item.setForeground(qcolor(COLOR_SUCCESS))
-            elif statut == "Invalide":
+            elif statut == STATUS_INVALID:
                 statut_item.setForeground(qcolor(COLOR_DANGER))
+            elif statut == STATUS_UNVERIFIABLE:
+                statut_item.setForeground(qcolor(COLOR_WARNING))
             else:
                 statut_item.setForeground(qcolor(COLOR_TEXT_SECONDARY))
+            # §10 : la cause exacte (``verification.errors``, jusqu'ici
+            # calculée puis jamais lue) reste désormais accessible
+            # directement depuis l'historique, sans ouvrir les journaux
+            # techniques — le détail complet reste dans la fenêtre
+            # « Consulter les détails » (voir ``BackupDetailsDialog``).
+            if errors:
+                statut_item.setToolTip("\n".join(errors))
             font = statut_item.font()
             font.setBold(True)
             statut_item.setFont(font)

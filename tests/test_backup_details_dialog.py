@@ -24,11 +24,18 @@ def _make_entry(tmp_path, engine="sqlite", with_manifest=True, encrypted=False):
 
 
 class _FakeBackupService:
-    def __init__(self, valid: bool = True) -> None:
+    def __init__(self, valid: bool = True, errors: list[str] | None = None) -> None:
         self._valid = valid
+        self._errors = errors or []
 
-    def verify_backup_file(self, path):
-        return type("_V", (), {"valid": self._valid})()
+    def describe_backup_status(self, path):
+        from app.services.backups.backup_service import STATUS_INVALID, STATUS_VALID, BackupStatusReport
+
+        label = STATUS_VALID if self._valid else STATUS_INVALID
+        return BackupStatusReport(
+            valid=self._valid, label=label, errors=self._errors,
+            manifest_present=False, manifest_hash_matches=None,
+        )
 
 
 def test_shows_name_type_and_engine(qtbot, tmp_path) -> None:
@@ -77,6 +84,23 @@ def test_shows_fallback_message_when_manifest_absent(qtbot, tmp_path) -> None:
 
     labels = [label.text() for label in dialog.findChildren(QLabel)]
     assert any("Aucun manifeste" in text for text in labels)
+
+
+def test_shows_detailed_errors_when_invalid(qtbot, tmp_path) -> None:
+    """Mission « Audit, correction et fiabilisation du système de
+    sauvegarde », §10 : la cause exacte (``verification.errors``) doit
+    rester consultable depuis cette fenêtre, jamais seulement un statut
+    nu « Invalide » sans explication."""
+    entry = _make_entry(tmp_path)
+    dialog = BackupDetailsDialog(
+        entry, "Locale",
+        _FakeBackupService(valid=False, errors=["Table manquante dans l'archive : clients"]),
+        parent=None,
+    )
+    qtbot.addWidget(dialog)
+
+    labels = [label.text() for label in dialog.findChildren(QLabel)]
+    assert any("Table manquante dans l'archive : clients" in text for text in labels)
 
 
 def test_close_button_accepts(qtbot, tmp_path) -> None:

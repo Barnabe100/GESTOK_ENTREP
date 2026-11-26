@@ -256,6 +256,39 @@ class BackupResult:
     file_path: Optional[Path] = None
 
 
+STATUS_VALID = "Valide"
+STATUS_INVALID = "Invalide"
+STATUS_UNVERIFIABLE = "Intégrité non vérifiable"
+
+
+@dataclass(frozen=True)
+class BackupStatusReport:
+    """Résultat complet de :meth:`BackupService.describe_backup_status` —
+    mission « Audit, correction et fiabilisation du système de
+    sauvegarde », §10 : contrairement à ``verify_backup_file`` (qui ne
+    renvoie qu'un booléen brut consommé jusqu'ici par l'interface,
+    ``verification.errors`` étant calculé puis jamais lu), cette méthode
+    est la source unique que doivent utiliser ``backups_page.py`` et
+    ``backup_details_dialog.py`` pour ne plus jamais remplacer une cause
+    précise par un message générique.
+
+    ``label`` est l'un de :data:`STATUS_VALID`, :data:`STATUS_INVALID` ou
+    :data:`STATUS_UNVERIFIABLE` — ce dernier réservé au cas où l'empreinte
+    du manifeste prouve que le fichier n'a PAS changé depuis une création
+    jugée valide, alors que la revérification structurelle échoue
+    pourtant maintenant (incompatibilité d'environnement probable — ex.
+    version de ``pg_restore``/``pg_dump`` différente de celle utilisée à
+    la création — plutôt qu'une preuve de corruption du fichier lui-même,
+    voir §1 du diagnostic). ``errors`` contient toujours le détail complet
+    (jamais un message générique), y compris quand il n'y en a qu'un."""
+
+    valid: bool
+    label: str
+    errors: list[str]
+    manifest_present: bool
+    manifest_hash_matches: Optional[bool]  # None : pas de manifeste à comparer.
+
+
 @dataclass(frozen=True)
 class RestoreResult:
     success: bool
@@ -800,6 +833,97 @@ class BackupService:
         finally:
             if temp_to_cleanup is not None:
                 temp_to_cleanup.unlink(missing_ok=True)
+
+    def describe_backup_status(self, file_path: Path) -> BackupStatusReport:
+        """Mission « Audit, correction et fiabilisation du système de
+        sauvegarde », §10 : remplace l'usage brut de
+        :meth:`verify_backup_file` dans ``backups_page.py``/
+        ``backup_details_dialog.py`` (qui ne lisait jamais
+        ``verification.errors``) par un résultat complet et déjà
+        catégorisé — la cause exacte d'une anomalie doit toujours rester
+        consultable depuis l'interface, jamais seulement dans les
+        journaux techniques.
+
+        Complète aussi la vérification structurelle (``pg_restore
+        --list``/intégrité SQLite, inchangée) par une comparaison
+        d'empreinte manifeste -> fichier **pour toute archive portant un
+        manifeste, chiffrée ou non** (jusqu'ici réservée aux seules
+        archives chiffrées, voir :meth:`_resolve_plaintext_path`) : une
+        archive modifiée après sa création est ainsi désormais détectée
+        même sans chiffrement. Une archive ANCIENNE sans manifeste n'est
+        jamais déclarée corrompue de ce seul fait (§4 du mandat,
+        « compatibilité avec les anciennes archives ») — seule la
+        vérification structurelle décide alors, exactement comme avant ce
+        correctif.
+
+        Cas particulier avéré par l'audit précédent (incident du
+        26/11/2026) : une archive dont l'empreinte PROUVE qu'elle n'a pas
+        changé depuis une création jugée valide, mais dont la
+        revérification structurelle échoue pourtant maintenant, n'est
+        JAMAIS présentée comme « Invalide » (ce serait affirmer une
+        corruption sans preuve technique, contrairement à la consigne du
+        mandat) — mais comme :data:`STATUS_UNVERIFIABLE`, avec le détail
+        technique complet et une explication de la cause la plus probable
+        (incompatibilité d'environnement de vérification, ex. version de
+        ``pg_restore``/``pg_dump``)."""
+        self._permissions.require_permission("BACKUP_VIEW")
+        file_path = Path(file_path)
+        manifest = archive_manifest.read_manifest_for(file_path)
+        manifest_present = manifest is not None
+        manifest_hash_matches: Optional[bool] = None
+
+        if manifest_present and not manifest.encrypted:
+            manifest_check = archive_manifest.verify_manifest_for(file_path)
+            manifest_hash_matches = manifest_check.hash_matches
+            if not manifest_hash_matches:
+                return BackupStatusReport(
+                    valid=False,
+                    label=STATUS_INVALID,
+                    errors=[
+                        "Le contenu de cette archive a changé depuis sa création : l'empreinte "
+                        "SHA-256 actuelle ne correspond plus à celle enregistrée dans son manifeste "
+                        f"({'; '.join(manifest_check.errors)})."
+                    ],
+                    manifest_present=True,
+                    manifest_hash_matches=False,
+                )
+
+        try:
+            structural = self.verify_backup_file(file_path)
+        except ValidationError as exc:
+            # Levée par ``_resolve_plaintext_path`` pour une archive
+            # CHIFFRÉE dont l'empreinte ne correspond plus à son
+            # manifeste — même preuve d'altération que ci-dessus pour une
+            # archive en clair, jamais un statut générique « ? ».
+            return BackupStatusReport(
+                valid=False, label=STATUS_INVALID, errors=[str(exc)],
+                manifest_present=manifest_present, manifest_hash_matches=False,
+            )
+
+        if structural.valid:
+            return BackupStatusReport(
+                valid=True, label=STATUS_VALID, errors=list(structural.errors),
+                manifest_present=manifest_present, manifest_hash_matches=manifest_hash_matches,
+            )
+
+        if manifest_present and manifest_hash_matches:
+            errors = list(structural.errors) + [
+                "Remarque : l'empreinte de ce fichier est pourtant identique à celle enregistrée "
+                "lors d'une création jugée valide — l'archive elle-même n'a donc pas changé depuis. "
+                "Cet écart provient très probablement d'un changement de l'environnement de "
+                "vérification (version de pg_restore/pg_dump différente, outil introuvable...) "
+                "plutôt que d'une corruption réelle du fichier. Voir le journal applicatif pour le "
+                "détail technique (stderr, version locale de l'outil)."
+            ]
+            return BackupStatusReport(
+                valid=False, label=STATUS_UNVERIFIABLE, errors=errors,
+                manifest_present=True, manifest_hash_matches=True,
+            )
+
+        return BackupStatusReport(
+            valid=False, label=STATUS_INVALID, errors=list(structural.errors),
+            manifest_present=manifest_present, manifest_hash_matches=manifest_hash_matches,
+        )
 
     def _resolve_plaintext_path(self, archive_path: Path) -> tuple[Path, Optional[Path]]:
         """Retourne ``(chemin à utiliser pour toute lecture, chemin

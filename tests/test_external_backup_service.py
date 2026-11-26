@@ -492,6 +492,79 @@ def test_copy_never_deletes_anything_when_copy_verification_would_fail(login_as,
     assert stack.external_backups.list_external_backups() == []
 
 
+def test_copy_rejected_on_hash_mismatch_preserves_an_already_valid_older_external_backup(
+    login_as, tmp_path, monkeypatch
+) -> None:
+    """Mission « Audit, correction et fiabilisation du système de
+    sauvegarde », Partie C, §7 : « Les anciennes archives valides ne
+    doivent jamais être supprimées pour compenser un échec » — vérifié
+    ici avec une VRAIE ancienne copie externe déjà réussie, pas seulement
+    l'absence de rotation sur un premier échec (voir le test précédent)."""
+    import time
+
+    stack, _ = login_as("Administrateur")
+    drive = tmp_path / "usb"
+    drive.mkdir()
+    stack.external_backups.configure_media(drive, "Support")
+    stack.external_backups.update_config(enabled=True, retention=30)
+    stack.external_backups._media_roots_provider = lambda: [drive]
+    _configure_local_backups(stack, tmp_path)
+
+    stack.backups.create_manual_backup()
+    first_copy = stack.external_backups.copy_now()
+    assert first_copy.success is True
+
+    time.sleep(1.1)
+    stack.backups.create_manual_backup()
+
+    real_copy = stack.external_backups._copy_file_atomically
+
+    def _corrupting_copy(source, destination):
+        result_path = real_copy(source, destination)
+        if result_path.suffix != ".json":
+            result_path.write_bytes(result_path.read_bytes() + b"corruption")
+        return result_path
+
+    monkeypatch.setattr(stack.external_backups, "_copy_file_atomically", staticmethod(_corrupting_copy))
+
+    second_copy = stack.external_backups.copy_now()
+
+    assert second_copy.success is False
+    external_entries = stack.external_backups.list_external_backups()
+    assert len(external_entries) == 1
+    assert external_entries[0].info.path == first_copy.file_path
+    assert external_entries[0].info.path.exists()
+
+
+def test_copy_now_refuses_cleanly_when_the_only_local_backup_failed_verification(login_as, tmp_path) -> None:
+    """Partie B, §5, point 5 : une archive locale invalide (ici, échec de
+    vérification constaté à la création — jamais de manifeste écrit, voir
+    ``BackupService._create_backup``) ne doit jamais pouvoir être
+    proposée à la copie externe — ``copy_now`` doit alors refuser
+    proprement, sans exception, avec une cause explicite."""
+    stack, _ = login_as("Administrateur")
+    drive = tmp_path / "usb"
+    drive.mkdir()
+    stack.external_backups.configure_media(drive, "Support")
+    stack.external_backups.update_config(enabled=True, retention=30)
+    stack.external_backups._media_roots_provider = lambda: [drive]
+    _configure_local_backups(stack, tmp_path)
+
+    local_result = stack.backups.create_manual_backup()
+    assert local_result.success is True
+    # Simule une archive locale qui a échoué sa vérification après coup
+    # (ex. altérée depuis) : son manifeste est donc supprimé, exactement
+    # comme une archive qui n'en aurait jamais eu (voir
+    # ``_latest_validated_local_backup``).
+    archive_manifest.delete_manifest_for(local_result.file_path)
+
+    result = stack.external_backups.copy_now()
+
+    assert result.success is False
+    assert "Aucune sauvegarde locale validée" in result.message
+    assert stack.external_backups.list_external_backups() == []
+
+
 # -- déclenchement planifié ---------------------------------------------------------
 
 

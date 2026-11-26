@@ -188,6 +188,76 @@ def test_create_backup_fails_cleanly_when_tools_missing(
     assert list(destination.glob("*")) == []
 
 
+# -- mission « Audit, correction et fiabilisation du système de sauvegarde », §10 --
+# reproduit précisément l'incident réel du 26/11/2026 (archive PostgreSQL valide à la
+# création, affichée « Invalide » plus tard sans aucun détail consultable) contre un
+# vrai serveur PostgreSQL.
+
+
+def test_describe_backup_status_reports_valid_postgresql_archive_with_no_errors(
+    login_as_pg, tmp_path: Path
+) -> None:
+    backups, _, _ = login_as_pg("Administrateur")
+    destination = tmp_path / "backups"
+    backups.update_config(auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(destination), retention=5)
+    result = backups.create_manual_backup()
+
+    report = backups.describe_backup_status(result.file_path)
+
+    assert report.valid is True
+    assert report.label == "Valide"
+    assert report.errors == []
+    assert report.manifest_hash_matches is True
+
+
+def test_describe_backup_status_detects_postgresql_archive_altered_after_creation(
+    login_as_pg, tmp_path: Path
+) -> None:
+    backups, _, _ = login_as_pg("Administrateur")
+    destination = tmp_path / "backups"
+    backups.update_config(auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(destination), retention=5)
+    result = backups.create_manual_backup()
+
+    with result.file_path.open("ab") as handle:
+        handle.write(b"octets ajoutes apres coup, sans lien avec pg_dump")
+
+    report = backups.describe_backup_status(result.file_path)
+
+    assert report.valid is False
+    assert report.label == "Invalide"
+    assert report.manifest_hash_matches is False
+    assert any("changé depuis sa création" in error for error in report.errors)
+
+
+def test_describe_backup_status_reports_unverifiable_for_postgresql_when_hash_unchanged_but_recheck_fails(
+    login_as_pg, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Preuve technique directe de l'hypothèse retenue par le diagnostic
+    précédent (incompatibilité d'outil/d'environnement de vérification
+    plutôt qu'une corruption de l'archive pg_dump elle-même) : une
+    archive réellement créée et validée par un vrai serveur PostgreSQL,
+    strictement inchangée depuis, dont la revérification échoue ensuite
+    (ex. ``pg_restore`` devenu introuvable ou incompatible) n'est jamais
+    présentée comme « Invalide »."""
+    backups, _, _ = login_as_pg("Administrateur")
+    destination = tmp_path / "backups"
+    backups.update_config(auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(destination), retention=5)
+    result = backups.create_manual_backup()
+
+    fake_failure = pg_backup_engine.BackupVerification(
+        valid=False, integrity_ok=False, tables_ok=False, alembic_version=None,
+        errors=["pg_restore a échoué : version locale incompatible avec l'archive."],
+    )
+    monkeypatch.setattr(pg_backup_engine, "verify_backup_file", lambda path: fake_failure)
+
+    report = backups.describe_backup_status(result.file_path)
+
+    assert report.valid is False
+    assert report.label == "Intégrité non vérifiable"
+    assert report.manifest_hash_matches is True
+    assert any("version locale incompatible" in error for error in report.errors)
+
+
 # -- restauration : opérations incohérentes avec le moteur actif -----------------------
 
 

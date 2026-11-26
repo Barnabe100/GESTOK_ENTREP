@@ -17,8 +17,9 @@ from typing import Optional
 from PySide6.QtWidgets import QDialog, QFormLayout, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from app.services.backups import archive_manifest
-from app.services.backups.backup_service import BackupEntry
+from app.services.backups.backup_service import STATUS_INVALID, STATUS_UNVERIFIABLE, STATUS_VALID, BackupEntry
 from app.utils.exceptions import AppError
+from app.views.design_system import COLOR_DANGER, COLOR_SUCCESS, COLOR_TEXT_SECONDARY, COLOR_WARNING
 
 _ENGINE_LABELS = {"sqlite": "SQLite", "postgresql": "PostgreSQL"}
 _BACKUP_TYPE_LABELS = {
@@ -68,11 +69,30 @@ class BackupDetailsDialog(QDialog):
         form.addRow("Emplacement", QLabel(str(info.path.parent), self))
 
         try:
-            verification = backup_service.verify_backup_file(info.path)
-            statut = "Valide" if verification.valid else "Invalide"
-        except AppError:
-            statut = "Indéterminé"
-        form.addRow("Statut", QLabel(statut, self))
+            # Mission « Audit, correction et fiabilisation du système de
+            # sauvegarde », §10 : ``describe_backup_status`` (jamais
+            # ``verify_backup_file`` seul) — son détail (``errors``)
+            # n'est plus jamais ignoré, voir ci-dessous.
+            report = backup_service.describe_backup_status(info.path)
+            statut, errors = report.label, report.errors
+        except AppError as exc:
+            statut, errors = "Indéterminé", [str(exc)]
+
+        statut_label = QLabel(statut, self)
+        statut_colors = {
+            STATUS_VALID: COLOR_SUCCESS, STATUS_INVALID: COLOR_DANGER, STATUS_UNVERIFIABLE: COLOR_WARNING,
+        }
+        statut_label.setStyleSheet(f"font-weight: 600; color: {statut_colors.get(statut, COLOR_TEXT_SECONDARY)};")
+        form.addRow("Statut", statut_label)
+
+        if errors:
+            # L'utilisateur doit pouvoir consulter la cause exacte d'une
+            # anomalie sans ouvrir les journaux techniques (§10 du
+            # mandat) — jamais un message générique à la place.
+            errors_label = QLabel("• " + "\n• ".join(errors), self)
+            errors_label.setWordWrap(True)
+            errors_label.setProperty("role", "secondary")
+            form.addRow("Détail de la vérification", errors_label)
 
         manifest = archive_manifest.read_manifest_for(info.path)
         if manifest is not None:

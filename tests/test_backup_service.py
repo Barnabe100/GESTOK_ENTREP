@@ -15,7 +15,7 @@ from app.db.init_db import _alembic_config
 from app.db.session import session_scope
 from app.models.audit import AuditLog
 from app.models.enums import ResultatAudit
-from app.services.backups import backup_engine
+from app.services.backups import archive_manifest, backup_engine
 from app.utils.exceptions import NotFoundError, PermissionDeniedError, ValidationError
 
 
@@ -1056,6 +1056,117 @@ def test_verify_backup_file_succeeds_on_encrypted_archive(login_as, tmp_path) ->
     assert verification.valid is True
 
 
+# -- mission « Audit, correction et fiabilisation du système de sauvegarde », §10 --
+# incident réel du 26/11/2026 : ``verification.errors`` calculé puis jamais lu par
+# l'interface, et aucune détection d'une archive modifiée après une création valide
+# pour les archives non chiffrées (la comparaison d'empreinte n'existait jusque-là
+# que pour les archives chiffrées, voir ``_resolve_plaintext_path``).
+
+
+def test_describe_backup_status_reports_valid_with_no_errors(login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    destination = tmp_path / "backups"
+    stack.backups.update_config(auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(destination), retention=30)
+    result = stack.backups.create_manual_backup()
+
+    report = stack.backups.describe_backup_status(result.file_path)
+
+    assert report.valid is True
+    assert report.label == "Valide"
+    assert report.errors == []
+    assert report.manifest_present is True
+    assert report.manifest_hash_matches is True
+
+
+def test_describe_backup_status_detects_unencrypted_archive_altered_after_creation(login_as, tmp_path) -> None:
+    """Avant ce correctif, une archive NON chiffrée modifiée après coup
+    n'était jamais détectée par ``verify_backup_file`` (seul le cas
+    chiffré comparait l'empreinte) — elle pouvait rester « Valide » tant
+    que sa structure restait lisible, ou échouer sans qu'on puisse
+    distinguer une altération d'une corruption d'origine."""
+    stack, _ = login_as("Administrateur")
+    destination = tmp_path / "backups"
+    stack.backups.update_config(auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(destination), retention=30)
+    result = stack.backups.create_manual_backup()
+
+    with result.file_path.open("ab") as handle:
+        handle.write(b"donnees ajoutees apres la creation")
+
+    report = stack.backups.describe_backup_status(result.file_path)
+
+    assert report.valid is False
+    assert report.label == "Invalide"
+    assert report.manifest_hash_matches is False
+    assert any("changé depuis sa création" in error for error in report.errors)
+
+
+def test_describe_backup_status_never_declares_a_manifestless_archive_corrupted_on_that_basis_alone(
+    login_as, tmp_path
+) -> None:
+    """§4 du mandat, « compatibilité avec les anciennes archives » : une
+    sauvegarde antérieure au mécanisme de manifeste, structurellement
+    saine, reste « Valide » — l'absence de manifeste seule ne doit jamais
+    la faire basculer en « Invalide »."""
+    stack, _ = login_as("Administrateur")
+    destination = tmp_path / "backups"
+    stack.backups.update_config(auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(destination), retention=30)
+    result = stack.backups.create_manual_backup()
+    archive_manifest.delete_manifest_for(result.file_path)
+
+    report = stack.backups.describe_backup_status(result.file_path)
+
+    assert report.valid is True
+    assert report.label == "Valide"
+    assert report.manifest_present is False
+
+
+def test_describe_backup_status_reports_unverifiable_when_hash_unchanged_but_recheck_fails(
+    login_as, tmp_path, monkeypatch
+) -> None:
+    """Reproduit précisément l'incident du 26/11/2026 : une archive dont
+    l'empreinte PROUVE qu'elle n'a pas changé depuis une création jugée
+    valide ne doit jamais être présentée comme « Invalide » (ce serait
+    affirmer une corruption sans preuve technique) si la revérification
+    structurelle échoue plus tard — seulement comme « Intégrité non
+    vérifiable », avec le détail complet."""
+    stack, _ = login_as("Administrateur")
+    destination = tmp_path / "backups"
+    stack.backups.update_config(auto_enabled=False, frequency="daily", time_of_day="02:00", destination=str(destination), retention=30)
+    result = stack.backups.create_manual_backup()
+
+    fake_failure = backup_engine.BackupVerification(
+        valid=False, integrity_ok=False, tables_ok=False, alembic_version=None,
+        errors=["pg_restore introuvable avec cette version locale."],
+    )
+    monkeypatch.setattr(backup_engine, "verify_backup_file", lambda path: fake_failure)
+
+    report = stack.backups.describe_backup_status(result.file_path)
+
+    assert report.valid is False
+    assert report.label == "Intégrité non vérifiable"
+    assert report.manifest_hash_matches is True
+    assert any("pg_restore introuvable" in error for error in report.errors)
+    assert any("l'archive elle-même n'a donc pas changé" in error for error in report.errors)
+
+
+def test_describe_backup_status_detects_encrypted_archive_altered_after_creation(login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    stack.backups._encryption_vault = _FakeEncryptionVault()
+    destination = tmp_path / "backups"
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00",
+        destination=str(destination), retention=30, encryption_enabled=True,
+    )
+    result = stack.backups.create_manual_backup()
+
+    with result.file_path.open("ab") as handle:
+        handle.write(b"donnees ajoutees apres chiffrement")
+
+    report = stack.backups.describe_backup_status(result.file_path)
+
+    assert report.valid is False
+    assert report.label == "Invalide"
+    assert report.manifest_hash_matches is False
 
 
 # -- mission corrective §3.2/§3.9 : restauration atomique --------------------------
