@@ -679,7 +679,15 @@ class BackupService:
             self._audit(f"{action}_FAILURE", ResultatAudit.ECHEC, details=message)
             return BackupResult(success=False, message=message)
 
+        logger.info(
+            "Copie SQLite produite : %s (%d octet(s)).", backup_path, backup_path.stat().st_size,
+        )
         verification = backup_engine.verify_backup_file(backup_path)
+        logger.info(
+            "Vérification structurelle de %s : valide=%s, intégrité=%s, tables=%s, version de "
+            "schéma embarquée=%s.", backup_path, verification.valid, verification.integrity_ok,
+            verification.tables_ok, verification.alembic_version,
+        )
         if not verification.valid:
             message = "La sauvegarde créée n'a pas passé la vérification : " + "; ".join(verification.errors)
             logger.error(message)
@@ -691,6 +699,7 @@ class BackupService:
             try:
                 encrypt_file_in_place(backup_path, vault=self._encryption_vault)
                 encrypted = True
+                logger.info("Archive %s chiffrée sur place avec succès.", backup_path)
             except (ArchiveEncryptionError, CredentialVaultUnavailableError) as exc:
                 message = f"Sauvegarde créée mais échec du chiffrement : {exc}"
                 logger.error(message)
@@ -703,6 +712,11 @@ class BackupService:
         archive_manifest.write_manifest_for(
             backup_path, db_engine="sqlite", schema_version=verification.alembic_version,
             backup_type=backup_type, encrypted=encrypted,
+        )
+        written_manifest = archive_manifest.read_manifest_for(backup_path)
+        logger.info(
+            "Manifeste écrit pour %s (empreinte SHA-256=%s).", backup_path,
+            written_manifest.sha256 if written_manifest else "(écriture du manifeste introuvable juste après)",
         )
 
         deleted = backup_engine.apply_retention(config.destination, config.retention)
@@ -744,8 +758,21 @@ class BackupService:
             logger.error(message)
             self._audit(f"{action}_FAILURE", ResultatAudit.ECHEC, details=message)
             return BackupResult(success=False, message=message)
+        # Mission « Diagnostic et résolution des pannes de sauvegarde » (Axe
+        # 1, « point essentiel ») : chaque étape de la chaîne doit laisser
+        # une trace suffisante pour établir, après coup et sans avoir à
+        # reproduire l'incident, à quelle étape précise un poste réel
+        # diverge — jamais seulement un succès/échec global.
+        logger.info(
+            "pg_dump a produit l'archive %s (%d octet(s)).", backup_path, backup_path.stat().st_size,
+        )
 
         verification = pg_backup_engine.verify_backup_file(backup_path)
+        logger.info(
+            "Vérification structurelle de %s : valide=%s, intégrité=%s, tables=%s, version de "
+            "schéma embarquée=%s.", backup_path, verification.valid, verification.integrity_ok,
+            verification.tables_ok, verification.alembic_version,
+        )
         if not verification.valid:
             message = "La sauvegarde créée n'a pas passé la vérification : " + "; ".join(verification.errors)
             logger.error(message)
@@ -757,6 +784,7 @@ class BackupService:
             try:
                 encrypt_file_in_place(backup_path, vault=self._encryption_vault)
                 encrypted = True
+                logger.info("Archive %s chiffrée sur place avec succès.", backup_path)
             except (ArchiveEncryptionError, CredentialVaultUnavailableError) as exc:
                 message = f"Sauvegarde créée mais échec du chiffrement : {exc}"
                 logger.error(message)
@@ -766,6 +794,11 @@ class BackupService:
         archive_manifest.write_manifest_for(
             backup_path, db_engine="postgresql", schema_version=verification.alembic_version,
             backup_type=archive_manifest.BACKUP_TYPE_LOCAL, encrypted=encrypted,
+        )
+        written_manifest = archive_manifest.read_manifest_for(backup_path)
+        logger.info(
+            "Manifeste écrit pour %s (empreinte SHA-256=%s).", backup_path,
+            written_manifest.sha256 if written_manifest else "(écriture du manifeste introuvable juste après)",
         )
 
         deleted = pg_backup_engine.apply_retention(config.destination, config.retention)

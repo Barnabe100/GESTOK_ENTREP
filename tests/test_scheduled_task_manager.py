@@ -193,8 +193,11 @@ class TestBuildTaskXml:
     def test_command_and_arguments_are_never_concatenated_or_requoted(self) -> None:
         """Régression directe du défaut diagnostiqué : un exécutable dont
         le chemin contient un espace (ex. « Program Files ») ne doit
-        jamais produire de guillemets échappés imbriqués — ``<Command>``
-        contient le chemin tel quel, sans aucun guillemet ajouté."""
+        jamais produire de guillemets échappés IMBRIQUÉS (deux niveaux de
+        citation en conflit) — ``<Command>`` porte une citation Windows
+        simple (une seule paire de guillemets autour du chemin tel quel,
+        voir ``subprocess.list2cmdline``), jamais une concaténation avec
+        les arguments ni un double échappement."""
         xml_bytes = stm._build_task_xml(
             "C:/Program Files/StockManager/StockManager.exe", ["--run-backup-agent"],
             schedule=stm.SCHEDULE_DAILY, time_of_day="20:00", user_id="TESTPC\\testuser",
@@ -205,9 +208,28 @@ class TestBuildTaskXml:
         command = root.find(".//t:Actions/t:Exec/t:Command", ns)
         arguments = root.find(".//t:Actions/t:Exec/t:Arguments", ns)
 
-        assert command.text == "C:/Program Files/StockManager/StockManager.exe"
-        assert '"' not in command.text
+        assert command.text == '"C:/Program Files/StockManager/StockManager.exe"'
+        assert command.text.count('"') == 2  # une seule paire, jamais de guillemets imbriqués.
         assert arguments.text == "--run-backup-agent"
+
+    def test_command_without_a_space_is_never_quoted(self) -> None:
+        """Correctif « tâche planifiée inopérante » : la citation n'est
+        ajoutée que lorsqu'elle est réellement nécessaire — un chemin sans
+        espace (ex. un environnement de développement typique) ne doit
+        jamais changer de représentation, aucune régression possible pour
+        ce cas déjà en production."""
+        xml_bytes = stm._build_task_xml(
+            "C:/StockManager/StockManager.exe", ["-m", "app.backup_external_agent_cli"],
+            schedule=stm.SCHEDULE_DAILY, time_of_day="20:00", user_id="TESTPC\\testuser",
+            )
+
+        root = self._parse(xml_bytes)
+        ns = {"t": stm._TASK_XML_NS}
+        command = root.find(".//t:Actions/t:Exec/t:Command", ns)
+        arguments = root.find(".//t:Actions/t:Exec/t:Arguments", ns)
+
+        assert command.text == "C:/StockManager/StockManager.exe"
+        assert arguments.text == "-m app.backup_external_agent_cli"
 
     def test_daily_schedule_builds_a_calendar_trigger(self) -> None:
         xml_bytes = stm._build_task_xml(
@@ -373,6 +395,25 @@ class TestParseTaskDefinition:
 
         assert definition.command == "C:/StockManager/StockManager.exe"
         assert definition.arguments == "--run-backup-agent"
+
+    def test_strips_the_windows_command_line_quoting_added_for_paths_with_a_space(self) -> None:
+        """Correctif « tâche planifiée inopérante » : ``<Command>`` porte
+        désormais des guillemets Windows lorsque l'exécutable contient un
+        espace (voir ``_build_task_xml``) — retirés ici pour exposer le
+        même chemin nu que celui demandé, condition nécessaire à la
+        comparaison faite par :func:`_verify_task_registered` (sans quoi
+        une tâche correctement enregistrée serait signalée à tort comme
+        incohérente, pour tout poste installé sous un chemin avec espace,
+        ex. ``C:\\Program Files\\...``)."""
+        xml_text = (
+            f'<Task xmlns="{stm._TASK_XML_NS}"><Actions><Exec>'
+            f'<Command>"C:/Program Files/StockManager/StockManager.exe"</Command>'
+            f"<Arguments>--run-backup-agent</Arguments></Exec></Actions></Task>"
+        )
+
+        definition = stm.parse_task_definition(xml_text)
+
+        assert definition.command == "C:/Program Files/StockManager/StockManager.exe"
 
     def test_extracts_user_id_from_principal(self) -> None:
         xml_text = (
@@ -877,6 +918,36 @@ class TestVerifyTaskRegistered:
                 "StockManager - Sauvegarde", executable="C:/StockManager/StockManager.exe",
                 schedule=stm.SCHEDULE_DAILY,
             )
+
+    def test_never_fails_on_a_correctly_quoted_executable_path_containing_a_space(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Correctif « tâche planifiée inopérante » — régression directe :
+        un exécutable installé sous un chemin avec espace (ex.
+        ``C:\\Program Files\\StockManager\\StockManager.exe``, l'emplacement
+        par défaut d'une installation Windows) ne doit JAMAIS être signalé
+        comme une commande incohérente simplement parce que la définition
+        XML réellement enregistrée porte, à juste titre, des guillemets
+        autour de ce chemin (voir ``_build_task_xml``/
+        ``parse_task_definition``)."""
+        import subprocess
+
+        executable = "C:/Program Files/StockManager/StockManager.exe"
+        xml_with_quoted_command = (
+            f'<Task xmlns="{stm._TASK_XML_NS}"><Actions><Exec>'
+            f'<Command>"{executable}"</Command></Exec></Actions></Task>'
+        )
+
+        def _fake_run_schtasks(args):
+            if "/xml" in args:
+                return subprocess.CompletedProcess(args, returncode=0, stdout=xml_with_quoted_command, stderr="")
+            return subprocess.CompletedProcess(args, returncode=0, stdout="Status: Ready", stderr="")
+
+        monkeypatch.setattr(stm, "_run_schtasks", _fake_run_schtasks)
+
+        stm._verify_task_registered(
+            "StockManager - Sauvegarde", executable=executable, schedule=stm.SCHEDULE_DAILY,
+        )  # ne doit jamais lever.
 
     def test_raises_when_the_registered_trigger_type_does_not_match(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import subprocess

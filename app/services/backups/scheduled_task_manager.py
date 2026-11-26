@@ -97,9 +97,26 @@ ne traite pas de façon fiable (confirmé par simulation directe de
 implémentation — échec reproductible à 100%, pas seulement sur les chemins
 contenant un espace). La définition XML sépare l'exécutable
 (``<Command>``) et les arguments (``<Arguments>``) en éléments XML distincts
-— aucune citation de ligne de commande n'est alors nécessaire pour cette
-valeur, le problème est éliminé à la racine plutôt que contourné par un
-échappement différent. Le fichier XML est systématiquement encodé en
+— aucun échappement XML supplémentaire n'est alors nécessaire pour cette
+valeur (``&``/``<``/``>``, gérés automatiquement par ``ElementTree``), le
+problème de guillemets imbriqués est éliminé à la racine plutôt que
+contourné par un échappement différent.
+
+Correctif « tâche planifiée inopérante » (mission « Diagnostic et
+résolution des pannes de sauvegarde ») : l'absence d'échappement XML
+supplémentaire ne dispensait PAS, contrairement à ce que cette docstring
+affirmait jusqu'ici, de la citation de ligne de commande Windows propre à
+la VALEUR TEXTE de ``<Command>`` — le Planificateur de tâches la traite
+comme un chemin d'exécutable à lancer, pas comme une simple donnée XML : un
+chemin contenant un espace (ex. ``C:\Program Files\StockManager\...``, le
+répertoire d'installation par défaut) doit être entouré de guillemets
+littéraux à l'intérieur de ce texte, sans quoi Windows tente de lancer
+``C:\Program`` avec le reste en arguments implicites — la tâche se crée
+malgré tout sans erreur (XML syntaxiquement valide), mais ne produit plus
+aucun effet à son déclenchement. ``subprocess.list2cmdline`` (voir
+:func:`_build_task_xml`) applique désormais cette citation, seulement
+lorsque nécessaire — aucun changement pour un chemin sans espace. Le
+fichier XML est systématiquement encodé en
 UTF-16 avec indicateur d'ordre des octets (BOM) : ``schtasks /create /xml``
 exige cet encodage précis, un fichier UTF-8 pouvant être rejeté ou mal
 interprété selon la version de Windows (comportement documenté de cet
@@ -326,9 +343,28 @@ def _build_task_xml(
 
     actions = ET.SubElement(root, f"{{{_TASK_XML_NS}}}Actions", attrib={"Context": "Author"})
     exec_action = ET.SubElement(actions, f"{{{_TASK_XML_NS}}}Exec")
-    ET.SubElement(exec_action, f"{{{_TASK_XML_NS}}}Command").text = executable
+    # Correctif « tâche planifiée inopérante » : ``<Command>``/``<Arguments>``
+    # ne nécessitent effectivement AUCUN échappement XML supplémentaire
+    # (ElementTree s'en charge, voir la docstring de module) — mais c'est
+    # distinct de la citation de ligne de commande Windows elle-même, que
+    # le Planificateur de tâches applique à la VALEUR TEXTE de ``<Command>``
+    # pour la lancer comme un chemin d'exécutable : sans guillemets autour
+    # d'un chemin contenant un espace (ex. l'emplacement d'installation par
+    # défaut ``C:\Program Files\StockManager\StockManager.exe``), Windows
+    # tente de lancer ``C:\Program`` avec le reste en arguments implicites —
+    # la tâche se crée sans erreur (XML syntaxiquement valide), apparaît
+    # activée dans le Planificateur, mais ne produit jamais aucun effet à
+    # son déclenchement : exactement le symptôme « tâche planifiée
+    # inopérante » constaté sur un poste réel. ``subprocess.list2cmdline``
+    # applique la citation Windows standard (ajoute des guillemets
+    # seulement si nécessaire — un chemin sans espace reste inchangé,
+    # aucune régression pour l'environnement de développement) à
+    # l'exécutable ET à chaque argument individuellement (même motif pour
+    # ``<Arguments>`` : un argument contenant un espace, improbable
+    # aujourd'hui mais jamais garanti, aurait la même conséquence).
+    ET.SubElement(exec_action, f"{{{_TASK_XML_NS}}}Command").text = subprocess.list2cmdline([executable])
     if arguments:
-        ET.SubElement(exec_action, f"{{{_TASK_XML_NS}}}Arguments").text = " ".join(arguments)
+        ET.SubElement(exec_action, f"{{{_TASK_XML_NS}}}Arguments").text = subprocess.list2cmdline(arguments)
 
     return ET.tostring(root, encoding="utf-16", xml_declaration=True)
 
@@ -479,6 +515,15 @@ def parse_task_definition(xml_text: str) -> Optional[ScheduledTaskDefinition]:
 
     command_el = parsed.find(f".//{{{_TASK_XML_NS}}}Command")
     command = (command_el.text or "").strip() if command_el is not None and command_el.text else None
+    if command is not None and len(command) >= 2 and command[0] == '"' and command[-1] == '"':
+        # Correctif « tâche planifiée inopérante » : ``<Command>`` porte
+        # désormais la citation Windows (``subprocess.list2cmdline``, voir
+        # ``_build_task_xml``) lorsque l'exécutable contient un espace —
+        # retirée ici pour comparer/afficher le même chemin nu que celui
+        # demandé (voir :func:`_verify_task_registered`), jamais une
+        # fausse incohérence détectée sur la seule présence de guillemets
+        # qui, eux, sont corrects et attendus dans le fichier XML lui-même.
+        command = command[1:-1]
     arguments_el = parsed.find(f".//{{{_TASK_XML_NS}}}Arguments")
     arguments = (arguments_el.text or "").strip() if arguments_el is not None and arguments_el.text else None
     user_id_el = parsed.find(f".//{{{_TASK_XML_NS}}}Principal/{{{_TASK_XML_NS}}}UserId")

@@ -127,6 +127,16 @@ def run_agent_locked(lock, backup_service, external_service, logger) -> int:
     exécution (ex. une copie manuelle lancée depuis l'interface pendant que
     la tâche planifiée se déclenche), abandon propre sans erreur — jamais
     deux cycles en parallèle sur le même poste (§4/§8 du mandat)."""
+    # Mission « Diagnostic et résolution des pannes de sauvegarde », Axe 2,
+    # point 10 (« si l'agent démarre, à quelle étape s'arrête-t-il ? ») :
+    # cette ligne est la toute première chose journalisée par l'agent, quel
+    # que soit le résultat ensuite — son absence dans le journal applicatif
+    # après un déclenchement de la tâche planifiée prouve que l'agent n'a
+    # jamais démarré du tout (ex. commande/chemin invalide côté Windows),
+    # plutôt qu'un cycle démarré puis resté sans effet pour une autre
+    # raison, deux causes jusqu'ici indistinguables depuis les seuls
+    # journaux.
+    logger.info("Agent de sauvegarde : démarrage du cycle, tentative d'acquisition du verrou.")
     if not lock.acquire():
         logger.info("Agent de sauvegarde : une autre exécution est déjà en cours, abandon propre.")
         return 0
