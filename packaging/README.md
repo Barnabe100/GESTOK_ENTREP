@@ -224,6 +224,58 @@ sélection d'un support externe parmi les lecteurs réellement détectés
 sur un poste de test, et l'export/import de la clé de chiffrement avec
 affichage temporaire du mot de passe.
 
+## Mission corrective ciblée « Erreur Accès refusé de la tâche planifiée Windows »
+
+Après déploiement de la correction XML ci-dessus, un test Windows réel a
+révélé un NOUVEAU refus d'accès (code 1), cette fois limité à la tâche
+« à l'ouverture de session » (la tâche quotidienne, elle, se créait déjà
+sans problème). Aucune dépendance supplémentaire introduite.
+
+- **Cause exacte** : la définition XML ne précisait jamais `<UserId>` —
+  ni dans `<Principal>`, ni dans `<LogonTrigger>`. Un `<LogonTrigger>`
+  sans `<UserId>` surveille l'ouverture de session de N'IMPORTE QUEL
+  utilisateur du poste (une capacité de surveillance système réservée à
+  un compte administrateur), alors qu'un `<LogonTrigger>` scopé à
+  l'utilisateur courant est une capacité que tout compte standard
+  possède pour lui-même — exactement ce que produit la construction
+  d'un déclencheur « à l'ouverture de session » depuis l'interface
+  graphique du Planificateur de tâches par un utilisateur standard.
+  C'est pour cela que seule la tâche quotidienne (`CalendarTrigger`,
+  purement temporelle, sans ambiguïté d'utilisateur) échappait au
+  problème.
+- **Correction** (`scheduled_task_manager.py` uniquement) : l'identité
+  Windows qualifiée du compte exécutant StockManager (`USERDOMAIN`\\
+  `USERNAME`, résolue par `_default_current_user_id`, jamais stockée,
+  jamais transmise via `/ru`/`/rp`) est désormais inscrite explicitement
+  dans `<Principal><UserId>` et dans `<LogonTrigger><UserId>`.
+- **Relecture obligatoire après création** (`_verify_task_registered`) :
+  la tâche n'est plus jamais déclarée configurée avec succès sur le seul
+  code de retour 0 de `schtasks /create` — son existence réelle est
+  revérifiée (`schtasks /query`), et sa définition complète (commande,
+  type de déclencheur) est relue en meilleur effort pour détecter une
+  éventuelle incohérence, sans jamais faire échouer l'opération sur un
+  simple problème de lecture (encodage console, version de Windows).
+- **Messages d'erreur distingués** (`_classify_schtasks_failure`,
+  `_describe_existing_task_conflict`) : un refus d'accès, une définition
+  XML invalide, et une tâche déjà existante enregistrée sous un AUTRE
+  compte Windows (jamais supprimée automatiquement — uniquement signalée,
+  l'utilisateur devant la vérifier lui-même dans `taskschd.msc`) sont
+  désormais présentés par des phrases distinctes, toujours accompagnées
+  du détail Windows brut.
+- Stockage de l'exécutable/manifeste (`stockmanager.spec`) et agent
+  auxiliaire (`backup_external_agent_cli.py`) examinés et confirmés sans
+  rapport avec cette erreur : aucune demande d'élévation UAC n'est
+  déclarée dans le manifeste de l'exécutable (`asInvoker` implicite,
+  jamais `requireAdministrator`), et l'agent auxiliaire ne fait que
+  recevoir l'appel — la cause était entièrement dans la définition XML de
+  la tâche elle-même.
+
+**Non revérifié sous Windows réel** : la création réelle de la tâche
+« à l'ouverture de session » depuis une session Windows **standard**
+(non administrateur) avec le `<UserId>` désormais explicite — c'est
+précisément le scénario qui échouait avant cette correction (voir
+« Tests obligatoires sous Windows » ci-dessous, points 12 à 15).
+
 ## Procédure de build (à exécuter sur Windows)
 
 ```text
@@ -398,6 +450,36 @@ Windows ») :
     échouent explicitement avec un mauvais mot de passe, et la case
     « Afficher le mot de passe » révèle bien la saisie dans les deux
     fenêtres.
+12. **Depuis une session Windows standard (compte membre du groupe
+    Utilisateurs, PAS Administrateurs)**, « Configurer/réparer la tâche
+    planifiée Windows… » crée réellement les DEUX tâches (quotidienne et
+    « à l'ouverture de session ») sans aucune invite UAC ni message
+    d'erreur — c'est précisément le scénario qui échouait avec le code 1
+    « Accès refusé » avant la correction du `<UserId>` explicite (voir
+    « Mission corrective ciblée… » ci-dessus). Vérifier dans
+    `taskschd.msc` que les deux tâches affichent bien le compte standard
+    comme « Exécuter en tant que », jamais SYSTEM ni un autre compte.
+13. **Depuis une session Windows administrateur**, la même action réussit
+    également, et la tâche créée s'exécute toujours sous le compte
+    administrateur courant (jamais SYSTEM) — `RunLevel=LeastPrivilege`
+    n'élève jamais les droits de la tâche au-delà de ceux du compte qui
+    l'a créée.
+14. **Mise à jour d'une tâche déjà existante** (créée par un essai
+    précédent, avec cette version corrigée) : « Configurer/réparer… » la
+    recrée sans erreur, avec l'heure éventuellement modifiée dans
+    l'intervalle correctement reflétée.
+15. **Tâche appartenant à un autre compte** (scénario volontairement
+    simulé : créer manuellement dans `taskschd.msc`, sous un autre compte
+    ou avec `/ru`/`/rp`, une tâche nommée exactement
+    `StockManager - Sauvegarde`, puis cliquer sur « Configurer/
+    réparer… » depuis le compte StockManager habituel) : l'erreur
+    affichée nomme explicitement le compte propriétaire de la tâche en
+    conflit, et cette tâche n'est à aucun moment supprimée
+    automatiquement — seule une suppression manuelle dans
+    `taskschd.msc`, puis un nouvel essai, doit permettre de la reprendre.
+16. « Supprimer la tâche planifiée… » réussit aussi bien depuis un compte
+    standard que depuis un compte administrateur, pour une tâche créée
+    par le même compte.
 
 ## Limitations connues de la configuration actuelle (à revalider sous Windows)
 

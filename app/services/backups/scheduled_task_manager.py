@@ -53,6 +53,38 @@ qui décide si une sauvegarde est réellement due au moment où l'agent
 s'exécute enfin — jamais une hypothèse de ce module sur le moment exact où
 cela se produit.
 
+Mission corrective « Erreur Accès refusé de la tâche planifiée Windows » :
+une fois la correction précédente (XML plutôt que ``/tr``) déployée, un test
+Windows réel a révélé un NOUVEAU refus d'accès (code 1), cette fois limité à
+la tâche ``onlogon`` (``SCHEDULE_ONLOGON`` ci-dessous) — la tâche
+quotidienne, elle, se crée sans problème avec la même définition
+``Principal``/``LogonType=InteractiveToken``/``RunLevel=LeastPrivilege``.
+
+**Cause exacte identifiée** : la définition XML d'origine ne précisait
+jamais ``<UserId>`` — ni dans ``<Principal>``, ni dans ``<LogonTrigger>``.
+Pour ``<Principal>``, Windows peut déduire l'utilisateur courant à
+l'enregistrement même sans ``UserId`` explicite (ce qui explique que la
+tâche quotidienne, purement temporelle, se créait malgré tout). Mais un
+``<LogonTrigger>`` SANS ``<UserId>`` est un déclencheur qui surveille
+l'ouverture de session de N'IMPORTE QUEL utilisateur du poste — une
+capacité de surveillance système, pas seulement personnelle, que Windows
+réserve aux comptes administrateur : un compte standard reçoit alors « Accès
+refusé » en tentant de l'enregistrer, précisément et uniquement pour ce
+type de déclencheur. C'est exactement pourquoi seule la tâche ``onlogon``
+échouait. (Avant la migration vers le XML, l'ancienne construction en ligne
+de commande, ``schtasks /create /sc onlogon`` sans ``/ru``, scopait déjà
+implicitement ce déclencheur à l'utilisateur courant — un comportement par
+défaut propre à cette syntaxe CLI, jamais reproduit automatiquement par
+l'équivalent XML : la régression est donc apparue avec la migration XML,
+pas avant.)
+
+**Correction** : l'identité Windows qualifiée du compte exécutant
+StockManager (résolue via :func:`_default_current_user_id`, jamais vide) est
+désormais inscrite explicitement dans ``<Principal><UserId>`` ET dans
+``<LogonTrigger><UserId>`` — ce second ajout élimine la cause racine en
+scopant le déclencheur à la propre session de l'utilisateur courant, une
+capacité que tout compte standard possède pour lui-même.
+
 Construction de la tâche via un fichier de définition XML temporaire
 (``schtasks /create /xml``), jamais via l'option ``/tr`` en ligne de
 commande : une valeur ``/tr`` contenant à la fois des espaces et des
@@ -103,6 +135,7 @@ _FIELD_MAP = {
     "last run time": "last_run_time",
     "last result": "last_result",
     "next run time": "next_run_time",
+    "run as user": "run_as_user",
 }
 
 
@@ -151,7 +184,30 @@ def _sanitized_stderr_excerpt(stderr: Optional[str]) -> str:
     return text
 
 
-def _build_task_xml(executable: str, arguments: list[str], *, schedule: str, time_of_day: str) -> bytes:
+def _default_current_user_id() -> str:
+    """Résout l'identité Windows qualifiée (``DOMAINE\\utilisateur`` — le
+    domaine vaut le nom de l'ordinateur pour un compte local, Windows
+    positionne ``USERDOMAIN`` dans les deux cas) du compte exécutant
+    StockManager, pour l'inscrire explicitement dans la définition XML (voir
+    la docstring de module, cause du refus d'accès). Jamais de chaîne vide
+    transmise à ``schtasks`` : ``USERDOMAIN``/``USERNAME`` sont positionnées
+    par Windows pour toute session, y compris un compte standard non
+    administrateur ; replis successifs uniquement pour le cas théorique où
+    l'une d'elles serait absente."""
+    domain = os.environ.get("USERDOMAIN", "").strip()
+    username = os.environ.get("USERNAME", "").strip()
+    if username and domain:
+        return f"{domain}\\{username}"
+    if username:
+        return username
+    import getpass
+
+    return getpass.getuser()
+
+
+def _build_task_xml(
+    executable: str, arguments: list[str], *, schedule: str, time_of_day: str, user_id: str,
+) -> bytes:
     """Construit une définition de tâche Planificateur Windows au format
     XML (``schtasks /create /xml``), encodée en UTF-16 avec BOM (exigée par
     cet outil — voir la docstring de module). Jamais de citation de ligne de
@@ -167,6 +223,11 @@ def _build_task_xml(executable: str, arguments: list[str], *, schedule: str, tim
 
     principals = ET.SubElement(root, f"{{{_TASK_XML_NS}}}Principals")
     principal = ET.SubElement(principals, f"{{{_TASK_XML_NS}}}Principal", attrib={"id": "Author"})
+    # Identité explicite (mission corrective « Erreur Accès refusé », voir
+    # la docstring de module) — jamais laissée implicite : Windows ne la
+    # déduit pas toujours de façon fiable, en particulier pour le
+    # ``LogonTrigger`` ci-dessous.
+    ET.SubElement(principal, f"{{{_TASK_XML_NS}}}UserId").text = user_id
     # ``InteractiveToken`` : la tâche s'exécute avec le jeton de la session
     # Windows interactive de l'utilisateur courant — jamais stockée nulle
     # part, jamais ``/ru``/``/rp`` (voir la docstring de module, les trois
@@ -200,6 +261,15 @@ def _build_task_xml(executable: str, arguments: list[str], *, schedule: str, tim
     if schedule == SCHEDULE_ONLOGON:
         trigger = ET.SubElement(triggers, f"{{{_TASK_XML_NS}}}LogonTrigger")
         ET.SubElement(trigger, f"{{{_TASK_XML_NS}}}Enabled").text = "true"
+        # Cause racine du refus d'accès (voir la docstring de module) :
+        # SANS cet élément, ce déclencheur surveille l'ouverture de session
+        # de N'IMPORTE QUEL utilisateur du poste — une capacité réservée à
+        # un compte administrateur. Le scoper explicitement à l'utilisateur
+        # courant est ce qu'un compte standard peut enregistrer pour
+        # lui-même (comportement identique à un déclencheur « à l'ouverture
+        # de session » créé via l'interface graphique du Planificateur de
+        # tâches par un utilisateur standard).
+        ET.SubElement(trigger, f"{{{_TASK_XML_NS}}}UserId").text = user_id
     else:
         _validate_time_of_day(time_of_day)
         trigger = ET.SubElement(triggers, f"{{{_TASK_XML_NS}}}CalendarTrigger")
@@ -263,8 +333,128 @@ SCHEDULE_DAILY = "daily"
 SCHEDULE_ONLOGON = "onlogon"
 
 
+def _classify_schtasks_failure(stderr_excerpt: str) -> str:
+    """Pure, testable : distingue les causes d'échec les plus fréquentes
+    d'un ``schtasks /create`` à partir du texte de son erreur — toujours une
+    courte phrase explicite de ``schtasks.exe`` lui-même, dans la langue du
+    système (confirmé par le rapport Windows réel ayant motivé cette
+    correction : « Erreur : Accès refusé. », en français). Retourne une
+    phrase de diagnostic en français à présenter AVANT le détail Windows
+    brut, jamais à sa place (voir :func:`_sanitized_stderr_excerpt`) —
+    mission corrective « Erreur Accès refusé », §5 : distinguer les
+    catégories d'échec plutôt qu'un message générique unique."""
+    lowered = stderr_excerpt.lower()
+    if "accès refusé" in lowered or "access is denied" in lowered or "access denied" in lowered:
+        return (
+            "Accès refusé par Windows. Cause la plus probable : le compte Windows actuel ne "
+            "dispose pas des droits nécessaires pour enregistrer ce type précis de tâche, ou une "
+            "tâche du même nom a été créée précédemment par un autre compte ou avec des droits "
+            "différents."
+        )
+    if "introuvable" in lowered or "cannot find" in lowered or "n'est pas trouvé" in lowered:
+        return "Fichier de définition de tâche introuvable ou chemin invalide."
+    if "n'est pas valide" in lowered or "invalid" in lowered or "incorrect" in lowered:
+        return "Définition de tâche (XML) invalide ou rejetée par Windows."
+    return "Échec de l'enregistrement de la tâche planifiée Windows."
+
+
+def _describe_existing_task_conflict(existing: ScheduledTaskStatus, user_id: str) -> Optional[str]:
+    """Si une tâche du même nom existait déjà AVANT cette tentative de
+    création/réparation, et qu'elle a été enregistrée pour un compte
+    Windows différent de l'utilisateur courant (``run_as_user``), retourne
+    une phrase explicite à ajouter au message d'erreur — jamais une
+    suppression ni une modification automatique de cette ancienne tâche
+    (mission corrective « Erreur Accès refusé », §3.C : « ne jamais
+    supprimer une ancienne tâche sans stratégie de remplacement sûre »),
+    seulement une information permettant à l'utilisateur de décider lui-même
+    (vérifier/supprimer manuellement dans le Planificateur de tâches
+    Windows)."""
+    if not existing.exists or not existing.run_as_user:
+        return None
+    existing_user = existing.run_as_user.strip()
+    # Comparaison insensible à la casse : Windows ne distingue pas la casse
+    # des noms de compte.
+    if existing_user.lower() == user_id.strip().lower():
+        return None
+    return (
+        f"Une tâche portant déjà ce nom existe, enregistrée pour s'exécuter sous le compte "
+        f"« {existing_user} » — différent du compte Windows actuel (« {user_id} »). Elle n'a pas "
+        f"été supprimée automatiquement : vérifiez-la dans le Planificateur de tâches Windows "
+        f"(taskschd.msc) avant de réessayer."
+    )
+
+
+def _verify_task_registered(task_name: str, *, executable: str, schedule: str) -> None:
+    """Relit la tâche juste enregistrée — jamais une confiance aveugle dans
+    le seul code de retour de ``/create`` (mission corrective « Erreur
+    Accès refusé », §5 : « ne jamais afficher tâche configurée avec succès
+    sans vérifier que la tâche existe réellement et que ses propriétés
+    correspondent »). Deux niveaux :
+
+    1. Vérification OBLIGATOIRE — la tâche doit réellement exister
+       (:func:`query_task_status`) : son absence malgré un ``/create`` ayant
+       renvoyé le code 0 fait échouer l'opération.
+    2. Vérification EN MEILLEUR EFFORT — relecture de la définition XML
+       complète (``/query ... /xml``) pour comparer la commande et le type
+       de déclencheur effectivement enregistrés à ce qui était demandé. Un
+       échec de cette seconde étape à obtenir ou analyser cette sortie
+       (problème d'encodage console, version de Windows différente) est
+       seulement journalisé, jamais une cause d'échec de l'opération à lui
+       seul — SEULE une incohérence réellement lue (mauvaise commande,
+       mauvais type de déclencheur) fait échouer l'opération, puisque
+       c'est exactement ce que ce niveau doit détecter."""
+    status = query_task_status(task_name)
+    if not status.exists:
+        raise ScheduledTaskError(
+            f"La tâche planifiée Windows « {task_name} » n'a pas pu être relue immédiatement "
+            "après sa création — elle n'est donc jamais considérée comme configurée avec succès."
+        )
+
+    result = _run_schtasks(["/query", "/tn", task_name, "/xml"])
+    if result.returncode != 0 or not (result.stdout or "").strip():
+        logger.warning(
+            "Tâche planifiée %r relue comme existante, mais sa définition XML complète n'a pas pu "
+            "être obtenue pour vérification approfondie (code %s) — vérification superficielle "
+            "uniquement, opération non bloquée pour autant.", task_name, result.returncode,
+        )
+        return
+
+    try:
+        parsed = ET.fromstring(result.stdout)
+    except ET.ParseError:
+        logger.warning(
+            "Tâche planifiée %r : définition XML relue mais illisible (problème d'encodage "
+            "console probable) — vérification approfondie ignorée, opération non bloquée.",
+            task_name,
+        )
+        return
+
+    command_el = parsed.find(f".//{{{_TASK_XML_NS}}}Command")
+    registered_command = (command_el.text or "").strip() if command_el is not None else ""
+    if registered_command and registered_command != executable:
+        raise ScheduledTaskError(
+            f"La tâche planifiée Windows « {task_name} » a été créée, mais la commande "
+            f"effectivement enregistrée (« {registered_command} ») ne correspond pas à celle "
+            f"demandée (« {executable} ») — configuration refusée plutôt que déclarée réussie à "
+            "tort."
+        )
+
+    expected_trigger = (
+        f"{{{_TASK_XML_NS}}}LogonTrigger" if schedule == SCHEDULE_ONLOGON
+        else f"{{{_TASK_XML_NS}}}CalendarTrigger"
+    )
+    triggers_el = parsed.find(f".//{{{_TASK_XML_NS}}}Triggers")
+    if triggers_el is not None and triggers_el.find(expected_trigger) is None:
+        raise ScheduledTaskError(
+            f"La tâche planifiée Windows « {task_name} » a été créée, mais son déclencheur "
+            "enregistré ne correspond pas à celui demandé — configuration refusée plutôt que "
+            "déclarée réussie à tort."
+        )
+
+
 def create_or_repair_task(
     task_name: str, executable: str, arguments: list[str], time_of_day: str, *, schedule: str = SCHEDULE_DAILY,
+    user_id_resolver=_default_current_user_id,
 ) -> None:
     """Crée la tâche si absente, ou la recrée à l'identique si déjà
     présente (``/f``, « force ») — un seul chemin de code pour la création
@@ -279,9 +469,26 @@ def create_or_repair_task(
     de déclencheur) ; sert exclusivement de rattrapage (voir
     ``ExternalBackupService.configure_scheduled_task`` et §3.4/§3.6 du
     mandat correctif) en complément de la tâche quotidienne, jamais à sa
-    place."""
+    place.
+
+    ``user_id_resolver`` : résolveur de l'identité Windows courante
+    (défaut : :func:`_default_current_user_id`), injectable pour les tests
+    (voir ``tests/test_scheduled_task_manager.py``) — jamais un paramètre
+    exposé par ``ExternalBackupService``, qui n'a aucune raison de
+    connaître ce détail d'implémentation."""
     _ensure_windows()
-    xml_bytes = _build_task_xml(executable, arguments, schedule=schedule, time_of_day=time_of_day)
+    if schedule != SCHEDULE_ONLOGON:
+        # Valider AVANT tout appel à ``schtasks.exe`` (y compris la lecture
+        # de l'état existant ci-dessous) — une heure invalide ne doit jamais
+        # déclencher la moindre invocation de l'outil système, exactement
+        # comme avant l'ajout de cette lecture préalable (voir
+        # :func:`_build_task_xml`, qui revalide par défense en profondeur).
+        _validate_time_of_day(time_of_day)
+    user_id = user_id_resolver()
+    existing_before = query_task_status(task_name)
+    xml_bytes = _build_task_xml(
+        executable, arguments, schedule=schedule, time_of_day=time_of_day, user_id=user_id,
+    )
     schedule_description = "à l'ouverture de session" if schedule == SCHEDULE_ONLOGON else f"quotidienne, {time_of_day}"
 
     fd, tmp_path_str = tempfile.mkstemp(prefix=".stockmanager_task_", suffix=".xml")
@@ -295,12 +502,19 @@ def create_or_repair_task(
 
     if result.returncode != 0:
         stderr_excerpt = _sanitized_stderr_excerpt(result.stderr)
+        diagnosis = _classify_schtasks_failure(stderr_excerpt)
+        conflict = _describe_existing_task_conflict(existing_before, user_id)
         logger.error("Échec de création de la tâche planifiée %r : %s", task_name, stderr_excerpt)
-        raise ScheduledTaskError(
+        message = (
             f"La création de la tâche planifiée Windows « {task_name} » a échoué (code "
-            f"{result.returncode}). Détail Windows : {stderr_excerpt}"
+            f"{result.returncode}). {diagnosis} Détail Windows : {stderr_excerpt}"
         )
-    logger.info("Tâche planifiée %r créée/réparée (%s).", task_name, schedule_description)
+        if conflict is not None:
+            message += f" {conflict}"
+        raise ScheduledTaskError(message)
+
+    _verify_task_registered(task_name, executable=executable, schedule=schedule)
+    logger.info("Tâche planifiée %r créée/réparée (%s), identité %r.", task_name, schedule_description, user_id)
 
 
 def delete_task(task_name: str) -> None:
@@ -333,6 +547,15 @@ class ScheduledTaskStatus:
     last_run_time: Optional[str] = None
     last_result: Optional[str] = None
     next_run_time: Optional[str] = None
+    # Mission corrective « Erreur Accès refusé » : identité sous laquelle la
+    # tâche EXISTANTE a été enregistrée (ex. ``POSTE\\jdupont``) — permet de
+    # détecter, avant toute tentative de réparation, qu'une tâche du même
+    # nom appartient à un contexte différent de l'utilisateur courant (autre
+    # compte, ou tâche créée par une version antérieure de StockManager
+    # avant la correction de ce module) ; voir
+    # :func:`_describe_existing_task_conflict`. Jamais utilisé pour
+    # supprimer ou modifier quoi que ce soit automatiquement.
+    run_as_user: Optional[str] = None
 
 
 def query_task_status(task_name: str) -> ScheduledTaskStatus:

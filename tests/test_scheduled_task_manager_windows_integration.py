@@ -76,12 +76,21 @@ def test_create_onlogon_task_is_accepted_by_real_schtasks() -> None:
     """Mission corrective, §3.5 : vérifie réellement que ``schtasks.exe``
     accepte ``/sc onlogon`` sans ``/st`` — jamais vérifié ailleurs que sur
     Windows réel (la construction de la ligne de commande elle-même est
-    déjà testée sans Windows, voir tests/test_scheduled_task_manager.py)."""
+    déjà testée sans Windows, voir tests/test_scheduled_task_manager.py).
+
+    Mission corrective « Erreur Accès refusé de la tâche planifiée Windows » :
+    c'est précisément cette création (``onlogon``) qui échouait avec le
+    code 1 (« Accès refusé ») avant la correction du ``<LogonTrigger>``
+    sans ``<UserId>`` — exécutable depuis une session Windows standard
+    (non administrateur), sans élévation (voir la docstring de module de
+    ``scheduled_task_manager`` pour la cause exacte)."""
     stm.create_or_repair_task(
         _TEST_TASK_NAME, sys.executable, ["--version"], "20:00", schedule=stm.SCHEDULE_ONLOGON,
     )
 
     assert stm.task_exists(_TEST_TASK_NAME) is True
+    status = stm.query_task_status(_TEST_TASK_NAME)
+    assert status.run_as_user is not None and status.run_as_user != ""
 
 
 def test_create_task_with_a_space_in_the_executable_path_and_runs_it_successfully(tmp_path) -> None:
