@@ -962,6 +962,69 @@ def test_create_location_rejects_sous_traitant_tariff_when_not_configured(login_
         )
 
 
+def test_create_location_with_normal_tariff_unaffected_by_multi_price_disabled(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(stack, tarif_jour=Decimal("500"))
+    client = _make_client(stack)
+    stack.parameters.set_multi_price_enabled(False)
+
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id, [LocationLigneInput(article.id, Decimal("1"))]
+    )
+
+    assert location.lignes[0].type_tarif == TypeTarif.NORMAL
+
+
+def test_create_location_rejects_sous_traitant_tariff_when_multi_price_disabled(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(
+        stack, tarif_jour=Decimal("1000"), tarif_location_sous_traitant=Decimal("800")
+    )
+    client = _make_client(stack)
+    stack.parameters.set_multi_price_enabled(False)
+
+    with pytest.raises(ValidationError, match="désactivés"):
+        stack.rentals.create_location(
+            date(2026, 1, 1), client.id,
+            [LocationLigneInput(article.id, Decimal("1"), Decimal("800"), TypeTarif.SOUS_TRAITANT)],
+        )
+
+
+def test_create_location_rejects_autre_tariff_when_multi_price_disabled(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(
+        stack, tarif_jour=Decimal("1000"),
+        tarif_location_autre_min=Decimal("700"), tarif_location_autre_max=Decimal("1100"),
+    )
+    client = _make_client(stack)
+    stack.parameters.set_multi_price_enabled(False)
+
+    with pytest.raises(ValidationError, match="désactivés"):
+        stack.rentals.create_location(
+            date(2026, 1, 1), client.id,
+            [LocationLigneInput(article.id, Decimal("1"), Decimal("900"), TypeTarif.AUTRE)],
+        )
+
+
+def test_disabling_multi_price_never_alters_an_already_recorded_location(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(
+        stack, tarif_jour=Decimal("1000"),
+        tarif_location_autre_min=Decimal("700"), tarif_location_autre_max=Decimal("1100"),
+    )
+    client = _make_client(stack)
+    location = stack.rentals.create_location(
+        date(2026, 1, 1), client.id,
+        [LocationLigneInput(article.id, Decimal("1"), Decimal("900"), TypeTarif.AUTRE)],
+    )
+
+    stack.parameters.set_multi_price_enabled(False)
+
+    reloaded = stack.rentals.get_location(location.id)
+    assert reloaded.lignes[0].type_tarif == TypeTarif.AUTRE
+    assert reloaded.lignes[0].tarif_jour == Decimal("900")
+
+
 def test_create_location_accepts_autre_tariff_inside_interval(login_as) -> None:
     stack, _ = login_as("Administrateur")
     article = _make_rental_article(

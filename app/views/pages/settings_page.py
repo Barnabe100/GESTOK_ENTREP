@@ -39,6 +39,7 @@ from app.services.settings.company_settings_service import (
     CompanySettingsService,
     DEFAULT_RECEIPT_FOOTER,
     SUPPORTED_CURRENCIES,
+    is_multi_price_enabled,
     is_rental_module_enabled,
 )
 from app.utils.exceptions import AppError
@@ -302,8 +303,24 @@ class SettingsPage(QWidget):
         self.locations_module_checkbox = QCheckBox("Activer le module Location", self)
         layout.addWidget(self.locations_module_checkbox)
 
+        # Mission « Gestion configurable des prix multiples » — même
+        # principe exactement que la case ci-dessus (voir
+        # ``is_multi_price_enabled``/``set_multi_price_enabled``) : une
+        # case supplémentaire dans ce même groupe, jamais une nouvelle
+        # section ni une refonte de cette page.
+        self.multi_price_checkbox = QCheckBox("Autoriser plusieurs prix par article", self)
+        layout.addWidget(self.multi_price_checkbox)
+        multi_price_description = QLabel(
+            "Permettre de définir plusieurs prix pour un même article et de sélectionner le "
+            "prix applicable lors d'une vente ou d'une location.", self,
+        )
+        multi_price_description.setWordWrap(True)
+        multi_price_description.setProperty("role", "secondary")
+        layout.addWidget(multi_price_description)
+
         can_update = self._permissions.has_permission("SETTINGS_UPDATE")
         self.locations_module_checkbox.setEnabled(can_update)
+        self.multi_price_checkbox.setEnabled(can_update)
 
         self.save_modules_button = QPushButton("Enregistrer", self)
         self.save_modules_button.setProperty("variant", "primary")
@@ -316,6 +333,7 @@ class SettingsPage(QWidget):
 
     def _load_modules_into_form(self) -> None:
         self.locations_module_checkbox.setChecked(is_rental_module_enabled())
+        self.multi_price_checkbox.setChecked(is_multi_price_enabled())
 
     def _has_ongoing_locations(self) -> bool:
         """Utilisée uniquement pour l'avertissement non bloquant avant une
@@ -349,12 +367,15 @@ class SettingsPage(QWidget):
             ):
                 return False
 
+        multi_price_enabled = self.multi_price_checkbox.isChecked()
         try:
             self._settings_service.set_rental_module_enabled(enabled)
+            self._settings_service.set_multi_price_enabled(multi_price_enabled)
             QMessageBox.information(
                 self, "Paramètres enregistrés",
-                "Le module Location a été mis à jour. Ce changement prendra effet à la "
-                "prochaine ouverture de la fenêtre principale.",
+                "Les modules optionnels ont été mis à jour. Le module Location prendra effet "
+                "à la prochaine ouverture de la fenêtre principale ; le choix des prix "
+                "multiples s'applique immédiatement aux nouvelles ventes et locations.",
             )
         except AppError as exc:
             QMessageBox.warning(self, "Enregistrement refusé", str(exc))

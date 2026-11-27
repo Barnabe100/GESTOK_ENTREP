@@ -7,6 +7,7 @@ from app.resources import APP_ICON_PATH
 from app.services.settings.company_settings_service import (
     DEFAULT_CURRENCY,
     get_effective_currency,
+    is_multi_price_enabled,
     is_rental_module_enabled,
 )
 from app.utils.exceptions import PermissionDeniedError, ValidationError
@@ -347,6 +348,65 @@ def test_rental_module_value_persists_across_reads(login_as, test_settings) -> N
 
     stack.parameters.set_rental_module_enabled(True)
     assert is_rental_module_enabled(test_settings) is True
+
+
+# -- prix multiples par article (mission « Gestion configurable des prix multiples ») ----
+
+
+def test_multi_price_enabled_by_default_when_key_absent(login_as, test_settings) -> None:
+    """Absence de clé = prix multiples actifs : comportement strictement
+    inchangé pour toute installation existante, jamais une restriction
+    silencieuse imposée par une mise à jour."""
+    login_as("Administrateur")
+
+    assert is_multi_price_enabled(test_settings) is True
+
+
+def test_multi_price_enabled_true_after_explicit_activation(login_as, test_settings) -> None:
+    stack, _ = login_as("Administrateur")
+
+    stack.parameters.set_multi_price_enabled(True)
+
+    assert is_multi_price_enabled(test_settings) is True
+
+
+def test_multi_price_disabled_after_explicit_deactivation(login_as, test_settings) -> None:
+    stack, _ = login_as("Administrateur")
+
+    stack.parameters.set_multi_price_enabled(False)
+
+    assert is_multi_price_enabled(test_settings) is False
+
+
+@pytest.mark.parametrize("role_name", ["Gestionnaire de stock", "Vendeur", "Consultation"])
+def test_set_multi_price_enabled_denied_without_settings_update(login_as, test_settings, role_name) -> None:
+    stack, _ = login_as(role_name)
+
+    with pytest.raises(PermissionDeniedError):
+        stack.parameters.set_multi_price_enabled(False)
+
+    assert is_multi_price_enabled(test_settings) is True
+
+
+def test_multi_price_value_persists_across_reads(login_as, test_settings) -> None:
+    stack, _ = login_as("Administrateur")
+
+    stack.parameters.set_multi_price_enabled(False)
+    assert is_multi_price_enabled(test_settings) is False
+
+    stack.parameters.set_multi_price_enabled(True)
+    assert is_multi_price_enabled(test_settings) is True
+
+
+def test_multi_price_setting_is_independent_from_rental_module_setting(login_as, test_settings) -> None:
+    """Les deux cases de « Modules optionnels » restent deux clés
+    distinctes — désactiver l'une ne doit jamais affecter l'autre."""
+    stack, _ = login_as("Administrateur")
+
+    stack.parameters.set_rental_module_enabled(False)
+
+    assert is_rental_module_enabled(test_settings) is False
+    assert is_multi_price_enabled(test_settings) is True
 
 
 # -- pied de reçu (Lot 21 — reçu unifié) ------------------------------------------------

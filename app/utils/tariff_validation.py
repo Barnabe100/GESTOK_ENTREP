@@ -24,6 +24,7 @@ def validate_chosen_tariff(
     intervalle_max: Optional[Decimal],
     article_reference: str,
     label: str,
+    multi_price_enabled: bool = True,
 ) -> None:
     """``montant`` est le ``prix_unitaire``/``tarif_jour`` réellement saisi
     sur la ligne — jamais recalculé ici, seulement vérifié.
@@ -33,7 +34,27 @@ def validate_chosen_tariff(
     - AUTRE : refusé si aucun intervalle n'est configuré pour l'article, ou
       si le montant choisi en est hors bornes (bornes inclusives).
     - NORMAL : aucune contrainte supplémentaire (même liberté qu'avant
-      cette mission — ``montant`` reste une vraie saisie utilisateur)."""
+      cette mission — ``montant`` reste une vraie saisie utilisateur).
+
+    Mission « Gestion configurable des prix multiples » : ``multi_price_enabled``
+    (défaut ``True`` — comportement inchangé pour tout appelant qui ne le
+    précise pas encore explicitement) reflète
+    ``company_settings_service.is_multi_price_enabled()``, décidé une fois
+    par l'appelant (``SaleService``/``LocationService``) avant d'appeler
+    cette fonction, jamais relu ici. Lorsqu'il est ``False``, tout
+    ``type_tarif`` autre que ``NORMAL`` est refusé d'emblée — avant même de
+    vérifier si un tarif sous-traitant ou un intervalle « Autre » existe
+    pour l'article, puisque ces tarifs supplémentaires ne doivent alors
+    jamais être sélectionnables, qu'ils soient ou non configurés. Cette
+    fonction restant l'autorité unique appelée par les deux services avant
+    toute création de ligne (voir la docstring de module), c'est ici que la
+    règle est réellement non contournable — y compris par un appel direct
+    du service, sans passer par l'interface."""
+    if not multi_price_enabled and type_tarif != TypeTarif.NORMAL:
+        raise ValidationError(
+            "Les tarifs multiples sont désactivés pour cette installation : seul le "
+            f"{label} normal peut être appliqué pour « {article_reference} »."
+        )
     if type_tarif == TypeTarif.SOUS_TRAITANT and prix_sous_traitant is None:
         raise ValidationError(
             f"Aucun {label} sous-traitant n'est configuré pour « {article_reference} »."

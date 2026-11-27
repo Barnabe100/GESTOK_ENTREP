@@ -72,7 +72,7 @@ from app.services.clients.client_service import ClientService
 from app.services.documents.receipt_document import ReceiptFormat, build_receipt_document
 from app.services.documents.receipt_service import ReceiptService
 from app.services.sales.sale_service import SaleService, VenteLigneInput, VenteSummary
-from app.services.settings.company_settings_service import get_effective_currency
+from app.services.settings.company_settings_service import get_effective_currency, is_multi_price_enabled
 from app.utils.exceptions import AppError, ValidationError
 from app.utils.money import format_money
 from app.utils.pdf_export import build_page_layout
@@ -1110,6 +1110,17 @@ class SalesPage(QWidget):
         except AppError as exc:
             QMessageBox.warning(self, "Opération refusée", str(exc))
             return None
+        # Mission « Gestion configurable des prix multiples » : aucun
+        # sélecteur de tarif proposé lorsque les prix multiples sont
+        # désactivés pour cette installation — le prix normal de l'article
+        # s'applique automatiquement, exactement comme avant l'introduction
+        # du choix du tarif (Mission 5). ``validate_chosen_tariff`` refuse
+        # de toute façon tout autre choix côté service (voir
+        # ``SaleService._build_lignes``) : ce raccourci évite seulement
+        # d'ouvrir un dialogue dont le seul choix possible serait déjà
+        # imposé.
+        if not is_multi_price_enabled():
+            return TypeTarif.NORMAL, article.prix_vente
         dialog = TariffChoiceDialog(
             article_label, article.prix_vente, article.prix_sous_traitant,
             article.prix_autre_min, article.prix_autre_max, self._currency_code,

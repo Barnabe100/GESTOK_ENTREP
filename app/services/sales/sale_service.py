@@ -76,6 +76,7 @@ from app.repositories.counter_repository import CounterRepository
 from app.repositories.mouvement_repository import MouvementRepository
 from app.repositories.vente_repository import VenteRepository
 from app.services.auth.permission_service import PermissionService
+from app.services.settings.company_settings_service import is_multi_price_enabled
 from app.services.stock.movement_summary import MouvementSummary
 from app.services.stock.stock_service import StockService
 from app.utils.atomic_transition import apply_atomic_status_transition
@@ -399,6 +400,13 @@ class SaleService:
 
     def _build_lignes(self, session, lines: Sequence[VenteLigneInput]) -> list[VenteLigne]:
         article_repo = ArticleRepository(session)
+        # Mission « Gestion configurable des prix multiples » : lu une seule
+        # fois par appel, jamais par ligne (même configuration pour tout le
+        # document) — autorité unique appliquée par ``validate_chosen_tariff``
+        # ci-dessous, jamais contournable depuis l'UI ni par un appel direct
+        # de ce service (voir la docstring de module de
+        # ``app.utils.tariff_validation``).
+        multi_price_enabled = is_multi_price_enabled(self._settings)
         lignes: list[VenteLigne] = []
         for line in lines:
             quantite = _validate_positive_quantity(line.quantite, "quantité")
@@ -421,6 +429,7 @@ class SaleService:
                 intervalle_max=article.prix_autre_max,
                 article_reference=article.reference,
                 label="prix",
+                multi_price_enabled=multi_price_enabled,
             )
 
             lignes.append(

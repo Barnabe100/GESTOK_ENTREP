@@ -525,6 +525,73 @@ def test_rental_tariff_fields_follow_tarif_location_jour_enabled_state(qtbot) ->
     assert dialog.tarif_location_autre_max_edit.isEnabled() is True
 
 
+def test_multi_price_enabled_true_by_default_keeps_current_behavior(qtbot) -> None:
+    """Mission « Gestion configurable des prix multiples » : aucun
+    appelant existant (ni cette suite de tests) qui ne précise pas
+    ``multi_price_enabled`` ne doit voir son comportement changer —
+    défaut strictement équivalent à l'ancien comportement."""
+    dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, _UNITES, is_edit=False)
+    qtbot.addWidget(dialog)
+
+    assert dialog.prix_sous_traitant_edit.isEnabled() is True
+    assert dialog.prix_autre_min_edit.isEnabled() is True
+    assert dialog.prix_autre_max_edit.isEnabled() is True
+
+
+def test_multi_price_disabled_disables_sale_alternative_tariff_fields(qtbot) -> None:
+    dialog = ArticleFormDialog(
+        _CATEGORIES, _SUPPLIERS, _UNITES, is_edit=False, multi_price_enabled=False,
+    )
+    qtbot.addWidget(dialog)
+
+    assert dialog.prix_sous_traitant_edit.isEnabled() is False
+    assert dialog.prix_autre_min_edit.isEnabled() is False
+    assert dialog.prix_autre_max_edit.isEnabled() is False
+    # Toujours sélectionnable : c'est le seul tarif qui reste applicable.
+    assert dialog.prix_vente_edit.isEnabled() is True
+
+
+def test_multi_price_disabled_disables_rental_alternative_tariff_fields_even_in_location_mode(
+    qtbot,
+) -> None:
+    """Les tarifs alternatifs de location restent désactivés même en mode
+    Location — contrairement au mode Vente/Location lui-même, cette
+    restriction ne dépend d'aucun autre champ."""
+    dialog = ArticleFormDialog(
+        _CATEGORIES, _SUPPLIERS, _UNITES, is_edit=False, multi_price_enabled=False,
+    )
+    qtbot.addWidget(dialog)
+    index_location = dialog.mode_gestion_combo.findData(ModeGestionArticle.LOCATION)
+    dialog.mode_gestion_combo.setCurrentIndex(index_location)
+
+    assert dialog.tarif_location_jour_edit.isEnabled() is True  # le tarif normal reste applicable.
+    assert dialog.tarif_location_sous_traitant_edit.isEnabled() is False
+    assert dialog.tarif_location_autre_min_edit.isEnabled() is False
+    assert dialog.tarif_location_autre_max_edit.isEnabled() is False
+
+
+def test_multi_price_disabled_never_clears_already_configured_alternative_tariffs(qtbot) -> None:
+    """§9 du mandat : « ne supprimer aucun tarif » — des tarifs déjà
+    enregistrés sur l'article restent visibles (désactivés, jamais
+    effacés) à l'ouverture du formulaire en mode prix unique, et
+    ``values()`` continue de les renvoyer tels quels."""
+    initial = {
+        "reference": "ART-TARIF", "designation": "Article", "category_id": 1,
+        "prix_sous_traitant": Decimal("400000"), "prix_autre_min": Decimal("350000"),
+        "prix_autre_max": Decimal("550000"),
+    }
+    dialog = ArticleFormDialog(
+        _CATEGORIES, _SUPPLIERS, _UNITES, initial, is_edit=True, multi_price_enabled=False,
+    )
+    qtbot.addWidget(dialog)
+
+    assert dialog.prix_sous_traitant_edit.isEnabled() is False
+    assert dialog.prix_sous_traitant_edit.text() == "400000"
+    assert dialog.values()["prix_sous_traitant"] == "400000"
+    assert dialog.values()["prix_autre_min"] == "350000"
+    assert dialog.values()["prix_autre_max"] == "550000"
+
+
 def test_alternative_tariff_fields_never_cleared_by_mode_switch(qtbot) -> None:
     dialog = ArticleFormDialog(_CATEGORIES, _SUPPLIERS, _UNITES, is_edit=False)
     qtbot.addWidget(dialog)

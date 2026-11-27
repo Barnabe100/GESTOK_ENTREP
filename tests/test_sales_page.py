@@ -995,6 +995,32 @@ def test_adding_article_with_autre_price_choice(qtbot, login_as, monkeypatch) ->
     assert page._caisse_lines[0]["prix_unitaire"] == Decimal("450000")
 
 
+def test_adding_article_with_multi_price_disabled_never_opens_tariff_dialog(qtbot, login_as, monkeypatch) -> None:
+    """Mission « Gestion configurable des prix multiples » : aucun
+    sélecteur de tarif proposé lorsque les prix multiples sont désactivés
+    — le prix normal s'applique directement, même si un tarif
+    sous-traitant est par ailleurs configuré pour l'article."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(
+        stack, reference="ART-EAU", prix_vente=Decimal("500000"), prix_sous_traitant=Decimal("400000"),
+    )
+    stack.parameters.set_multi_price_enabled(False)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+
+    def _fail_if_called(self):
+        raise AssertionError("TariffChoiceDialog ne doit jamais s'ouvrir en mode prix unique.")
+
+    monkeypatch.setattr("app.views.pages.sales_page.TariffChoiceDialog.exec", _fail_if_called)
+
+    page.caisse_search_edit.setText("eau")
+    page._on_caisse_search_result_activated(page.caisse_search_results.item(0))
+
+    assert page._caisse_lines[0]["type_tarif"] == TypeTarif.NORMAL
+    assert page._caisse_lines[0]["prix_unitaire"] == Decimal("500000")
+
+
 def test_cancelling_tariff_choice_adds_no_line(qtbot, login_as, monkeypatch) -> None:
     stack, _ = login_as("Administrateur")
     _make_article(stack, reference="ART-EAU")

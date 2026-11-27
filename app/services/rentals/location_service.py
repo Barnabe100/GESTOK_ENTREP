@@ -71,6 +71,7 @@ from app.repositories.client_repository import ClientRepository
 from app.repositories.counter_repository import CounterRepository
 from app.repositories.location_repository import LocationRepository
 from app.services.auth.permission_service import PermissionService
+from app.services.settings.company_settings_service import is_multi_price_enabled
 from app.services.stock.stock_service import StockService
 from app.utils.atomic_transition import apply_atomic_status_transition
 from app.utils.dates import validate_not_future_date
@@ -360,6 +361,9 @@ class LocationService:
 
     def _build_lignes(self, session, lines: Sequence[LocationLigneInput]) -> list[LocationLigne]:
         article_repo = ArticleRepository(session)
+        # Mission « Gestion configurable des prix multiples » : voir le
+        # commentaire équivalent dans ``SaleService._build_lignes``.
+        multi_price_enabled = is_multi_price_enabled(self._settings)
         lignes: list[LocationLigne] = []
         for line in lines:
             quantite = _validate_positive_quantity(line.quantite, "quantité")
@@ -389,6 +393,7 @@ class LocationService:
                 intervalle_max=article.tarif_location_autre_max,
                 article_reference=article.reference,
                 label="tarif de location",
+                multi_price_enabled=multi_price_enabled,
             )
 
             lignes.append(

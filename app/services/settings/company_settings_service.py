@@ -49,6 +49,20 @@ _KEY_LOGO_PATH = "entreprise.logo_path"
 # déjà utilisé.
 _KEY_LOCATIONS_ACTIF = "locations.actif"
 
+# Mission « Gestion configurable des prix multiples » — même principe
+# exactement que ``_KEY_LOCATIONS_ACTIF`` ci-dessus (table clé-valeur
+# ``parametres`` existante, aucune nouvelle structure) : décide si une
+# organisation autorise plusieurs tarifs par article (sous-traitant, « Autre
+# prix »/« Autre tarif de location ») ou un unique tarif par contexte
+# d'opération (vente/location). Absence de clé = prix multiples actifs :
+# comportement strictement inchangé pour toute installation existante,
+# jamais une restriction silencieuse imposée par une mise à jour. Lu par
+# ``SaleService``/``LocationService`` (via ``validate_chosen_tariff``) pour
+# refuser tout ``type_tarif`` autre que NORMAL quand désactivé — jamais
+# contournable depuis l'UI ni par un appel direct du service (voir
+# ``app.utils.tariff_validation``).
+_KEY_PRIX_MULTIPLES_ACTIF = "articles.prix_multiples_actif"
+
 # Lot 21 — reçu unifié : phrase de pied de reçu configurable. Stockée via le
 # même mécanisme clé-valeur que le reste de ce service (aucune migration).
 # Convention distincte de ``_clean_optional`` (jamais de conversion "" -> None) :
@@ -149,6 +163,20 @@ def is_rental_module_enabled(settings: Optional[Settings] = None) -> bool:
     effective_settings = settings or get_settings()
     with session_scope(effective_settings) as session:
         valeur = ParameterRepository(session).get_value(_KEY_LOCATIONS_ACTIF)
+    return (valeur or "true") == "true"
+
+
+def is_multi_price_enabled(settings: Optional[Settings] = None) -> bool:
+    """Les prix multiples (sous-traitant, « Autre prix »/« Autre tarif de
+    location ») sont-ils autorisés pour cette organisation ? Fonction
+    autonome, sans vérification de permission, symétrique de
+    ``is_rental_module_enabled()`` : appelée par ``SaleService``/
+    ``LocationService`` pour tout utilisateur effectuant une vente ou une
+    location, qu'il dispose ou non de ``SETTINGS_VIEW``. Absence de clé =
+    prix multiples actifs (voir ``_KEY_PRIX_MULTIPLES_ACTIF``)."""
+    effective_settings = settings or get_settings()
+    with session_scope(effective_settings) as session:
+        valeur = ParameterRepository(session).get_value(_KEY_PRIX_MULTIPLES_ACTIF)
     return (valeur or "true") == "true"
 
 
@@ -365,6 +393,28 @@ class CompanySettingsService:
             details=f"module Location {'activé' if enabled else 'désactivé'}",
         )
         logger.info("Module Location %s.", "activé" if enabled else "désactivé")
+
+    def set_multi_price_enabled(self, enabled: bool) -> None:
+        """Active/désactive les prix multiples par article pour cette
+        organisation — même principe que :meth:`set_rental_module_enabled` :
+        ne supprime et ne modifie jamais aucun tarif déjà enregistré sur un
+        article, ni aucune ligne de vente/location déjà historisée (voir
+        ``app.utils.tariff_validation.validate_chosen_tariff``, seule
+        autorité qui applique réellement cette restriction, et uniquement
+        aux NOUVELLES lignes). Réactiver rend immédiatement de nouveau
+        sélectionnables les tarifs sous-traitant/« Autre » déjà configurés
+        sur les articles, sans aucune ressaisie — ils n'ont jamais été
+        touchés par la désactivation."""
+        self._permissions.require_permission("SETTINGS_UPDATE")
+
+        with session_scope(self._settings) as session:
+            ParameterRepository(session).set_value(_KEY_PRIX_MULTIPLES_ACTIF, "true" if enabled else "false")
+
+        self._audit(
+            "SETTINGS_UPDATE", ResultatAudit.SUCCES,
+            details=f"prix multiples {'activés' if enabled else 'désactivés'}",
+        )
+        logger.info("Prix multiples par article %s.", "activés" if enabled else "désactivés")
 
     # -- pied de reçu (Lot 21 — reçu unifié) ----------------------------------------
 

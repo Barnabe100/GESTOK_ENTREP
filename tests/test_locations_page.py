@@ -825,6 +825,28 @@ def test_adding_article_with_autre_tariff_choice(qtbot, login_as, monkeypatch) -
     assert page._caisse_lines[0]["tarif_jour"] == Decimal("900")
 
 
+def test_adding_article_with_multi_price_disabled_never_opens_tariff_dialog(qtbot, login_as, monkeypatch) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_rental_article(
+        stack, tarif_jour=Decimal("1000"), tarif_location_sous_traitant=Decimal("800"),
+    )
+    stack.parameters.set_multi_price_enabled(False)
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page._on_add_clicked()
+
+    def _fail_if_called(self):
+        raise AssertionError("TariffChoiceDialog ne doit jamais s'ouvrir en mode prix unique.")
+
+    monkeypatch.setattr("app.views.pages.locations_page.TariffChoiceDialog.exec", _fail_if_called)
+
+    page.caisse_search_edit.setText(article.reference)
+    page._on_caisse_search_result_activated(page.caisse_search_results.item(0))
+
+    assert page._caisse_lines[0]["type_tarif"] == TypeTarif.NORMAL
+    assert page._caisse_lines[0]["tarif_jour"] == Decimal("1000")
+
+
 def test_cancelling_tariff_choice_adds_no_line(qtbot, login_as, monkeypatch) -> None:
     stack, _ = login_as("Administrateur")
     article = _make_rental_article(stack)

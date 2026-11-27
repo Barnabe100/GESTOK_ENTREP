@@ -118,11 +118,18 @@ class ArticleFormDialog(QDialog):
         on_create_unite: Optional[Callable[[], Optional[str]]] = None,
         on_delete_unite: Optional[Callable[[str], Optional[tuple[list[str], Optional[str]]]]] = None,
         on_submit: Optional[Callable[[dict], FormSubmitResult]] = None,
+        multi_price_enabled: bool = True,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         initial = initial or {}
         self.is_edit = is_edit
+        # Mission « Gestion configurable des prix multiples » : décidé une
+        # fois par l'appelant (``is_multi_price_enabled()``, voir
+        # ``ArticlesPage``), jamais relu ici. ``True`` par défaut — aucun
+        # appelant existant (tests compris) qui ne précise pas ce paramètre
+        # ne voit son comportement changer.
+        self._multi_price_enabled = multi_price_enabled
         self._on_create_unite = on_create_unite
         self._on_delete_unite = on_delete_unite
         # Mission 5.2, Problème C : si fourni, appelé AVANT tout ``accept()``
@@ -547,15 +554,26 @@ class ArticleFormDialog(QDialog):
         self.prix_vente_edit.setEnabled(not is_location)
         # Mission 5 : les tarifs alternatifs suivent le même état que le
         # tarif normal qu'ils complètent — jamais vidés, seulement
-        # désactivés dans le mode où ils sont sans objet.
+        # désactivés dans le mode où ils sont sans objet. Mission « Gestion
+        # configurable des prix multiples » : désactivés de la même façon
+        # (jamais vidés — voir la docstring de cette méthode) dès que les
+        # prix multiples sont désactivés pour cette installation, quel que
+        # soit le mode par ailleurs.
+        extra_price_placeholder = (
+            "Facultatif" if self._multi_price_enabled else "Prix multiples désactivés pour cette installation"
+        )
         for edit in (self.prix_sous_traitant_edit, self.prix_autre_min_edit, self.prix_autre_max_edit):
-            edit.setEnabled(not is_location)
+            edit.setEnabled(not is_location and self._multi_price_enabled)
+            if not self._multi_price_enabled:
+                edit.setPlaceholderText(extra_price_placeholder)
         for edit in (
             self.tarif_location_sous_traitant_edit,
             self.tarif_location_autre_min_edit,
             self.tarif_location_autre_max_edit,
         ):
-            edit.setEnabled(is_location)
+            edit.setEnabled(is_location and self._multi_price_enabled)
+            if not self._multi_price_enabled:
+                edit.setPlaceholderText(extra_price_placeholder)
         # Un changement de mode peut rendre pertinent un avertissement
         # jusqu'ici masqué par un champ désactivé (ou l'inverse) — toujours
         # recalculé ici, jamais laissé dans un état obsolète.

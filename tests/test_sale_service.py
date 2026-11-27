@@ -1349,6 +1349,99 @@ def test_create_sale_rejects_sous_traitant_tariff_when_not_configured(login_as) 
         )
 
 
+def test_create_sale_with_normal_tariff_unaffected_by_multi_price_disabled(login_as) -> None:
+    """Mission « Gestion configurable des prix multiples » : le tarif
+    NORMAL reste utilisable sans aucune restriction supplémentaire une
+    fois les prix multiples désactivés — c'est précisément le mode « prix
+    unique », pas un blocage de la vente elle-même."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(stack, stock_initial=Decimal("10"), prix_vente=Decimal("150"))
+    stack.parameters.set_multi_price_enabled(False)
+
+    sale = stack.sales.create_sale(
+        date.today(), [VenteLigneInput(article.id, Decimal("1"), Decimal("150"))]
+    )
+
+    assert sale.lignes[0].type_tarif == TypeTarif.NORMAL
+
+
+def test_create_sale_rejects_sous_traitant_tariff_when_multi_price_disabled(login_as) -> None:
+    """Même si le prix sous-traitant est bien configuré pour l'article, il
+    ne doit jamais être sélectionnable une fois les prix multiples
+    désactivés — refus non contournable, vérifié directement au niveau du
+    service (donc valable aussi bien depuis l'interface que pour tout
+    appel direct, ex. API future)."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(
+        stack, stock_initial=Decimal("10"), prix_vente=Decimal("500000"),
+        prix_sous_traitant=Decimal("400000"),
+    )
+    stack.parameters.set_multi_price_enabled(False)
+
+    with pytest.raises(ValidationError, match="désactivés"):
+        stack.sales.create_sale(
+            date.today(),
+            [VenteLigneInput(article.id, Decimal("1"), Decimal("400000"), TypeTarif.SOUS_TRAITANT)],
+        )
+
+
+def test_create_sale_rejects_autre_price_when_multi_price_disabled(login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    article = _make_article(
+        stack, stock_initial=Decimal("10"), prix_vente=Decimal("500000"),
+        prix_autre_min=Decimal("350000"), prix_autre_max=Decimal("550000"),
+    )
+    stack.parameters.set_multi_price_enabled(False)
+
+    with pytest.raises(ValidationError, match="désactivés"):
+        stack.sales.create_sale(
+            date.today(),
+            [VenteLigneInput(article.id, Decimal("1"), Decimal("450000"), TypeTarif.AUTRE)],
+        )
+
+
+def test_disabling_multi_price_never_alters_an_already_recorded_sale(login_as) -> None:
+    """§9 du mandat : « ne pas altérer les anciennes ventes » — une vente
+    déjà enregistrée avec un tarif « Autre prix » doit conserver ce tarif
+    et ce montant tels quels après désactivation des prix multiples,
+    jamais recalculée ni invalidée rétroactivement."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(
+        stack, stock_initial=Decimal("10"), prix_vente=Decimal("500000"),
+        prix_autre_min=Decimal("350000"), prix_autre_max=Decimal("550000"),
+    )
+    sale = stack.sales.create_sale(
+        date.today(),
+        [VenteLigneInput(article.id, Decimal("1"), Decimal("450000"), TypeTarif.AUTRE)],
+    )
+
+    stack.parameters.set_multi_price_enabled(False)
+
+    reloaded = stack.sales.get_sale(sale.id)
+    assert reloaded.lignes[0].type_tarif == TypeTarif.AUTRE
+    assert reloaded.lignes[0].prix_unitaire == Decimal("450000")
+
+
+def test_reenabling_multi_price_restores_access_to_sous_traitant_tariff(login_as) -> None:
+    """§9 du mandat : réactiver le mode multi-prix rend de nouveau
+    sélectionnable un tarif déjà configuré sur l'article, sans aucune
+    ressaisie."""
+    stack, _ = login_as("Administrateur")
+    article = _make_article(
+        stack, stock_initial=Decimal("10"), prix_vente=Decimal("500000"),
+        prix_sous_traitant=Decimal("400000"),
+    )
+    stack.parameters.set_multi_price_enabled(False)
+    stack.parameters.set_multi_price_enabled(True)
+
+    sale = stack.sales.create_sale(
+        date.today(),
+        [VenteLigneInput(article.id, Decimal("1"), Decimal("400000"), TypeTarif.SOUS_TRAITANT)],
+    )
+
+    assert sale.lignes[0].type_tarif == TypeTarif.SOUS_TRAITANT
+
+
 def test_create_sale_accepts_autre_price_inside_interval(login_as) -> None:
     stack, _ = login_as("Administrateur")
     article = _make_article(

@@ -38,7 +38,7 @@ from app.models.enums import ModeGestionArticle
 from app.services.articles.article_service import ArticleService
 from app.services.auth.permission_service import PermissionService
 from app.services.categories.category_service import CategoryService
-from app.services.settings.company_settings_service import get_effective_currency
+from app.services.settings.company_settings_service import get_effective_currency, is_multi_price_enabled
 from app.services.suppliers.supplier_service import SupplierService
 from app.services.units.unite_article_service import UniteArticleService
 from app.utils.exceptions import AppError, ValidationError
@@ -442,6 +442,7 @@ class ArticlesPage(QWidget):
             on_create_unite=self._create_unite_from_form,
             on_delete_unite=self._delete_unite_from_form,
             on_submit=on_submit,
+            multi_price_enabled=is_multi_price_enabled(),
             parent=self,
         )
         if dialog.exec() == QDialog.DialogCode.Accepted:

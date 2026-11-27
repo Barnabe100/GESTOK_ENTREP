@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QMessageBox
 
 from app.models.enums import ModeGestionArticle
 from app.services.rentals.location_service import LocationLigneInput
-from app.services.settings.company_settings_service import is_rental_module_enabled
+from app.services.settings.company_settings_service import is_multi_price_enabled, is_rental_module_enabled
 from app.views.pages.settings_page import SettingsPage
 from tests.ui_test_helpers import (
     assert_field_is_marked_required,
@@ -363,7 +363,55 @@ def test_modules_controls_disabled_without_settings_update(qtbot, login_as, role
     qtbot.addWidget(page)
 
     assert page.locations_module_checkbox.isEnabled() is False
+    assert page.multi_price_checkbox.isEnabled() is False
     assert page.save_modules_button.isEnabled() is False
+
+
+# -- prix multiples par article (mission « Gestion configurable des prix multiples ») ----
+
+
+def test_multi_price_checkbox_reflects_real_value_at_opening(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    stack.parameters.set_multi_price_enabled(False)
+
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.multi_price_checkbox.isChecked() is False
+
+
+def test_multi_price_checkbox_defaults_to_checked_when_key_absent(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    assert page.multi_price_checkbox.isChecked() is True
+
+
+def test_save_modules_updates_multi_price_setting(qtbot, login_as, test_settings) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    page.multi_price_checkbox.setChecked(False)
+    result = page._save_modules()
+
+    assert result is True
+    assert is_multi_price_enabled(test_settings) is False
+
+
+def test_save_modules_does_not_couple_the_two_checkboxes(qtbot, login_as, test_settings) -> None:
+    """Les deux cases restent deux réglages indépendants — décocher l'une
+    sans toucher l'autre ne doit modifier que la clé correspondante."""
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    page.multi_price_checkbox.setChecked(False)
+    page._save_modules()
+
+    assert is_multi_price_enabled(test_settings) is False
+    assert is_rental_module_enabled(test_settings) is True
 
 
 def test_warning_shown_when_deactivating_with_ongoing_locations(qtbot, login_as, monkeypatch, test_settings) -> None:
@@ -515,7 +563,8 @@ def test_settings_page_widgets_still_directly_accessible_after_scroll_wrap(qtbot
         page.nom_edit, page.adresse_edit, page.telephone_edit, page.email_edit, page.devise_combo,
         page.save_profile_button, page.logo_preview_label, page.choose_logo_button, page.clear_logo_button,
         page.receipt_footer_edit, page.save_receipt_footer_button,
-        page.locations_module_checkbox, page.save_modules_button, page.generate_recovery_code_button,
+        page.locations_module_checkbox, page.multi_price_checkbox, page.save_modules_button,
+        page.generate_recovery_code_button,
     ):
         assert widget is not None
         assert widget.window() is page.window()
