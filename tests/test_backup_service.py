@@ -1275,6 +1275,148 @@ def test_describe_backup_status_detects_encrypted_archive_altered_after_creation
     assert report.manifest_hash_matches is False
 
 
+def test_describe_backup_status_reports_valid_for_an_intact_encrypted_archive(login_as, tmp_path) -> None:
+    """Confirme que le correctif du 28/11/2026 (voir ci-dessous) ne change
+    rien au cas normal : une archive chiffrée intacte, dont l'empreinte et
+    la vérification structurelle réussissent toutes les deux, reste
+    « Valide » — une empreinte correcte ne suffit jamais seule (elle
+    n'est ici qu'une des deux conditions)."""
+    stack, _ = login_as("Administrateur")
+    stack.backups._encryption_vault = _FakeEncryptionVault()
+    destination = tmp_path / "backups"
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00",
+        destination=str(destination), retention=30, encryption_enabled=True,
+    )
+    result = stack.backups.create_manual_backup()
+
+    report = stack.backups.describe_backup_status(result.file_path)
+
+    assert report.valid is True
+    assert report.label == "Valide"
+    assert report.errors == []
+    assert report.manifest_present is True
+    assert report.manifest_hash_matches is True
+
+
+def test_describe_backup_status_reports_unverifiable_for_encrypted_archive_when_hash_unchanged_but_recheck_fails(
+    login_as, tmp_path, monkeypatch
+) -> None:
+    """Correctif du 28/11/2026 : reproduit l'audit qui a montré que
+    ``manifest_hash_matches`` restait toujours ``None`` pour une archive
+    CHIFFRÉE (la condition ne calculait cette comparaison que pour les
+    archives en clair), si bien qu'une archive chiffrée intacte dont la
+    revérification structurelle échouait plus tard était annoncée
+    « Invalide » au lieu de « Intégrité non vérifiable » — alors que
+    cette même empreinte est pourtant bien vérifiée, avant tout
+    déchiffrement, par ``_resolve_plaintext_path``. Mirroir exact de
+    ``test_describe_backup_status_reports_unverifiable_when_hash_unchanged_but_recheck_fails``
+    pour une archive chiffrée : c'est la régression directe du défaut
+    corrigé."""
+    stack, _ = login_as("Administrateur")
+    stack.backups._encryption_vault = _FakeEncryptionVault()
+    destination = tmp_path / "backups"
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00",
+        destination=str(destination), retention=30, encryption_enabled=True,
+    )
+    result = stack.backups.create_manual_backup()
+
+    fake_failure = backup_engine.BackupVerification(
+        valid=False, integrity_ok=False, tables_ok=False, alembic_version=None,
+        errors=["pg_restore introuvable avec cette version locale."],
+    )
+    monkeypatch.setattr(backup_engine, "verify_backup_file", lambda path: fake_failure)
+
+    report = stack.backups.describe_backup_status(result.file_path)
+
+    assert report.valid is False
+    assert report.label == "Intégrité non vérifiable"
+    assert report.manifest_hash_matches is True
+    assert any("pg_restore introuvable" in error for error in report.errors)
+    assert any("l'archive elle-même n'a donc pas changé" in error for error in report.errors)
+
+
+def test_describe_backup_status_never_declares_valid_from_hash_alone_when_structure_fails_and_hash_is_wrong(
+    login_as, tmp_path
+) -> None:
+    """Exigence explicite du mandat correctif (§2) : une empreinte
+    correcte ne doit jamais, à elle seule, faire passer une archive pour
+    « Valide » ; symétriquement, une empreinte incorrecte reste
+    « Invalide » même si on ne tente jamais de vérification structurelle
+    (celle-ci n'est alors pas pertinente, le défaut étant déjà prouvé par
+    l'empreinte seule) — jamais confondue avec « Intégrité non
+    vérifiable »."""
+    stack, _ = login_as("Administrateur")
+    stack.backups._encryption_vault = _FakeEncryptionVault()
+    destination = tmp_path / "backups"
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00",
+        destination=str(destination), retention=30, encryption_enabled=True,
+    )
+    result = stack.backups.create_manual_backup()
+    with result.file_path.open("ab") as handle:
+        handle.write(b"donnees ajoutees apres chiffrement")
+
+    report = stack.backups.describe_backup_status(result.file_path)
+
+    assert report.valid is False
+    assert report.label == "Invalide"
+    assert report.manifest_hash_matches is False
+
+
+def test_describe_backup_status_propagates_missing_encryption_key_distinctly(login_as, tmp_path) -> None:
+    """§5 du mandat correctif : une clé de chiffrement absente sur ce
+    poste doit rester identifiable comme telle (jamais reclassée en
+    « Invalide » ou « Intégrité non vérifiable », qui laisseraient croire
+    à un problème avec l'archive elle-même plutôt qu'avec le poste) —
+    ``NoEncryptionKeyConfiguredError`` n'est jamais intercepté par
+    ``describe_backup_status``, qui ne gère que ``ValidationError``."""
+    from app.services.backups.archive_encryption import NoEncryptionKeyConfiguredError
+
+    stack, _ = login_as("Administrateur")
+    stack.backups._encryption_vault = _FakeEncryptionVault()
+    destination = tmp_path / "backups"
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00",
+        destination=str(destination), retention=30, encryption_enabled=True,
+    )
+    result = stack.backups.create_manual_backup()
+    # Simule un autre poste, ou une clé perdue : le coffre ne contient plus
+    # aucune clé (jamais régénérée automatiquement, voir §6 du mandat).
+    stack.backups._encryption_vault = _FakeEncryptionVault()
+
+    with pytest.raises(NoEncryptionKeyConfiguredError):
+        stack.backups.describe_backup_status(result.file_path)
+
+
+def test_describe_backup_status_propagates_decryption_error_distinctly(login_as, tmp_path) -> None:
+    """§5 du mandat correctif : un jeton qui ne se déchiffre pas avec la
+    clé localement configurée (mauvaise clé) doit rester une erreur de
+    déchiffrement, jamais reclassée en « Invalide » (qui impliquerait une
+    archive prouvée altérée par son empreinte, ce qui n'est pas le cas
+    ici) ni en « Intégrité non vérifiable » — ``ArchiveEncryptionError``
+    n'est jamais intercepté par ``describe_backup_status``."""
+    from app.services.backups import archive_encryption
+
+    stack, _ = login_as("Administrateur")
+    stack.backups._encryption_vault = _FakeEncryptionVault()
+    destination = tmp_path / "backups"
+    stack.backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00",
+        destination=str(destination), retention=30, encryption_enabled=True,
+    )
+    result = stack.backups.create_manual_backup()
+    # Simule une clé différente configurée sur ce poste (jamais régénérée
+    # automatiquement) : le jeton existant ne lui correspond plus.
+    wrong_key_vault = _FakeEncryptionVault()
+    archive_encryption.ensure_encryption_key(wrong_key_vault)
+    stack.backups._encryption_vault = wrong_key_vault
+
+    with pytest.raises(archive_encryption.ArchiveEncryptionError):
+        stack.backups.describe_backup_status(result.file_path)
+
+
 # -- mission corrective §3.2/§3.9 : restauration atomique --------------------------
 
 

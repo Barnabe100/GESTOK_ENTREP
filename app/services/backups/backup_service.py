@@ -847,14 +847,12 @@ class BackupService:
         Complète aussi la vérification structurelle (``pg_restore
         --list``/intégrité SQLite, inchangée) par une comparaison
         d'empreinte manifeste -> fichier **pour toute archive portant un
-        manifeste, chiffrée ou non** (jusqu'ici réservée aux seules
-        archives chiffrées, voir :meth:`_resolve_plaintext_path`) : une
-        archive modifiée après sa création est ainsi désormais détectée
-        même sans chiffrement. Une archive ANCIENNE sans manifeste n'est
-        jamais déclarée corrompue de ce seul fait (§4 du mandat,
-        « compatibilité avec les anciennes archives ») — seule la
-        vérification structurelle décide alors, exactement comme avant ce
-        correctif.
+        manifeste, chiffrée ou non** : une archive modifiée après sa
+        création est ainsi détectée même sans chiffrement. Une archive
+        ANCIENNE sans manifeste n'est jamais déclarée corrompue de ce seul
+        fait (§4 du mandat, « compatibilité avec les anciennes archives »)
+        — seule la vérification structurelle décide alors, exactement
+        comme avant ce correctif.
 
         Cas particulier avéré par l'audit précédent (incident du
         26/11/2026) : une archive dont l'empreinte PROUVE qu'elle n'a pas
@@ -865,14 +863,38 @@ class BackupService:
         mandat) — mais comme :data:`STATUS_UNVERIFIABLE`, avec le détail
         technique complet et une explication de la cause la plus probable
         (incompatibilité d'environnement de vérification, ex. version de
-        ``pg_restore``/``pg_dump``)."""
+        ``pg_restore``/``pg_dump``).
+
+        Correctif (audit du 28/11/2026) : cette dernière garantie ne
+        s'appliquait jusqu'ici qu'aux archives NON chiffrées — la
+        condition ci-dessous excluait explicitement les archives
+        chiffrées (``manifest.encrypted``) du calcul de
+        ``manifest_hash_matches``, qui restait alors toujours ``None``
+        même quand l'empreinte du fichier chiffré correspondait
+        réellement (cette correspondance est pourtant bien vérifiée,
+        avant tout déchiffrement, par :meth:`_resolve_plaintext_path` —
+        son résultat n'était simplement jamais remonté jusqu'ici). Une
+        archive chiffrée intacte dont la vérification structurelle
+        échouait était donc systématiquement annoncée « Invalide » plutôt
+        que :data:`STATUS_UNVERIFIABLE`, sans justification technique.
+        L'empreinte étant calculée sur le fichier tel qu'il est sur disque
+        (chiffré ou non, voir ``archive_manifest.build_manifest``, appelé
+        en tout dernier après chiffrement), la vérifier ici, avant même
+        toute tentative de déchiffrement, ne change ni ne contourne
+        jamais la vérification structurelle qui reste seule à décider
+        d'un statut « Valide » (voir plus bas) — ``_resolve_plaintext_path``
+        revérifie de toute façon la même empreinte en interne avant de
+        déchiffrer, cette seconde vérification (toujours présente,
+        jamais retirée) restant le filet de sécurité qui empêche toute
+        tentative de déchiffrement d'une archive dont l'empreinte ne
+        correspondrait plus."""
         self._permissions.require_permission("BACKUP_VIEW")
         file_path = Path(file_path)
         manifest = archive_manifest.read_manifest_for(file_path)
         manifest_present = manifest is not None
         manifest_hash_matches: Optional[bool] = None
 
-        if manifest_present and not manifest.encrypted:
+        if manifest_present:
             manifest_check = archive_manifest.verify_manifest_for(file_path)
             manifest_hash_matches = manifest_check.hash_matches
             if not manifest_hash_matches:
