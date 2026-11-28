@@ -32,6 +32,7 @@ from app.security.password_hashing import hash_password
 from app.services.auth.auth_service import AuthService
 from app.services.auth.current_user import CurrentUser
 from app.services.auth.permission_service import PermissionService
+from app.services.backups import archive_encryption
 from app.services.backups import postgresql_backup_engine as pg_backup_engine
 from app.services.backups.backup_service import BackupService
 from app.utils.exceptions import PermissionDeniedError, ValidationError
@@ -42,6 +43,24 @@ _PG_DB = os.environ.get("STOCKMANAGER_TEST_PG_DB", "stockmanager_test")
 _PG_USER = os.environ.get("STOCKMANAGER_TEST_PG_USER", "stockmanager_test")
 _PG_PASSWORD = os.environ.get("STOCKMANAGER_TEST_PG_PASSWORD")
 _TEST_USER_PASSWORD = "MotDePasse!23"
+
+
+class _FakeEncryptionVault:
+    """Même coffre en mémoire que ``tests/test_backup_service.py`` (SQLite)
+    — jamais Windows Credential Manager — recopié ici pour ne faire
+    dépendre ce fichier PostgreSQL d'aucun autre module de test."""
+
+    def __init__(self) -> None:
+        self._store: dict[str, str] = {}
+
+    def get_password(self, profile_id: str):
+        return self._store.get(profile_id)
+
+    def set_password(self, profile_id: str, password: str) -> None:
+        self._store[profile_id] = password
+
+    def delete_password(self, profile_id: str) -> None:
+        self._store.pop(profile_id, None)
 
 
 @pytest.fixture()
@@ -256,6 +275,225 @@ def test_describe_backup_status_reports_unverifiable_for_postgresql_when_hash_un
     assert report.label == "Intégrité non vérifiable"
     assert report.manifest_hash_matches is True
     assert any("version locale incompatible" in error for error in report.errors)
+
+
+# -- correctif du 28/11/2026 : archives PostgreSQL CHIFFRÉES -------------------------
+#
+# Jusqu'ici, aucun test de ce fichier (ni d'aucun autre) ne vérifiait
+# ``verify_backup_file``/``describe_backup_status`` sur une archive
+# PostgreSQL chiffrée contre un vrai serveur — tout l'existant utilisait
+# soit PostgreSQL non chiffré (ci-dessus), soit SQLite chiffré (voir
+# tests/test_backup_service.py). C'était précisément le trou de couverture
+# qui laissait invisible le défaut d'aiguillage moteur de
+# ``BackupService.verify_backup_file`` (voir sa docstring) : celui-ci
+# déduisait le moteur à vérifier de l'extension du chemin *après* son
+# éventuelle réaffectation vers le fichier temporaire déchiffré — dont le
+# nom se termine toujours en ``.dec.tmp``, jamais ``.dump``, quel que soit
+# le moteur réel. Pour SQLite chiffré, le moteur SQLite ainsi choisi par
+# erreur se trouve être le bon par coïncidence : le défaut y reste
+# invisible. Pour PostgreSQL chiffré, il invoquait à tort le moteur SQLite
+# sur un contenu ``pg_dump``, qui échoue aussitôt — faisant apparaître à
+# tort « Intégrité non vérifiable » (ou « Invalide ») pour une archive
+# pourtant structurellement saine.
+
+
+def test_verify_backup_file_dispatches_to_postgresql_engine_for_an_encrypted_archive(
+    login_as_pg, tmp_path: Path
+) -> None:
+    """Régression directe du défaut corrigé : ``verify_backup_file``
+    doit invoquer le moteur PostgreSQL (jamais SQLite) sur une archive
+    PostgreSQL chiffrée, et obtenir un résultat structurellement valide."""
+    backups, _, _ = login_as_pg("Administrateur")
+    backups._encryption_vault = _FakeEncryptionVault()
+    destination = tmp_path / "backups"
+    backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00",
+        destination=str(destination), retention=5, encryption_enabled=True,
+    )
+    result = backups.create_manual_backup()
+
+    verification = backups.verify_backup_file(result.file_path)
+
+    assert isinstance(verification, pg_backup_engine.BackupVerification)
+    assert verification.valid is True
+    assert verification.integrity_ok is True
+    assert verification.tables_ok is True
+    assert verification.alembic_version is not None
+    assert verification.errors == []
+
+
+def test_describe_backup_status_reports_valid_for_an_intact_encrypted_postgresql_archive(
+    login_as_pg, tmp_path: Path
+) -> None:
+    """Cas 1 du mandat correctif : une archive PostgreSQL chiffrée dont
+    l'empreinte, le déchiffrement et la structure sont tous corrects doit
+    afficher « Valide » — jamais « Intégrité non vérifiable »."""
+    backups, _, _ = login_as_pg("Administrateur")
+    backups._encryption_vault = _FakeEncryptionVault()
+    destination = tmp_path / "backups"
+    backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00",
+        destination=str(destination), retention=5, encryption_enabled=True,
+    )
+    result = backups.create_manual_backup()
+
+    report = backups.describe_backup_status(result.file_path)
+
+    assert report.valid is True
+    assert report.label == "Valide"
+    assert report.errors == []
+    assert report.manifest_present is True
+    assert report.manifest_hash_matches is True
+
+
+def test_describe_backup_status_detects_encrypted_postgresql_archive_altered_after_creation(
+    login_as_pg, tmp_path: Path
+) -> None:
+    """Cas 2 du mandat correctif : une archive PostgreSQL chiffrée
+    modifiée après coup reste « Invalide »."""
+    backups, _, _ = login_as_pg("Administrateur")
+    backups._encryption_vault = _FakeEncryptionVault()
+    destination = tmp_path / "backups"
+    backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00",
+        destination=str(destination), retention=5, encryption_enabled=True,
+    )
+    result = backups.create_manual_backup()
+
+    with result.file_path.open("ab") as handle:
+        handle.write(b"octets ajoutes apres chiffrement, sans lien avec pg_dump")
+
+    report = backups.describe_backup_status(result.file_path)
+
+    assert report.valid is False
+    assert report.label == "Invalide"
+    assert report.manifest_hash_matches is False
+
+
+def test_describe_backup_status_reports_unverifiable_for_encrypted_postgresql_when_hash_unchanged_but_recheck_fails(
+    login_as_pg, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cas 3 du mandat correctif, pendant chiffré de
+    ``test_describe_backup_status_reports_unverifiable_for_postgresql_when_hash_unchanged_but_recheck_fails`` :
+    une archive PostgreSQL chiffrée intacte, dont la revérification
+    structurelle échoue ensuite, reste « Intégrité non vérifiable »,
+    jamais « Invalide »."""
+    backups, _, _ = login_as_pg("Administrateur")
+    backups._encryption_vault = _FakeEncryptionVault()
+    destination = tmp_path / "backups"
+    backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00",
+        destination=str(destination), retention=5, encryption_enabled=True,
+    )
+    result = backups.create_manual_backup()
+
+    fake_failure = pg_backup_engine.BackupVerification(
+        valid=False, integrity_ok=False, tables_ok=False, alembic_version=None,
+        errors=["pg_restore a échoué : version locale incompatible avec l'archive."],
+    )
+    monkeypatch.setattr(pg_backup_engine, "verify_backup_file", lambda path: fake_failure)
+
+    report = backups.describe_backup_status(result.file_path)
+
+    assert report.valid is False
+    assert report.label == "Intégrité non vérifiable"
+    assert report.manifest_hash_matches is True
+    assert any("version locale incompatible" in error for error in report.errors)
+
+
+def test_describe_backup_status_propagates_missing_encryption_key_for_postgresql_archive(
+    login_as_pg, tmp_path: Path
+) -> None:
+    """Cas 4 du mandat correctif : une clé de chiffrement absente sur ce
+    poste doit rester identifiable comme telle pour une archive
+    PostgreSQL aussi — jamais reclassée en « Invalide » ou « Intégrité
+    non vérifiable »."""
+    backups, _, _ = login_as_pg("Administrateur")
+    backups._encryption_vault = _FakeEncryptionVault()
+    destination = tmp_path / "backups"
+    backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00",
+        destination=str(destination), retention=5, encryption_enabled=True,
+    )
+    result = backups.create_manual_backup()
+    # Simule un autre poste, ou une clé perdue : jamais régénérée automatiquement.
+    backups._encryption_vault = _FakeEncryptionVault()
+
+    with pytest.raises(archive_encryption.NoEncryptionKeyConfiguredError):
+        backups.describe_backup_status(result.file_path)
+
+
+def test_describe_backup_status_propagates_decryption_error_for_postgresql_archive(
+    login_as_pg, tmp_path: Path
+) -> None:
+    """Cas 4 du mandat correctif (suite) : un jeton qui ne se déchiffre
+    pas avec la clé localement configurée doit rester une erreur de
+    déchiffrement, jamais reclassée en « Invalide » ni en « Intégrité
+    non vérifiable »."""
+    backups, _, _ = login_as_pg("Administrateur")
+    backups._encryption_vault = _FakeEncryptionVault()
+    destination = tmp_path / "backups"
+    backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00",
+        destination=str(destination), retention=5, encryption_enabled=True,
+    )
+    result = backups.create_manual_backup()
+    wrong_key_vault = _FakeEncryptionVault()
+    archive_encryption.ensure_encryption_key(wrong_key_vault)
+    backups._encryption_vault = wrong_key_vault
+
+    with pytest.raises(archive_encryption.ArchiveEncryptionError):
+        backups.describe_backup_status(result.file_path)
+
+
+def test_verify_backup_file_cleans_up_temp_file_after_successful_encrypted_postgresql_verification(
+    login_as_pg, tmp_path: Path
+) -> None:
+    """Le fichier temporaire déchiffré (``.dec.tmp``) ne doit jamais
+    rester sur le disque après une vérification réussie."""
+    import tempfile
+
+    backups, _, _ = login_as_pg("Administrateur")
+    backups._encryption_vault = _FakeEncryptionVault()
+    destination = tmp_path / "backups"
+    backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00",
+        destination=str(destination), retention=5, encryption_enabled=True,
+    )
+    result = backups.create_manual_backup()
+
+    backups.verify_backup_file(result.file_path)
+
+    leftover = list(Path(tempfile.gettempdir()).glob(f".{result.file_path.name}_*.dec.tmp"))
+    assert leftover == []
+
+
+def test_verify_backup_file_cleans_up_temp_file_after_failed_encrypted_postgresql_verification(
+    login_as_pg, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Même garantie que ci-dessus, mais lorsque la vérification
+    structurelle elle-même échoue : le nettoyage (bloc ``finally``) ne
+    doit jamais dépendre du résultat de la vérification."""
+    import tempfile
+
+    backups, _, _ = login_as_pg("Administrateur")
+    backups._encryption_vault = _FakeEncryptionVault()
+    destination = tmp_path / "backups"
+    backups.update_config(
+        auto_enabled=False, frequency="daily", time_of_day="02:00",
+        destination=str(destination), retention=5, encryption_enabled=True,
+    )
+    result = backups.create_manual_backup()
+    fake_failure = pg_backup_engine.BackupVerification(
+        valid=False, integrity_ok=False, tables_ok=False, alembic_version=None,
+        errors=["échec simulé"],
+    )
+    monkeypatch.setattr(pg_backup_engine, "verify_backup_file", lambda path: fake_failure)
+
+    backups.verify_backup_file(result.file_path)
+
+    leftover = list(Path(tempfile.gettempdir()).glob(f".{result.file_path.name}_*.dec.tmp"))
+    assert leftover == []
 
 
 # -- restauration : opérations incohérentes avec le moteur actif -----------------------

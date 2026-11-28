@@ -823,13 +823,35 @@ class BackupService:
         le manifeste) avant toute vérification structurelle — jamais une
         tentative de lecture directe d'une archive chiffrée, qui
         échouerait toujours. La copie temporaire est systématiquement
-        supprimée après usage, qu'elle ait servi ou non."""
+        supprimée après usage, qu'elle ait servi ou non.
+
+        Correctif (audit du 28/11/2026) : le moteur était jusqu'ici déduit
+        de l'extension du chemin *après* son éventuelle réaffectation par
+        :meth:`_resolve_plaintext_path` vers le fichier temporaire
+        déchiffré — dont le nom se termine toujours en ``.dec.tmp`` (voir
+        :func:`~app.services.backups.archive_encryption.decrypt_file_to_temp`),
+        jamais en ``.dump``, quel que soit le moteur réel de l'archive
+        d'origine. Pour toute archive PostgreSQL **chiffrée**, ce test
+        échouait donc systématiquement et faisait invoquer à tort le
+        moteur SQLite sur un contenu ``pg_dump`` — qui échoue aussitôt
+        (« file is not a database »), sans qu'aucune incompatibilité
+        réelle n'existe. Le défaut restait invisible pour une archive
+        SQLite chiffrée (le moteur SQLite, choisi par erreur, s'y trouve
+        être le bon par coïncidence) et pour toute archive non chiffrée
+        (le chemin n'est alors jamais réaffecté). Le moteur est désormais
+        déterminé une fois pour toutes sur le chemin ORIGINAL, avant tout
+        déchiffrement — même principe déjà appliqué par :meth:`restore_backup`
+        (``backup_engine_kind`` y est calculé sur ``backup_path`` avant
+        toute résolution) — jamais sur le chemin, temporaire ou non, qui
+        sert ensuite à la lecture elle-même."""
         self._permissions.require_permission("BACKUP_VIEW")
-        file_path, temp_to_cleanup = self._resolve_plaintext_path(file_path)
+        file_path = Path(file_path)
+        is_postgresql = file_path.suffix == ".dump"
+        plain_path, temp_to_cleanup = self._resolve_plaintext_path(file_path)
         try:
-            if file_path.suffix == ".dump":
-                return pg_backup_engine.verify_backup_file(file_path)
-            return backup_engine.verify_backup_file(file_path)
+            if is_postgresql:
+                return pg_backup_engine.verify_backup_file(plain_path)
+            return backup_engine.verify_backup_file(plain_path)
         finally:
             if temp_to_cleanup is not None:
                 temp_to_cleanup.unlink(missing_ok=True)
