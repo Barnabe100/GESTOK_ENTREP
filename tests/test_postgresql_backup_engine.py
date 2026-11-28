@@ -315,6 +315,38 @@ def test_verify_backup_file_rejects_corrupted_archive(tmp_path: Path) -> None:
 
     assert result.valid is False
     assert result.integrity_ok is False
+    # Mission « Fiabilisation des sauvegardes automatiques », §2 : le
+    # message ne doit plus être UNIQUEMENT générique — le code de retour
+    # réel de pg_restore doit désormais y figurer.
+    assert "code retour" in result.errors[0]
+
+
+def test_verify_backup_file_logs_the_real_pg_restore_stderr(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """§2 du mandat : corrige le défaut relevé par le diagnostic précédent
+    — contrairement à ``create_backup_file``/``restore_database_from_backup``,
+    ``verify_backup_file`` ne journalisait jusqu'ici jamais le ``stderr``
+    réel de ``pg_restore --list`` en cas d'échec, et ``errors`` ne portait
+    qu'un message générique — rendant un diagnostic réel impossible depuis
+    l'historique (voir ``BackupService.describe_backup_status``)."""
+    if shutil.which("pg_restore") is None:
+        pytest.skip("pg_restore non installé dans cet environnement.")
+    bad = tmp_path / "corrupted.dump"
+    bad.write_bytes(b"ceci n'est pas une archive pg_dump" * 20)
+
+    with _capture_engine_error_logs(caplog):
+        result = eng.verify_backup_file(bad)
+
+    assert result.valid is False
+    logged_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert "pg_restore" in logged_text
+    # Le détail technique réel (ex. « input file does not appear to be a
+    # valid archive ») doit être présent, pas seulement un code de retour
+    # nu — sans jamais présumer du libellé exact (dépend de la version
+    # locale de pg_restore), seulement de sa présence dans errors[0] ET
+    # dans le journal.
+    assert result.errors[0].split(": ", 1)[-1] in logged_text
 
 
 # -- sauvegarde, vérification, restauration réelles (serveur PostgreSQL) -----------

@@ -725,6 +725,112 @@ def test_scheduled_backup_does_not_run_twice_same_day(login_as, tmp_path) -> Non
     assert second is None
 
 
+# -- Mission « Fiabilisation des sauvegardes automatiques » : backup.last_auto_run --
+# n'est mis à jour que sur succès réel — un échec ou une archive invalide ne doit
+# jamais empêcher une nouvelle tentative automatique le jour même.
+
+
+def _read_last_auto_run(settings) -> str | None:
+    from app.repositories.parameter_repository import ParameterRepository
+
+    with session_scope(settings) as session:
+        return ParameterRepository(session).get_value("backup.last_auto_run")
+
+
+def test_scheduled_backup_success_updates_last_auto_run(login_as, tmp_path) -> None:
+    stack, _ = login_as("Administrateur")
+    destination = tmp_path / "backups"
+    stack.backups.update_config(auto_enabled=True, frequency="daily", time_of_day="00:00", destination=str(destination), retention=10)
+
+    result = stack.backups.run_scheduled_backup_if_due()
+
+    assert result.success is True
+    assert _read_last_auto_run(get_settings()) is not None
+
+
+def test_scheduled_backup_failure_never_updates_last_auto_run(login_as, tmp_path, monkeypatch) -> None:
+    """Correctif « Fiabilisation des sauvegardes automatiques », §1 : avant
+    ce correctif, ``backup.last_auto_run`` était avancé même après un échec
+    de création — empêchant toute nouvelle tentative automatique avant la
+    prochaine échéance, sans qu'aucune archive n'existe pourtant pour le
+    jour concerné."""
+    stack, _ = login_as("Administrateur")
+    destination = tmp_path / "backups"
+    stack.backups.update_config(auto_enabled=True, frequency="daily", time_of_day="00:00", destination=str(destination), retention=10)
+    monkeypatch.setattr(
+        backup_engine, "create_backup_file",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("disque plein (simulé)")),
+    )
+
+    result = stack.backups.run_scheduled_backup_if_due()
+
+    assert result.success is False
+    assert _read_last_auto_run(get_settings()) is None
+
+
+def test_scheduled_backup_invalid_archive_never_updates_last_auto_run(login_as, tmp_path, monkeypatch) -> None:
+    """Même garantie que ci-dessus pour une archive créée mais déclarée
+    invalide (échec de vérification) — scénario distinct d'une exception :
+    ``_create_backup`` retourne un ``BackupResult(success=False, ...)``
+    sans jamais lever, voir sa propre docstring."""
+    stack, _ = login_as("Administrateur")
+    destination = tmp_path / "backups"
+    stack.backups.update_config(auto_enabled=True, frequency="daily", time_of_day="00:00", destination=str(destination), retention=10)
+    fake_invalid = backup_engine.BackupVerification(
+        valid=False, integrity_ok=False, tables_ok=False, alembic_version=None,
+        errors=["Intégrité SQLite invalide (simulée)."],
+    )
+    monkeypatch.setattr(backup_engine, "verify_backup_file", lambda path: fake_invalid)
+
+    result = stack.backups.run_scheduled_backup_if_due()
+
+    assert result.success is False
+    assert _read_last_auto_run(get_settings()) is None
+
+
+def test_scheduled_backup_retries_the_same_day_after_a_failure(login_as, tmp_path, monkeypatch) -> None:
+    """Conséquence directe du correctif : puisque ``last_auto_run`` n'a pas
+    avancé après un échec, un nouvel appel (prochain minuteur applicatif,
+    ou prochain déclenchement de la tâche planifiée) retente la sauvegarde
+    le jour même plutôt que d'attendre l'échéance suivante."""
+    stack, _ = login_as("Administrateur")
+    destination = tmp_path / "backups"
+    stack.backups.update_config(auto_enabled=True, frequency="daily", time_of_day="00:00", destination=str(destination), retention=10)
+    monkeypatch.setattr(
+        backup_engine, "create_backup_file",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("verrou transitoire (simulé)")),
+    )
+
+    first = stack.backups.run_scheduled_backup_if_due()
+    assert first.success is False
+
+    monkeypatch.undo()
+    second = stack.backups.run_scheduled_backup_if_due()
+
+    assert second is not None
+    assert second.success is True
+    assert _read_last_auto_run(get_settings()) is not None
+
+
+def test_scheduled_backup_does_not_run_again_the_same_day_once_valid(login_as, tmp_path) -> None:
+    """Pendant symétrique de la non-régression : une fois une sauvegarde du
+    jour réellement réussie, aucune nouvelle tentative automatique
+    (confirmé par taille d'historique, pas seulement par le retour
+    ``None`` déjà couvert par ``test_scheduled_backup_does_not_run_twice_same_day``)."""
+    stack, _ = login_as("Administrateur")
+    destination = tmp_path / "backups"
+    stack.backups.update_config(auto_enabled=True, frequency="daily", time_of_day="00:00", destination=str(destination), retention=10)
+
+    first = stack.backups.run_scheduled_backup_if_due()
+    assert first.success is True
+    entries_after_first = stack.backups.list_backups()
+
+    second = stack.backups.run_scheduled_backup_if_due()
+
+    assert second is None
+    assert stack.backups.list_backups() == entries_after_first
+
+
 # -- Mission « Sauvegarde automatique et restauration » : rétention par défaut,
 # manifeste, chiffrement optionnel -------------------------------------------------
 

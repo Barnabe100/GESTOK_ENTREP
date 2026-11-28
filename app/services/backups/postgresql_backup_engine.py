@@ -426,7 +426,22 @@ def verify_backup_file(
     serveur) et contient les tables attendues. Comme pour SQLite, ne
     vérifie pas ici la compatibilité de version avec la base active —
     c'est le rôle de l'appelant avant une restauration (voir
-    ``get_embedded_alembic_version``/``get_live_alembic_version``)."""
+    ``get_embedded_alembic_version``/``get_live_alembic_version``).
+
+    Mission « Fiabilisation des sauvegardes automatiques », §2 : corrige
+    un défaut diagnostiqué — contrairement à :func:`create_backup_file`/
+    :func:`restore_database_from_backup`, cette fonction ne journalisait
+    jusqu'ici jamais le ``stderr`` réel de ``pg_restore`` en cas d'échec
+    (:func:`_log_subprocess_failure` n'était appelée nulle part ici), et
+    ``errors`` ne portait qu'un message générique (« n'est pas un fichier
+    pg_dump valide ») sans aucun détail technique exploitable — alors que
+    c'est précisément ce message qui remonte jusqu'à l'interface (voir
+    ``BackupService.describe_backup_status``). Les deux points sont
+    corrigés symétriquement aux autres fonctions de ce module : le
+    ``stderr``/code de retour réels sont désormais toujours journalisés
+    ET inclus (tronqués par prudence, jamais le mot de passe — qui n'y
+    figure de toute façon jamais, voir la docstring de module) dans
+    ``errors`` lui-même, jamais en remplacement du message existant."""
     if not file_path.exists() or not file_path.is_file():
         return BackupVerification(False, False, False, None, ["Le fichier de sauvegarde est introuvable."])
     pg_restore_path = _locate_tool("pg_restore")
@@ -443,12 +458,25 @@ def verify_backup_file(
             **no_console_window_kwargs(),
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
+        # Jamais ``_log_subprocess_failure`` ici : ces deux branches
+        # n'ont par construction aucun ``result`` (le processus n'a jamais
+        # été lancé, ou n'a jamais eu le temps de se terminer) — le
+        # message d'erreur, lui, inclut déjà ``exc`` directement, donc
+        # aucun détail n'est perdu. ``_log_subprocess_failure`` sonde en
+        # plus la version locale de l'outil via un second appel
+        # ``subprocess.run`` : superflu ici, et jamais souhaitable juste
+        # après un échec de lancement du même outil.
         return BackupVerification(False, False, False, None, [f"Lecture de l'archive impossible : {exc}"])
 
     errors: list[str] = []
     integrity_ok = result.returncode == 0 and bool(result.stdout.strip())
     if not integrity_ok:
-        errors.append("L'archive n'est pas un fichier pg_dump (format personnalisé) valide.")
+        _log_subprocess_failure("pg_restore", result.returncode, result.stderr)
+        errors.append(
+            "L'archive n'est pas un fichier pg_dump (format personnalisé) valide "
+            f"(pg_restore --list, code retour {result.returncode}) : "
+            f"{_sanitized_stderr_excerpt(result.stderr)}"
+        )
 
     tables_ok = False
     if integrity_ok:

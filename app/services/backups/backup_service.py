@@ -1022,13 +1022,27 @@ class BackupService:
         soit par ``app/backup_cli.py`` (intégration externe, ex.
         Planificateur de tâches Windows — §8, fonctionne même application
         fermée). Retourne ``None`` si la sauvegarde automatique est
-        désactivée ou si l'échéance n'est pas encore atteinte."""
+        désactivée ou si l'échéance n'est pas encore atteinte.
+
+        Mission « Fiabilisation des sauvegardes automatiques » : chaque
+        retour anticipé (``None``) est désormais journalisé avec sa cause
+        exacte — un cycle qui ne fait légitimement rien doit rester
+        silencieux pour l'utilisateur (code de sortie 0, voir
+        ``backup_external_agent_cli.run_cycle``) mais jamais pour le
+        journal applicatif, seul moyen de distinguer après coup « rien à
+        faire » d'un défaut plus profond (§3 du mandat)."""
         config = self._read_config()
         if not config.auto_enabled:
+            logger.info("Sauvegarde planifiée : rien à faire (sauvegarde automatique désactivée).")
             return None
 
         now = datetime.now()
         if not self._is_due(config, now):
+            logger.info(
+                "Sauvegarde planifiée : rien à faire (échéance non atteinte — dernière exécution "
+                "réussie le %s, fréquence %s, heure cible %s).",
+                self._last_auto_run_label(), config.frequency, config.time_of_day,
+            )
             return None
 
         # Verrou acquis seulement une fois su qu'une sauvegarde va
@@ -1040,16 +1054,51 @@ class BackupService:
             logger.info("Sauvegarde planifiée reportée : une autre opération de sauvegarde est déjà en cours.")
             return None
         try:
+            logger.info("Sauvegarde planifiée : échéance atteinte, démarrage de la création.")
             settings = self._effective_settings()
             if settings.db_backend == "postgresql":
                 result = self._create_backup_postgresql(config, settings, action="BACKUP_AUTO")
             else:
                 result = self._create_backup(config, action="BACKUP_AUTO")
-            with session_scope(self._settings) as session:
-                ParameterRepository(session).set_value(_KEY_LAST_AUTO_RUN, now.isoformat())
+            # Mission « Fiabilisation des sauvegardes automatiques », §1 :
+            # correctif du défaut diagnostiqué — ``backup.last_auto_run``
+            # ne doit être avancé QUE si la sauvegarde a réellement réussi
+            # (``result.success``). Avant ce correctif, une sauvegarde
+            # échouée ou invalide (``_create_backup_postgresql``/
+            # ``_create_backup`` retournent un ``BackupResult`` sans jamais
+            # lever d'exception dans ce cas — voir leur propre docstring)
+            # marquait quand même « sauvegarde du jour faite », empêchant
+            # toute nouvelle tentative automatique avant la prochaine
+            # échéance programmée, sans qu'aucune archive valide n'existe
+            # pourtant pour ce jour. Jamais inversé pour autant : un échec
+            # ne doit pas non plus provoquer de nouvelle tentative
+            # immédiate dans le même cycle (une seule tentative par
+            # déclenchement, comme avant) — seul le PROCHAIN appel de
+            # cette méthode (minuteur applicatif suivant, ou prochain
+            # déclenchement de la tâche planifiée) retentera, puisque
+            # ``_is_due`` restera vrai tant qu'aucun succès n'a avancé cet
+            # horodatage.
+            if result.success:
+                with session_scope(self._settings) as session:
+                    ParameterRepository(session).set_value(_KEY_LAST_AUTO_RUN, now.isoformat())
+                logger.info("Sauvegarde planifiée réussie : %s", result.file_path)
+            else:
+                logger.error(
+                    "Sauvegarde planifiée échouée ou invalide (%s) — "
+                    "« backup.last_auto_run » volontairement non avancé, une nouvelle tentative "
+                    "automatique reste possible.", result.message,
+                )
             return result
         finally:
             lock.release()
+
+    def _last_auto_run_label(self) -> str:
+        """Horodatage de la dernière sauvegarde planifiée réussie, pour le
+        seul usage des messages de journal ci-dessus — jamais utilisé pour
+        une décision métier (``_is_due`` relit lui-même cette valeur)."""
+        with session_scope(self._settings) as session:
+            raw = ParameterRepository(session).get_value(_KEY_LAST_AUTO_RUN)
+        return raw or "jamais"
 
     def _is_due(self, config: BackupConfig, now: datetime) -> bool:
         """Mission corrective « Fiabilisation du module de sauvegarde »,

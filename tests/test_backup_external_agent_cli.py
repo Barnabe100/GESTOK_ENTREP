@@ -208,3 +208,62 @@ def test_run_agent_locked_releases_lock_even_when_cycle_fails(login_as, tmp_path
     second_lock = ProcessLock(lock_path)
     assert second_lock.acquire() is True
     second_lock.release()
+
+
+# -- mission « Fiabilisation des sauvegardes automatiques », §3 : instrumentation --
+
+
+def test_run_agent_locked_logs_lock_acquisition_steps(login_as, tmp_path, caplog) -> None:
+    """Chaque étape nommée par le mandat (tentative d'acquisition, verrou
+    acquis) doit apparaître dans le journal, succès compris — jusqu'ici
+    seul l'échec d'acquisition était journalisé."""
+    stack, _ = login_as("Administrateur")
+    stack.backups.update_config(
+        auto_enabled=True, frequency="daily", time_of_day="00:00",
+        destination=str(tmp_path / "local_backups"), retention=30,
+    )
+    lock = ProcessLock(tmp_path / "backup_agent.lock")
+
+    with caplog.at_level(logging.INFO, logger="test.backup_external_agent"):
+        run_agent_locked(lock, stack.backups, stack.external_backups, _logger())
+
+    logged_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert "tentative d'acquisition du verrou" in logged_text
+    assert "verrou acquis" in logged_text
+
+
+def test_run_agent_locked_logs_and_reports_an_unexpected_exception_during_the_cycle(
+    login_as, tmp_path, caplog, monkeypatch
+) -> None:
+    """§3/§4 du mandat : une exception non prévue pendant le cycle ne doit
+    jamais être perdue (un exécutable sans console, voir
+    ``stockmanager.spec``, n'a aucune sortie d'erreur visible) ni
+    confondue avec un cycle qui n'avait légitimement rien à faire — code
+    de sortie non nul, trace complète journalisée, verrou tout de même
+    relâché."""
+    stack, _ = login_as("Administrateur")
+    stack.backups.update_config(
+        auto_enabled=True, frequency="daily", time_of_day="00:00",
+        destination=str(tmp_path / "local_backups"), retention=30,
+    )
+    monkeypatch.setattr(
+        stack.backups, "run_scheduled_backup_if_due",
+        lambda: (_ for _ in ()).throw(RuntimeError("échec simulé, jamais réel")),
+    )
+    lock_path = tmp_path / "backup_agent.lock"
+
+    with caplog.at_level(logging.ERROR, logger="test.backup_external_agent"):
+        exit_code = run_agent_locked(ProcessLock(lock_path), stack.backups, stack.external_backups, _logger())
+
+    assert exit_code == 1
+    logged_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert "exception non interceptée" in logged_text
+    assert any(
+        "RuntimeError" in (record.exc_text or "") or "RuntimeError" in logged_text
+        for record in caplog.records
+    )
+    # Le verrou reste relâché malgré l'exception — même garantie que pour
+    # un échec « ordinaire » (voir test_run_agent_locked_releases_lock_even_when_cycle_fails).
+    second_lock = ProcessLock(lock_path)
+    assert second_lock.acquire() is True
+    second_lock.release()

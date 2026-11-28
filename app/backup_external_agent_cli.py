@@ -126,12 +126,36 @@ def run_agent_locked(lock, backup_service, external_service, logger) -> int:
     libère toujours ensuite. Si le verrou est déjà détenu par une autre
     exécution (ex. une copie manuelle lancée depuis l'interface pendant que
     la tâche planifiée se déclenche), abandon propre sans erreur — jamais
-    deux cycles en parallèle sur le même poste (§4/§8 du mandat)."""
+    deux cycles en parallèle sur le même poste (§4/§8 du mandat).
+
+    Mission « Fiabilisation des sauvegardes automatiques », §3 :
+    1) la tentative d'acquisition du verrou (et son issue) est désormais
+       toujours journalisée, succès compris — jusqu'ici seul l'échec
+       l'était, rendant impossible de distinguer dans le journal « le
+       verrou était déjà pris » de « l'agent n'a même pas atteint cette
+       étape » ;
+    2) une exception non prévue pendant le cycle (``run_cycle``) est
+       désormais capturée ICI, avec sa trace complète journalisée
+       (``logger.exception``) — un exécutable packagé sans console
+       (``console=False`` dans ``stockmanager.spec``) ne dispose d'aucune
+       sortie d'erreur visible : sans cette capture, la trace serait
+       définitivement perdue, pas seulement invisible. Le code de retour 1
+       reste garanti dans ce cas, jamais confondu avec un cycle qui n'a
+       légitimement rien eu à faire (voir :func:`run_cycle`, qui retourne
+       0 pour ce cas précis, jamais pour une exception)."""
+    logger.info("Agent de sauvegarde : tentative d'acquisition du verrou anti-concurrence.")
     if not lock.acquire():
         logger.info("Agent de sauvegarde : une autre exécution est déjà en cours, abandon propre.")
         return 0
+    logger.info("Agent de sauvegarde : verrou acquis, démarrage du cycle.")
     try:
         return run_cycle(backup_service, external_service, logger)
+    except Exception:  # noqa: BLE001 - frontière explicite : voir la docstring ci-dessus.
+        logger.exception(
+            "Agent de sauvegarde : exception non interceptée pendant le cycle — échec réel, "
+            "code de sortie non nul."
+        )
+        return 1
     finally:
         lock.release()
 
@@ -142,7 +166,18 @@ def run_agent() -> int:
     ce qui est attendu, ni ``run_scheduled_backup_if_due`` ni
     ``run_scheduled_external_copy_if_due`` ne vérifient de permission, même
     convention que ``app/backup_cli.py``), puis délègue à
-    :func:`run_agent_locked`."""
+    :func:`run_agent_locked`.
+
+    Mission « Fiabilisation des sauvegardes automatiques », §3 : la toute
+    première ligne journalisée après ``setup_logging`` identifie sans
+    ambiguïté un démarrage réel de l'agent (process gelé ou non, chemin de
+    données et moteur actif résolus) — son absence dans le journal après
+    un déclenchement de la tâche planifiée Windows prouverait que l'agent
+    n'a jamais atteint ce point (commande/chemin de tâche en cause),
+    jamais confondue avec un cycle démarré puis sans effet pour une autre
+    raison. Avant ``setup_logging``, rien ne peut être journalisé : un
+    échec à ce stade précis (``get_settings()`` lui-même) reste la seule
+    limite connue de cette instrumentation — voir le rapport de livraison."""
     from app.config import get_settings
     from app.services.auth.auth_service import AuthService
     from app.services.auth.permission_service import PermissionService
@@ -154,12 +189,23 @@ def run_agent() -> int:
     settings = get_settings()
     setup_logging(settings)
     logger = get_logger("backup_external_agent")
+    logger.info(
+        "Agent de sauvegarde : démarrage (exécutable figé=%s, dossier de données=%s, moteur actif=%s).",
+        getattr(sys, "frozen", False), settings.data_dir, settings.db_backend,
+    )
 
-    lock = ProcessLock(settings.data_dir / _LOCK_FILENAME)
-    permissions = PermissionService(AuthService(settings))
-    backup_service = BackupService(permissions, settings=settings)
-    external_service = ExternalBackupService(backup_service, permissions, settings=settings)
-    return run_agent_locked(lock, backup_service, external_service, logger)
+    try:
+        lock = ProcessLock(settings.data_dir / _LOCK_FILENAME)
+        permissions = PermissionService(AuthService(settings))
+        backup_service = BackupService(permissions, settings=settings)
+        external_service = ExternalBackupService(backup_service, permissions, settings=settings)
+        return run_agent_locked(lock, backup_service, external_service, logger)
+    except Exception:  # noqa: BLE001 - frontière explicite : voir la docstring ci-dessus.
+        logger.exception(
+            "Agent de sauvegarde : exception non interceptée avant ou pendant l'initialisation des "
+            "services — échec réel, code de sortie non nul."
+        )
+        return 1
 
 
 def main() -> int:
