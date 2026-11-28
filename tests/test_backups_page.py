@@ -309,6 +309,117 @@ def test_refresh_task_details_shows_non_available_when_absent(qtbot, login_as, m
     assert page.detail_time_label.text() == "Non disponible."
 
 
+def test_refresh_task_details_shows_unavailable_with_cause_when_runtime_info_fails(
+    qtbot, login_as, monkeypatch
+) -> None:
+    """Mission « Détails de la tâche planifiée Windows », §A : une
+    information réellement inaccessible (``runtime_unavailable_reason``)
+    doit être distinguée du « Non disponible » générique — jamais confondue
+    avec une tâche simplement jamais exécutée."""
+    from app.services.backups.external_backup_service import ScheduledTaskDetails
+
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    monkeypatch.setattr(
+        stack.external_backups, "scheduled_task_details",
+        lambda: ScheduledTaskDetails(
+            exists=True, name="StockManager - Sauvegarde automatique",
+            runtime_unavailable_reason="Impossible d'exécuter powershell.exe : introuvable.",
+        ),
+    )
+
+    page._refresh_task_details()
+
+    assert "Indisponible" in page.detail_last_run_label.text()
+    assert "powershell.exe" in page.detail_last_run_label.text()
+    assert "Indisponible" in page.detail_next_run_label.text()
+    assert "Indisponible" in page.detail_last_result_label.text()
+
+
+def test_refresh_task_details_shows_the_technical_code_as_a_tooltip(qtbot, login_as, monkeypatch) -> None:
+    """§C du mandat, « information secondaire » : le code Windows brut
+    reste consultable (infobulle), jamais mélangé au texte principal."""
+    from app.services.backups.external_backup_service import ScheduledTaskDetails
+
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    monkeypatch.setattr(
+        stack.external_backups, "scheduled_task_details",
+        lambda: ScheduledTaskDetails(
+            exists=True, name="StockManager - Sauvegarde automatique",
+            last_run_time="28/11/2026 08:40:04", next_run_time="29/11/2026 12:45:00",
+            last_result="Réussite", last_result_code=0,
+        ),
+    )
+
+    page._refresh_task_details()
+
+    assert page.detail_last_result_label.text() == "Réussite"
+    assert "0" in page.detail_last_result_label.toolTip()
+
+
+def test_refresh_task_details_clears_the_tooltip_when_code_is_unknown(qtbot, login_as, monkeypatch) -> None:
+    from app.services.backups.external_backup_service import ScheduledTaskDetails
+
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    page.detail_last_result_label.setToolTip("ancien contenu")
+
+    monkeypatch.setattr(
+        stack.external_backups, "scheduled_task_details",
+        lambda: ScheduledTaskDetails(exists=True, name="StockManager - Sauvegarde automatique"),
+    )
+
+    page._refresh_task_details()
+
+    assert page.detail_last_result_label.toolTip() == ""
+
+
+def test_start_task_details_refresh_updates_labels_without_blocking(qtbot, login_as, tmp_path) -> None:
+    """Point 7 du mandat : la récupération (désormais PowerShell, plus lente
+    qu'un simple ``schtasks``) ne doit jamais geler l'interface — appelée via
+    ``BackgroundTask``, le résultat n'arrive qu'après la fin du thread (voir
+    la section « indicateur de chargement » ci-dessus pour la même
+    convention)."""
+    from app.services.backups.external_backup_service import ScheduledTaskDetails
+
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+    stack.external_backups.scheduled_task_details = lambda: ScheduledTaskDetails(
+        exists=True, name="StockManager - Sauvegarde automatique",
+        last_run_time="28/11/2026 08:40:04", last_result="Réussite",
+    )
+
+    page._start_task_details_refresh()
+
+    assert page._task_details_task is not None
+    qtbot.waitUntil(lambda: page._task_details_task is None, timeout=5000)
+    assert page.detail_last_run_label.text() == "28/11/2026 08:40:04"
+    assert page.detail_last_result_label.text() == "Réussite"
+
+
+def test_start_task_details_refresh_shows_non_available_on_unexpected_failure(qtbot, login_as) -> None:
+    stack, _ = login_as("Administrateur")
+    page = _build_page(stack)
+    qtbot.addWidget(page)
+
+    def _raise():
+        raise RuntimeError("échec inattendu")
+
+    stack.external_backups.scheduled_task_details = _raise
+
+    page._start_task_details_refresh()
+
+    qtbot.waitUntil(lambda: page._task_details_task is None, timeout=5000)
+    assert page.detail_last_run_label.text() == "Non disponible."
+
+
 def test_refresh_schedule_sync_warnings_shows_warnings(qtbot, login_as, monkeypatch) -> None:
     stack, _ = login_as("Administrateur")
     page = _build_page(stack)

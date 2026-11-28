@@ -167,9 +167,28 @@ class ScheduledTaskDetails:
     monthly_day: Optional[int] = None
     monthly_last_day: bool = False
     user_id: Optional[str] = None
+    # Correctif (audit « Détails de la tâche planifiée Windows ») : ces
+    # trois champs portent désormais directement un libellé déjà
+    # compréhensible (ex. « Jamais exécutée », « Réussite »), produit par
+    # scheduled_task_manager.describe_last_run_time/describe_next_run_time/
+    # describe_task_result à partir d'un relevé structuré
+    # (``query_task_runtime_info``, PowerShell) — jamais plus le texte brut
+    # (parfois vide selon la langue Windows) de ``schtasks /fo list /v``.
+    # ``None`` signifie désormais spécifiquement « réellement inaccessible »
+    # (voir ``runtime_unavailable_reason``), jamais « jamais exécutée », qui
+    # a toujours son propre libellé explicite.
     last_run_time: Optional[str] = None
     next_run_time: Optional[str] = None
     last_result: Optional[str] = None
+    # Code numérique brut conservé séparément pour une éventuelle infobulle
+    # (§C du mandat, « information secondaire ») — jamais mélangé au texte
+    # principal ci-dessus.
+    last_result_code: Optional[int] = None
+    # Cause technique si (et seulement si) les trois champs ci-dessus sont
+    # réellement inaccessibles (PowerShell introuvable, délai dépassé...) —
+    # permet à l'interface d'afficher « Indisponible » accompagné de la
+    # cause plutôt qu'un « Non disponible » générique (§A du mandat).
+    runtime_unavailable_reason: Optional[str] = None
     executable: Optional[str] = None
     arguments: Optional[str] = None
     onlogon_task_exists: bool = False
@@ -688,7 +707,16 @@ class ExternalBackupService:
         Windows » (mission « Gestion complète de la planification des
         sauvegardes Windows », §6) — relit systématiquement l'état réel,
         jamais une simple réutilisation des paramètres StockManager (voir
-        :class:`ScheduledTaskDetails`)."""
+        :class:`ScheduledTaskDetails`).
+
+        Correctif (audit « Détails de la tâche planifiée Windows ») :
+        ``last_run_time``/``next_run_time``/``last_result`` proviennent
+        désormais de :func:`scheduled_task_manager.query_task_runtime_info`
+        (PowerShell, structuré) plutôt que de ``status`` (``schtasks /fo
+        list /v``, texte localisé — voir le commentaire de
+        ``scheduled_task_manager._FIELD_MAP``), déjà convertis en libellés
+        compréhensibles. ``status``/``run_as_user`` restent lus via
+        ``status`` (hors périmètre de ce correctif)."""
         self._permissions.require_permission("BACKUP_VIEW")
         status = scheduled_task_manager.query_task_status(SCHEDULED_TASK_NAME)
         onlogon_status = scheduled_task_manager.query_task_status(SCHEDULED_TASK_NAME_LOGON)
@@ -697,6 +725,17 @@ class ExternalBackupService:
                 exists=False, name=SCHEDULED_TASK_NAME, onlogon_task_exists=onlogon_status.exists,
             )
         definition = scheduled_task_manager.query_task_definition(SCHEDULED_TASK_NAME)
+        runtime_info = scheduled_task_manager.query_task_runtime_info(SCHEDULED_TASK_NAME)
+        if runtime_info.available:
+            last_run_time = scheduled_task_manager.describe_last_run_time(
+                runtime_info.last_run_time, runtime_info.last_task_result
+            )
+            next_run_time = scheduled_task_manager.describe_next_run_time(runtime_info.next_run_time)
+            last_result = scheduled_task_manager.describe_task_result(runtime_info.last_task_result)
+            runtime_unavailable_reason = None
+        else:
+            last_run_time = next_run_time = last_result = None
+            runtime_unavailable_reason = runtime_info.error
         return ScheduledTaskDetails(
             exists=True, name=SCHEDULED_TASK_NAME, status=status.status,
             schedule_kind=definition.schedule_kind if definition else None,
@@ -705,8 +744,9 @@ class ExternalBackupService:
             monthly_day=definition.monthly_day if definition else None,
             monthly_last_day=definition.monthly_last_day if definition else False,
             user_id=definition.user_id if definition else None,
-            last_run_time=status.last_run_time, next_run_time=status.next_run_time,
-            last_result=status.last_result,
+            last_run_time=last_run_time, next_run_time=next_run_time,
+            last_result=last_result, last_result_code=runtime_info.last_task_result,
+            runtime_unavailable_reason=runtime_unavailable_reason,
             executable=definition.command if definition else None,
             arguments=definition.arguments if definition else None,
             onlogon_task_exists=onlogon_status.exists,

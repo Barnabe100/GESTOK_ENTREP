@@ -145,6 +145,16 @@ class BackupsPage(QWidget):
         self._backup_task: Optional[BackgroundTask] = None
         self._restore_task: Optional[BackgroundTask] = None
         self._external_copy_task: Optional[BackgroundTask] = None
+        # Correctif « Détails de la tâche planifiée Windows » : le relevé
+        # réel (désormais via PowerShell, voir
+        # ``scheduled_task_manager.query_task_runtime_info``) est plus lent
+        # qu'un simple ``schtasks`` — jamais sur le thread graphique pour
+        # les deux points d'entrée autonomes (bouton « Actualiser », dépli
+        # de la section), voir ``_start_task_details_refresh``. Lecture
+        # seule, jamais suivie par ``has_active_background_task`` : rien
+        # n'est perdu si la page disparaît avant la fin (voir
+        # ``BackgroundTask``).
+        self._task_details_task: Optional[BackgroundTask] = None
         # Assistant de restauration (§3.4) : dialogue modal optionnel,
         # suivi ici uniquement pour que ``has_active_background_task``
         # reste vrai tant qu'une restauration qu'il a lancée tourne encore
@@ -942,29 +952,68 @@ class BackupsPage(QWidget):
 
         content.setVisible(group.isChecked())
         group.toggled.connect(content.setVisible)
-        group.toggled.connect(lambda checked: self._refresh_task_details() if checked else None)
+        group.toggled.connect(lambda checked: self._start_task_details_refresh() if checked else None)
         self.refresh_task_details_button.clicked.connect(self._on_refresh_task_details_clicked)
         self.open_task_scheduler_button.clicked.connect(self._on_open_task_scheduler_clicked)
 
         return group
 
     def _refresh_task_details(self) -> None:
+        """Version synchrone — conservée pour les appels internes qui
+        suivent déjà une autre opération bloquante (configuration/suppression
+        de la tâche planifiée, voir ``_configure_scheduled_task``/
+        ``_remove_scheduled_task``) et pour les tests existants. Les deux
+        points d'entrée autonomes (bouton « Actualiser », dépli de la
+        section) passent désormais par :meth:`_start_task_details_refresh`
+        (asynchrone, voir sa docstring) — les deux chemins partagent la
+        même logique d'affichage (:meth:`_apply_task_details`/
+        :meth:`_apply_task_details_error`), jamais dupliquée."""
         if self._external_backup_service is None:
             return
         try:
             details = self._external_backup_service.scheduled_task_details()
         except AppError as exc:
-            self.detail_exists_label.setText(f"Indisponible sur ce poste : {exc}")
-            for label in (
-                self.detail_name_label, self.detail_frequency_label, self.detail_time_label,
-                self.detail_days_label, self.detail_onlogon_label, self.detail_account_label,
-                self.detail_last_run_label, self.detail_next_run_label, self.detail_last_result_label,
-                self.detail_executable_label, self.detail_arguments_label,
-            ):
-                label.setText(_NON_AVAILABLE)
-            self._refresh_schedule_sync_warnings()
+            self._apply_task_details_error(exc)
             return
+        self._apply_task_details(details)
 
+    def _start_task_details_refresh(self) -> None:
+        """Mission « Détails de la tâche planifiée Windows », §3.7 :
+        ``scheduled_task_details`` interroge désormais aussi PowerShell
+        (voir ``scheduled_task_manager.query_task_runtime_info``), nettement
+        plus lent à démarrer qu'un simple ``schtasks`` — jamais sur le
+        thread graphique pour ces deux points d'entrée explicites, qui
+        n'ont aucune autre opération bloquante déjà en cours à ce
+        moment-là (contrairement à ``_refresh_task_details``, voir sa
+        docstring)."""
+        if self._external_backup_service is None:
+            return
+        task = BackgroundTask(self._external_backup_service.scheduled_task_details)
+        self._task_details_task = task
+
+        def _on_success(details) -> None:
+            self._task_details_task = None
+            self._apply_task_details(details)
+
+        def _on_failure(exc: Exception) -> None:
+            self._task_details_task = None
+            self._apply_task_details_error(exc)
+
+        task.start(_on_success, _on_failure)
+
+    def _apply_task_details_error(self, exc: Exception) -> None:
+        self.detail_exists_label.setText(f"Indisponible sur ce poste : {exc}")
+        for label in (
+            self.detail_name_label, self.detail_frequency_label, self.detail_time_label,
+            self.detail_days_label, self.detail_onlogon_label, self.detail_account_label,
+            self.detail_last_run_label, self.detail_next_run_label, self.detail_last_result_label,
+            self.detail_executable_label, self.detail_arguments_label,
+        ):
+            label.setText(_NON_AVAILABLE)
+        self.detail_last_result_label.setToolTip("")
+        self._refresh_schedule_sync_warnings()
+
+    def _apply_task_details(self, details) -> None:
         self.detail_exists_label.setText("Configurée" if details.exists else "Absente")
         self.detail_name_label.setText(details.name)
         self.detail_frequency_label.setText(
@@ -989,9 +1038,28 @@ class BackupsPage(QWidget):
             self.detail_days_label.setText(_NON_AVAILABLE)
         self.detail_onlogon_label.setText("Activé" if details.onlogon_task_exists else "Désactivé/absent")
         self.detail_account_label.setText(details.user_id or _NON_AVAILABLE)
-        self.detail_last_run_label.setText(details.last_run_time or _NON_AVAILABLE)
-        self.detail_next_run_label.setText(details.next_run_time or _NON_AVAILABLE)
-        self.detail_last_result_label.setText(details.last_result or _NON_AVAILABLE)
+        # Correctif « Détails de la tâche planifiée Windows », §A : une
+        # information RÉELLEMENT inaccessible (``runtime_unavailable_reason``
+        # renseigné) est distinguée d'un « Non disponible » générique —
+        # jamais confondue avec une tâche simplement jamais exécutée, qui a
+        # toujours son propre libellé explicite (voir
+        # ``scheduled_task_manager.describe_last_run_time``/``describe_next_run_time``,
+        # qui ne retournent jamais ``None``, uniquement ``scheduled_task_details``
+        # lorsque le relevé PowerShell lui-même a échoué).
+        if details.runtime_unavailable_reason:
+            unavailable_text = f"Indisponible ({details.runtime_unavailable_reason})"
+            self.detail_last_run_label.setText(unavailable_text)
+            self.detail_next_run_label.setText(unavailable_text)
+            self.detail_last_result_label.setText(unavailable_text)
+        else:
+            self.detail_last_run_label.setText(details.last_run_time or _NON_AVAILABLE)
+            self.detail_next_run_label.setText(details.next_run_time or _NON_AVAILABLE)
+            self.detail_last_result_label.setText(details.last_result or _NON_AVAILABLE)
+        # §C du mandat, « information secondaire » : le code technique brut
+        # reste consultable (infobulle), jamais mélangé au texte principal.
+        self.detail_last_result_label.setToolTip(
+            f"Code Windows : {details.last_result_code}" if details.last_result_code is not None else ""
+        )
         self.detail_executable_label.setText(details.executable or _NON_AVAILABLE)
         self.detail_arguments_label.setText(details.arguments or _NON_AVAILABLE)
         self._refresh_schedule_sync_warnings()
@@ -1012,7 +1080,7 @@ class BackupsPage(QWidget):
         self.schedule_sync_warnings_label.setVisible(True)
 
     def _on_refresh_task_details_clicked(self) -> None:
-        self._refresh_task_details()
+        self._start_task_details_refresh()
 
     def _on_open_task_scheduler_clicked(self) -> None:
         """Ouvre l'outil natif Windows — ne modifie jamais la tâche

@@ -1314,3 +1314,155 @@ def test_cleanup_orphaned_temp_files_does_nothing_when_media_is_absent(login_as,
     stack.external_backups._media_roots_provider = lambda: []
 
     assert stack.external_backups.cleanup_orphaned_temp_files() == []
+
+
+# -- mission « Détails de la tâche planifiée Windows » ------------------------------
+#
+# ``scheduled_task_details`` n'avait jusqu'ici aucun test à ce niveau (service) —
+# seule la mise en forme côté UI (``BackupsPage._refresh_task_details``, voir
+# tests/test_backups_page.py) était couverte, à partir d'un ``ScheduledTaskDetails``
+# déjà construit à la main. C'est précisément ce qui laissait invisible le défaut :
+# ``scheduled_task_manager.query_task_status``/``query_task_definition`` sont
+# substitués ici (jamais ``_ensure_windows`` lui-même, voir
+# test_configure_scheduled_task_translates_permission_error_and_audits_failure
+# ci-dessus pour la même convention) pour vérifier que ``scheduled_task_details``
+# convertit bien le relevé PowerShell structuré
+# (``scheduled_task_manager.query_task_runtime_info``) en libellés compréhensibles.
+
+
+def _fake_status(exists: bool = True, status: str = "Ready") -> "object":
+    from app.services.backups.scheduled_task_manager import ScheduledTaskStatus
+
+    return ScheduledTaskStatus(exists=exists, status=status, run_as_user="DESKTOP-TEST\\jdupont")
+
+
+def _fake_definition() -> "object":
+    from app.services.backups.scheduled_task_manager import ScheduledTaskDefinition, SCHEDULE_DAILY
+
+    return ScheduledTaskDefinition(
+        command="C:/StockManager/StockManager.exe", arguments="--run-backup-agent",
+        user_id="DESKTOP-TEST\\jdupont", schedule_kind=SCHEDULE_DAILY, time_of_day="12:45",
+    )
+
+
+def test_scheduled_task_details_reports_a_successful_previous_run(login_as, monkeypatch) -> None:
+    from datetime import datetime
+
+    from app.services.backups import scheduled_task_manager
+
+    stack, _ = login_as("Administrateur")
+    monkeypatch.setattr(scheduled_task_manager, "query_task_status", lambda name: _fake_status())
+    monkeypatch.setattr(scheduled_task_manager, "query_task_definition", lambda name: _fake_definition())
+    monkeypatch.setattr(
+        scheduled_task_manager, "query_task_runtime_info",
+        lambda name: scheduled_task_manager.TaskRuntimeInfo(
+            available=True, last_run_time=datetime(2026, 11, 28, 8, 40, 4),
+            next_run_time=datetime(2026, 11, 29, 12, 45, 0), last_task_result=0,
+        ),
+    )
+
+    details = stack.external_backups.scheduled_task_details()
+
+    assert details.last_run_time == "28/11/2026 08:40:04"
+    assert details.next_run_time == "29/11/2026 12:45:00"
+    assert details.last_result == "Réussite"
+    assert details.last_result_code == 0
+    assert details.runtime_unavailable_reason is None
+
+
+def test_scheduled_task_details_reports_a_failed_previous_run(login_as, monkeypatch) -> None:
+    from app.services.backups import scheduled_task_manager
+
+    stack, _ = login_as("Administrateur")
+    monkeypatch.setattr(scheduled_task_manager, "query_task_status", lambda name: _fake_status())
+    monkeypatch.setattr(scheduled_task_manager, "query_task_definition", lambda name: _fake_definition())
+    monkeypatch.setattr(
+        scheduled_task_manager, "query_task_runtime_info",
+        lambda name: scheduled_task_manager.TaskRuntimeInfo(available=True, last_task_result=2),
+    )
+
+    details = stack.external_backups.scheduled_task_details()
+
+    assert details.last_result.startswith("Échec – ")
+    assert details.last_result_code == 2
+
+
+def test_scheduled_task_details_reports_a_task_never_run(login_as, monkeypatch) -> None:
+    from app.services.backups import scheduled_task_manager
+
+    stack, _ = login_as("Administrateur")
+    monkeypatch.setattr(scheduled_task_manager, "query_task_status", lambda name: _fake_status())
+    monkeypatch.setattr(scheduled_task_manager, "query_task_definition", lambda name: _fake_definition())
+    monkeypatch.setattr(
+        scheduled_task_manager, "query_task_runtime_info",
+        lambda name: scheduled_task_manager.TaskRuntimeInfo(
+            available=True, last_task_result=scheduled_task_manager.TASK_RESULT_NEVER_RUN,
+        ),
+    )
+
+    details = stack.external_backups.scheduled_task_details()
+
+    assert details.last_run_time == "Jamais exécutée"
+    assert details.last_result == "Jamais exécutée"
+
+
+def test_scheduled_task_details_reports_no_next_run_explicitly(login_as, monkeypatch) -> None:
+    from app.services.backups import scheduled_task_manager
+
+    stack, _ = login_as("Administrateur")
+    monkeypatch.setattr(scheduled_task_manager, "query_task_status", lambda name: _fake_status())
+    monkeypatch.setattr(scheduled_task_manager, "query_task_definition", lambda name: _fake_definition())
+    monkeypatch.setattr(
+        scheduled_task_manager, "query_task_runtime_info",
+        lambda name: scheduled_task_manager.TaskRuntimeInfo(available=True, last_task_result=0),
+    )
+
+    details = stack.external_backups.scheduled_task_details()
+
+    assert details.next_run_time == "Aucune prochaine exécution prévue."
+
+
+def test_scheduled_task_details_distinguishes_really_unavailable_from_never_run(login_as, monkeypatch) -> None:
+    """§A du mandat : une information réellement inaccessible (PowerShell
+    introuvable, par exemple) ne doit jamais être confondue avec une tâche
+    simplement jamais exécutée — l'une a toujours un libellé explicite,
+    l'autre doit rester clairement « Indisponible », cause incluse."""
+    from app.services.backups import scheduled_task_manager
+
+    stack, _ = login_as("Administrateur")
+    monkeypatch.setattr(scheduled_task_manager, "query_task_status", lambda name: _fake_status())
+    monkeypatch.setattr(scheduled_task_manager, "query_task_definition", lambda name: _fake_definition())
+    monkeypatch.setattr(
+        scheduled_task_manager, "query_task_runtime_info",
+        lambda name: scheduled_task_manager.TaskRuntimeInfo(
+            available=False, error="Impossible d'exécuter powershell.exe : introuvable.",
+        ),
+    )
+
+    details = stack.external_backups.scheduled_task_details()
+
+    assert details.last_run_time is None
+    assert details.next_run_time is None
+    assert details.last_result is None
+    assert details.runtime_unavailable_reason == "Impossible d'exécuter powershell.exe : introuvable."
+
+
+def test_scheduled_task_details_reports_absent_task_without_querying_runtime_info(
+    login_as, monkeypatch
+) -> None:
+    """Une tâche absente ne doit jamais tenter d'interroger PowerShell pour
+    autant (rien à relever) — ``query_task_runtime_info`` n'est alors jamais
+    appelée."""
+    from app.services.backups import scheduled_task_manager
+
+    stack, _ = login_as("Administrateur")
+    monkeypatch.setattr(scheduled_task_manager, "query_task_status", lambda name: _fake_status(exists=False))
+
+    def _fail_if_called(name):
+        raise AssertionError("query_task_runtime_info ne doit jamais être appelée pour une tâche absente.")
+
+    monkeypatch.setattr(scheduled_task_manager, "query_task_runtime_info", _fail_if_called)
+
+    details = stack.external_backups.scheduled_task_details()
+
+    assert details.exists is False

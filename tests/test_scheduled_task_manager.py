@@ -1035,3 +1035,232 @@ class TestOnLogonSchedule:
                 "StockManager - Sauvegarde", "C:/StockManager/StockManager.exe", [],
                 "heure invalide", schedule=stm.SCHEDULE_DAILY,
             )
+
+
+# -- mission « Détails de la tâche planifiée Windows » ------------------------------
+#
+# ``_FIELD_MAP``/``_parse_schtasks_verbose_list`` sont analysés par un poste
+# Windows en anglais (voir leur docstring, corrigée) : sur un poste dans une
+# autre langue, ``last_run_time``/``last_result``/``next_run_time`` restaient
+# silencieusement ``None`` (« Non disponible » affiché), alors que la tâche
+# existe bel et bien et s'exécute normalement. Les fonctions ci-dessous
+# (``describe_task_result``/``describe_last_run_time``/``describe_next_run_time``/
+# ``query_task_runtime_info``) remplacent cette voie par un relevé structuré
+# (PowerShell, ``Get-ScheduledTaskInfo``) — jamais affecté par la langue
+# d'affichage Windows.
+
+
+class TestDescribeTaskResult:
+    """§C du mandat : conversion du code numérique ``LastTaskResult`` en un
+    libellé compréhensible — pure, sans aucun appel Windows."""
+
+    def test_zero_means_success(self) -> None:
+        assert stm.describe_task_result(0) == "Réussite"
+
+    def test_none_means_never_run(self) -> None:
+        assert stm.describe_task_result(None) == "Jamais exécutée"
+
+    def test_sched_s_task_has_not_run_means_never_run(self) -> None:
+        """Code officiellement documenté par Microsoft pour ce cas précis
+        (0x00041303) — jamais déduit d'une absence de valeur seule."""
+        assert stm.describe_task_result(stm.TASK_RESULT_NEVER_RUN) == "Jamais exécutée"
+        assert stm.TASK_RESULT_NEVER_RUN == 267011
+
+    def test_known_failure_codes_are_prefixed_with_echec(self) -> None:
+        for code in (1, 2, 5, 0x80070002, 0x80070005):
+            description = stm.describe_task_result(code)
+            assert description.startswith("Échec – "), description
+
+    def test_unknown_code_is_reported_as_such_rather_than_guessed(self) -> None:
+        assert stm.describe_task_result(123456789) == "Résultat inconnu (code : 123456789)"
+
+
+class TestDescribeLastRunTime:
+    """§A du mandat : jamais une date factice pour une tâche jamais
+    exécutée."""
+
+    def test_never_run_via_last_task_result_ignores_any_sentinel_date(self) -> None:
+        from datetime import datetime
+
+        sentinel_date = datetime(1999, 11, 30)  # date sentinelle Windows connue, jamais une vraie exécution.
+        assert (
+            stm.describe_last_run_time(sentinel_date, stm.TASK_RESULT_NEVER_RUN) == "Jamais exécutée"
+        )
+
+    def test_missing_last_run_time_means_never_run(self) -> None:
+        assert stm.describe_last_run_time(None, None) == "Jamais exécutée"
+
+    def test_real_last_run_time_is_formatted_in_french_convention(self) -> None:
+        from datetime import datetime
+
+        formatted = stm.describe_last_run_time(datetime(2026, 11, 28, 8, 40, 4), 0)
+
+        assert formatted == "28/11/2026 08:40:04"
+
+
+class TestDescribeNextRunTime:
+    """§B du mandat : jamais de calcul artificiel, uniquement ce que
+    rapporte déjà le Planificateur de tâches Windows lui-même."""
+
+    def test_none_is_reported_explicitly(self) -> None:
+        assert stm.describe_next_run_time(None) == "Aucune prochaine exécution prévue."
+
+    def test_real_next_run_time_is_formatted_in_french_convention(self) -> None:
+        from datetime import datetime
+
+        formatted = stm.describe_next_run_time(datetime(2026, 11, 29, 12, 45, 0))
+
+        assert formatted == "29/11/2026 12:45:00"
+
+
+@_skip_on_windows
+def test_query_task_runtime_info_refuses_outside_windows() -> None:
+    with pytest.raises(UnsupportedPlatformError):
+        stm.query_task_runtime_info("StockManager - Sauvegarde automatique")
+
+
+class TestQueryTaskRuntimeInfo:
+    """Mission « Détails de la tâche planifiée Windows » : relevé structuré
+    via PowerShell plutôt que l'analyse de texte localisé de ``schtasks /fo
+    list /v`` — ``_run_powershell`` est substitué par un résultat
+    synthétique, jamais un appel réel à ``powershell.exe`` (même convention
+    que ``TestErrorTranslation`` pour ``_run_schtasks``)."""
+
+    @pytest.fixture(autouse=True)
+    def _force_windows_guard(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(stm.sys, "platform", "win32")
+
+    def test_returns_available_info_on_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import subprocess
+
+        payload = (
+            '{"LastRunTime":"2026-11-28T08:40:04+00:00",'
+            '"NextRunTime":"2026-11-29T12:45:00+00:00","LastTaskResult":0}'
+        )
+        monkeypatch.setattr(
+            stm, "_run_powershell",
+            lambda args: subprocess.CompletedProcess(args, returncode=0, stdout=payload, stderr=""),
+        )
+
+        info = stm.query_task_runtime_info("StockManager - Sauvegarde automatique")
+
+        assert info.available is True
+        assert info.error is None
+        assert info.last_task_result == 0
+        assert info.last_run_time is not None and info.last_run_time.year == 2026
+        assert info.next_run_time is not None and info.next_run_time.day == 29
+
+    def test_reports_never_run_via_last_task_result_even_without_a_date(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import subprocess
+
+        payload = '{"LastRunTime":null,"NextRunTime":"2026-11-29T12:45:00+00:00","LastTaskResult":267011}'
+        monkeypatch.setattr(
+            stm, "_run_powershell",
+            lambda args: subprocess.CompletedProcess(args, returncode=0, stdout=payload, stderr=""),
+        )
+
+        info = stm.query_task_runtime_info("StockManager - Sauvegarde automatique")
+
+        assert info.available is True
+        assert info.last_run_time is None
+        assert info.last_task_result == stm.TASK_RESULT_NEVER_RUN
+
+    def test_reports_no_next_run_time_as_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import subprocess
+
+        payload = '{"LastRunTime":"2026-11-28T08:40:04+00:00","NextRunTime":null,"LastTaskResult":0}'
+        monkeypatch.setattr(
+            stm, "_run_powershell",
+            lambda args: subprocess.CompletedProcess(args, returncode=0, stdout=payload, stderr=""),
+        )
+
+        info = stm.query_task_runtime_info("StockManager - Sauvegarde automatique")
+
+        assert info.next_run_time is None
+
+    def test_returns_unavailable_on_non_zero_return_code(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import subprocess
+
+        monkeypatch.setattr(
+            stm, "_run_powershell",
+            lambda args: subprocess.CompletedProcess(
+                args, returncode=1, stdout="", stderr="Get-ScheduledTaskInfo : tâche introuvable.",
+            ),
+        )
+
+        info = stm.query_task_runtime_info("StockManager - Sauvegarde automatique")
+
+        assert info.available is False
+        assert info.last_run_time is None
+        assert "tâche introuvable" in info.error
+
+    def test_returns_unavailable_on_unreadable_json(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import subprocess
+
+        monkeypatch.setattr(
+            stm, "_run_powershell",
+            lambda args: subprocess.CompletedProcess(args, returncode=0, stdout="ceci n'est pas du JSON", stderr=""),
+        )
+
+        info = stm.query_task_runtime_info("StockManager - Sauvegarde automatique")
+
+        assert info.available is False
+        assert info.error is not None
+
+    def test_returns_unavailable_when_powershell_cannot_be_executed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Substitue directement ``_run_powershell`` (plutôt que
+        ``subprocess.run``, voir ``test_run_powershell_translates_missing_binary_to_scheduled_task_error``
+        pour ce niveau) : ``no_console_window_kwargs`` lit le ``sys.platform``
+        réel du processus, que cette classe force par ailleurs à ``win32``
+        pour franchir ``_ensure_windows`` — l'atteindre réellement ici
+        casserait ce test sous Linux, sans aucun rapport avec le
+        comportement vérifié."""
+        def _raise(args):
+            raise stm.ScheduledTaskError("Impossible d'exécuter powershell.exe : introuvable.")
+
+        monkeypatch.setattr(stm, "_run_powershell", _raise)
+
+        info = stm.query_task_runtime_info("StockManager - Sauvegarde automatique")
+
+        assert info.available is False
+        assert "powershell.exe" in info.error
+
+    def test_escapes_single_quotes_in_task_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Défense en profondeur : même si le nom de tâche de l'application
+        ne contient jamais de guillemet simple, le script PowerShell généré
+        ne doit jamais être cassé par un caractère imprévu."""
+        import subprocess
+
+        captured = {}
+
+        def _fake_run_powershell(args):
+            captured["script"] = args[0]
+            return subprocess.CompletedProcess(args, returncode=0, stdout="{}", stderr="")
+
+        monkeypatch.setattr(stm, "_run_powershell", _fake_run_powershell)
+        task_name = "Tâche d'un ''utilisateur''"
+
+        stm.query_task_runtime_info(task_name)
+
+        # Chaque guillemet simple double (convention PowerShell), jamais
+        # transmis tel quel — calculé ici plutôt qu'écrit en dur pour ne
+        # jamais dépendre d'un comptage manuel des guillemets.
+        assert f"'{task_name.replace(chr(39), chr(39) * 2)}'" in captured["script"]
+
+
+def test_run_powershell_translates_missing_binary_to_scheduled_task_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_run_powershell`` lui-même n'appelle jamais ``_ensure_windows`` (ce
+    sont ses appelants qui le font) — même convention que
+    ``test_run_schtasks_translates_missing_binary_to_scheduled_task_error``."""
+
+    def _raise_missing_binary(*args, **kwargs):
+        raise FileNotFoundError("powershell introuvable")
+
+    monkeypatch.setattr(stm.subprocess, "run", _raise_missing_binary)
+
+    with pytest.raises(stm.ScheduledTaskError):
+        stm._run_powershell(["Get-ScheduledTaskInfo -TaskName 'x'"])

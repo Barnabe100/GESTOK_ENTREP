@@ -106,6 +106,7 @@ interprété selon la version de Windows (comportement documenté de cet
 outil)."""
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -113,6 +114,7 @@ import sys
 import tempfile
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -126,10 +128,23 @@ _TIMEOUT_SECONDS = 30
 _TASK_XML_NS = "http://schemas.microsoft.com/windows/2004/02/mit/task"
 _TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 
-# Mappe les libellés de ``schtasks /query ... /fo list /v`` (anglais,
-# indépendant de la langue d'affichage Windows — confirmé par la
-# documentation Microsoft : ces clés restent en anglais quelle que soit la
-# langue du système) vers les champs de :class:`ScheduledTaskStatus`.
+# Correctif (audit « Détails de la tâche planifiée Windows ») : CONTRAIREMENT
+# à ce qu'affirmait ce commentaire jusqu'ici, les libellés de ``schtasks
+# /query ... /fo list /v`` sont bel et bien traduits selon la langue
+# d'affichage Windows (ex. « Dernière exécution », « Résultat dernière
+# exécution » sur un poste en français) — un poste de test anglophone avait
+# jusqu'ici masqué ce défaut. ``_FIELD_MAP`` (clés anglaises uniquement) ne
+# reconnaît alors plus aucun champ sur un poste non anglophone : ``status``,
+# ``last_run_time``, ``last_result``, ``next_run_time`` et ``run_as_user``
+# restent silencieusement ``None`` (affichés « Non disponible »), sans
+# qu'aucune erreur ne soit levée. Conservé tel quel pour ``status``/
+# ``run_as_user`` (hors périmètre de ce correctif, voir
+# :func:`_describe_existing_task_conflict`) ; pour ``last_run_time``,
+# ``next_run_time`` et ``last_result``, voir désormais
+# :func:`query_task_runtime_info`, qui interroge ``Get-ScheduledTaskInfo``
+# (PowerShell) — une interface structurée dont les noms de PROPRIÉTÉ (pas
+# un texte d'affichage) ne sont jamais traduits, quelle que soit la langue
+# du système.
 _FIELD_MAP = {
     "status": "status",
     "last run time": "last_run_time",
@@ -137,6 +152,68 @@ _FIELD_MAP = {
     "next run time": "next_run_time",
     "run as user": "run_as_user",
 }
+
+# SCHED_S_TASK_HAS_NOT_RUN (0x00041303) : code documenté par Microsoft que
+# ``LastTaskResult`` porte précisément lorsque la tâche n'a jamais été
+# exécutée — jamais déduit de ``LastRunTime``, qui porte alors une date
+# sentinelle arbitraire (ex. 30/11/1999), jamais une vraie date d'exécution
+# (voir :func:`describe_last_run_time`).
+TASK_RESULT_NEVER_RUN = 267011
+
+# Sous-ensemble volontairement restreint des codes les plus pertinents pour
+# CETTE tâche précise (qui ne fait jamais qu'exécuter
+# ``StockManager.exe --run-backup-agent``, voir
+# ``app.backup_external_agent_cli``) — jamais une tentative d'épuiser tous
+# les codes HRESULT/Win32 possibles, hors de portée raisonnable de ce
+# module ; tout code absent de ce dictionnaire reste présenté comme
+# « Résultat inconnu » (voir :func:`describe_task_result`), jamais une
+# description devinée.
+_KNOWN_TASK_RESULT_DESCRIPTIONS: dict[int, str] = {
+    1: "le programme exécuté a retourné un code d'erreur générique (voir le journal applicatif pour le détail).",
+    2: "le fichier ou le chemin de l'exécutable est introuvable.",
+    5: "accès refusé par Windows.",
+    0x80070002: "le fichier ou le chemin de l'exécutable est introuvable.",
+    0x80070005: "accès refusé par Windows.",
+}
+
+
+def describe_task_result(code: Optional[int]) -> str:
+    """Convertit le code numérique ``LastTaskResult`` en un libellé
+    compréhensible par un utilisateur non technicien (mission « Détails de
+    la tâche planifiée Windows », §C) — pure, testable sans Windows. Le
+    code technique reste disponible séparément (voir l'appelant) pour une
+    éventuelle infobulle, jamais mélangé au texte principal ici."""
+    if code is None or code == TASK_RESULT_NEVER_RUN:
+        return "Jamais exécutée"
+    if code == 0:
+        return "Réussite"
+    description = _KNOWN_TASK_RESULT_DESCRIPTIONS.get(code)
+    if description is not None:
+        return f"Échec – {description}"
+    return f"Résultat inconnu (code : {code})"
+
+
+def describe_last_run_time(last_run_time: Optional[datetime], last_task_result: Optional[int]) -> str:
+    """§A du mandat : jamais une date factice si la tâche n'a jamais été
+    exécutée. ``last_task_result`` prime toujours sur ``last_run_time`` —
+    voir :data:`TASK_RESULT_NEVER_RUN` : Windows représente ce cas par ce
+    code précis, jamais par une absence de valeur de ``LastRunTime`` (qui
+    porte alors une date sentinelle sans rapport avec une exécution réelle,
+    jamais affichée telle quelle)."""
+    if last_task_result == TASK_RESULT_NEVER_RUN or last_run_time is None:
+        return "Jamais exécutée"
+    return last_run_time.strftime("%d/%m/%Y %H:%M:%S")
+
+
+def describe_next_run_time(next_run_time: Optional[datetime]) -> str:
+    """§B du mandat : jamais de calcul artificiel à partir de l'heure
+    configurée — ``next_run_time`` provient déjà du Planificateur de tâches
+    Windows lui-même (:func:`query_task_runtime_info`), qui tient compte de
+    tous les déclencheurs réellement enregistrés (quotidien ET ouverture de
+    session)."""
+    if next_run_time is None:
+        return "Aucune prochaine exécution prévue."
+    return next_run_time.strftime("%d/%m/%Y %H:%M:%S")
 
 
 class ScheduledTaskError(Exception):
@@ -773,6 +850,107 @@ def query_task_status(task_name: str) -> ScheduledTaskStatus:
         return ScheduledTaskStatus(exists=False)
     fields = _parse_schtasks_verbose_list(result.stdout or "")
     return ScheduledTaskStatus(exists=True, **fields)
+
+
+@dataclass(frozen=True)
+class TaskRuntimeInfo:
+    """Relevé d'exécution d'une tâche planifiée, obtenu via le cmdlet
+    PowerShell ``Get-ScheduledTaskInfo`` plutôt que ``schtasks /fo list
+    /v`` (voir :func:`query_task_runtime_info`) — ses propriétés
+    (``LastRunTime``/``NextRunTime``/``LastTaskResult``) sont des NOMS,
+    jamais un texte d'affichage traduit, donc toujours reconnaissables
+    quelle que soit la langue du système.
+
+    ``available=False`` signifie que l'information est réellement
+    inaccessible (PowerShell introuvable, délai dépassé, erreur
+    inattendue) — jamais confondu avec une tâche simplement jamais
+    exécutée (``last_task_result == TASK_RESULT_NEVER_RUN`` dans ce cas,
+    ``available`` restant ``True``) : voir ``error`` pour la cause."""
+
+    available: bool
+    last_run_time: Optional[datetime] = None
+    next_run_time: Optional[datetime] = None
+    last_task_result: Optional[int] = None
+    error: Optional[str] = None
+
+
+def _run_powershell(args: list[str]) -> subprocess.CompletedProcess[str]:
+    """Pendant de :func:`_run_schtasks` pour ``powershell.exe`` — même
+    convention (sous-processus, délai borné, jamais d'exception brute de
+    ``subprocess`` propagée à l'appelant)."""
+    try:
+        return subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", *args],
+            capture_output=True, text=True, timeout=_TIMEOUT_SECONDS, check=False,
+            **no_console_window_kwargs(),
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        raise ScheduledTaskError(f"Impossible d'exécuter powershell.exe : {exc}") from exc
+
+
+def _parse_ps_datetime(value: object) -> Optional[datetime]:
+    """Analyse une date produite par le script PowerShell de
+    :func:`query_task_runtime_info` (format ``yyyy-MM-ddTHH:mm:ssK``,
+    explicitement choisi — invariant de toute culture/langue Windows,
+    contrairement à la représentation texte par défaut qu'utiliserait
+    ``ConvertTo-Json`` sur un ``DateTime`` sans formatage explicite).
+    Retourne toujours ``None`` plutôt que de lever — une valeur absente ou
+    mal formée ne doit jamais faire échouer tout le relevé."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return datetime.fromisoformat(value.strip())
+    except ValueError:
+        return None
+
+
+def query_task_runtime_info(task_name: str) -> TaskRuntimeInfo:
+    """Relevé d'exécution réel d'une tâche planifiée (mission « Détails de
+    la tâche planifiée Windows », §A/B/C) — ``Get-ScheduledTaskInfo``
+    (module ``ScheduledTasks``, intégré à Windows depuis Windows 8/Server
+    2012, jamais une dépendance supplémentaire à empaqueter) plutôt que
+    l'analyse de texte localisé de ``schtasks /fo list /v`` (voir le
+    commentaire de :data:`_FIELD_MAP`). Les dates sont formatées dans le
+    script PowerShell lui-même en ISO 8601 explicite (``K`` = décalage
+    UTC), jamais laissées à la sérialisation par défaut de
+    ``ConvertTo-Json`` (dépendante de la culture Windows active, donc tout
+    aussi fragile que le problème corrigé ici).
+
+    Ne lève jamais : une tâche absente, PowerShell introuvable, un délai
+    dépassé ou une réponse illisible retournent tous
+    ``TaskRuntimeInfo(available=False, error=...)`` — jamais une exception
+    propagée jusqu'à l'interface (même convention que
+    :func:`query_task_definition`)."""
+    _ensure_windows()
+    escaped_name = task_name.replace("'", "''")
+    script = (
+        "$ErrorActionPreference = 'Stop'; "
+        f"$i = Get-ScheduledTaskInfo -TaskName '{escaped_name}'; "
+        "[PSCustomObject]@{"
+        "LastRunTime=$(if ($i.LastRunTime) { $i.LastRunTime.ToString('yyyy-MM-ddTHH:mm:ssK') } else { $null });"
+        "NextRunTime=$(if ($i.NextRunTime) { $i.NextRunTime.ToString('yyyy-MM-ddTHH:mm:ssK') } else { $null });"
+        "LastTaskResult=$i.LastTaskResult"
+        "} | ConvertTo-Json -Compress"
+    )
+    try:
+        result = _run_powershell([script])
+    except ScheduledTaskError as exc:
+        return TaskRuntimeInfo(available=False, error=str(exc))
+    if result.returncode != 0:
+        return TaskRuntimeInfo(available=False, error=_sanitized_stderr_excerpt(result.stderr))
+    try:
+        payload = json.loads(result.stdout or "")
+    except ValueError as exc:
+        return TaskRuntimeInfo(available=False, error=f"Réponse PowerShell illisible : {exc}")
+    if not isinstance(payload, dict):
+        return TaskRuntimeInfo(available=False, error="Réponse PowerShell inattendue.")
+    last_task_result = payload.get("LastTaskResult")
+    return TaskRuntimeInfo(
+        available=True,
+        last_run_time=_parse_ps_datetime(payload.get("LastRunTime")),
+        next_run_time=_parse_ps_datetime(payload.get("NextRunTime")),
+        last_task_result=int(last_task_result) if isinstance(last_task_result, (int, float)) else None,
+    )
 
 
 def query_task_definition(task_name: str) -> Optional[ScheduledTaskDefinition]:
